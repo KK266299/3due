@@ -1,0 +1,54 @@
+# file: configs/visualize_ue.yaml
+
+# —— 用哪个数据构建器来拿数据集（脚本内部优先 ue.base_task_builder，否则用 task.name）
+task:
+  name: grape_ue          # 仅兜底；真正优先用 ue.base_task_builder
+
+ue:
+  base_task_builder: grape  # 可复用你训练时的 builder
+  # 统一可视化区间的兜底 ε（当没有 --vis-eps，且不是 shards 或 shards 无法推断时会用到）
+  algorithm:
+    params:
+      epsilon: 0.0313725        # 8/255，作为可视化的最后兜底来源
+
+  # 如果 manifest 里没有 key_spec，脚本会回退到这里
+  key:
+    type: classwise
+    from: field
+    field: subject_id           # 或者 meta.dicom_id / targets.reid 等，视你的数据而定
+
+training:
+  data:
+    transforms:
+      normalize: false
+      forbid_geom_aug: true
+      pixel_aug: false
+      image_size: [3, 256, 256]    # H, W；与训练期一致即可
+    poison:
+      enabled: true             # 仅用于告诉脚本你要读 noise；真正是否 wrap 与本脚本无关
+      source:
+        # —— 二选一（推荐 shards；若用 provider 就注释掉 shards 改成 provider 段）
+        # type: shards
+        # manifest_path: /home/dengzhipeng/data/project/reid_ue/mimic_cxr_ue/outputs/mimic_cxr_ue_minmin/20250901_031205/noise/manifest.json
+
+        # 若你想直接走 provider（不用 manifest），注释上面两行，改成：
+        type: provider
+        provider:
+          name: lsp            # 例子：你注册过的 provider 名
+          params:
+            # 供 provider 初始化的参数；若该 provider 需要 keys 初始化，脚本会自动收集
+            epsilon: 0.0313725
+            image_size: [3, 256, 256]     # 或者 [3, 256, 256]，按你的 provider 需要
+            noise_frame_size: 32
+            seed: 0
+
+dataset:
+  train_csv_path: /home/dengzhipeng/data/project/reid_ue/grape/train.csv
+  val_csv_path: /home/dengzhipeng/data/project/reid_ue/grape/val.csv
+  test_csv_path: /home/dengzhipeng/data/project/reid_ue/grape/test.csv
+
+experiment:
+  seed: 123
+  deterministic: practical
+  save_dir: /home/dengzhipeng/data/project/reid_ue/outputs/visualize/grape/lsp
+  run_name: visualize

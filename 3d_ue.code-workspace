@@ -1,0 +1,23 @@
+{
+    "folders": [
+        {
+            "name": "brats19",
+            "path": "/home/dengzhipeng/data/brain/brats19/MICCAI_BraTS_2019_Data_Training"
+        },
+        {
+            "name": "processed_brats19",
+            "path": "/home/dengzhipeng/data/brain_processed/brats19"
+        },
+        {
+            "name": "3d_ue",
+            "path": "/home/dengzhipeng/project/3due"
+        },
+        {
+            "name": "outputs",
+            "path": "/home/dengzhipeng/data/project/3d_ue/outputs"
+        }
+    ],
+    "settings": {
+
+  }
+}
