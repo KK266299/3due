@@ -138,19 +138,14 @@ class MinMinUE:
 
     # ---------------- N-step：Update noise (PGD, sample-wise) ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
-        """
-        PGD-style 更新 sample-wise 噪声：
-          - 目标：min segmentation loss（min-min）
-          - 约束：‖δ‖_∞ ≤ eps，且 x + δ ∈ [0,1]
-        """
         cfg = trainer.config
         device = trainer.device
         nb = trainer.noise_backend
         if nb is None:
             raise RuntimeError("[UE] noise_backend is required.")
 
-        # data
-        x = batch["image"].to(device).float()          # [N,C_in,...]
+        # -------- data & config --------
+        x = batch["image"].to(device).float()  # [N, C_in, ...]
         y = batch["label"]
         y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(
             y, device=device, dtype=torch.long
@@ -160,20 +155,19 @@ class MinMinUE:
 
         N, C_in = x.shape[:2]
 
-        # algo params
         algo = require_config(cfg, "ue.algorithm")
         params = require_config(algo, "params")
         eps = float(get_config(params, "epsilon", 8 / 255.0))
         step_size = float(get_config(params, "step_size", 2 / 255.0))
         num_steps = int(get_config(params, "noise_step", 10))
 
-        # normalization config（默认 no-op）
+        # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
         seg_loss_fn = self._get_seg_loss(trainer)
 
-        # freeze surrogate
+        # -------- freeze surrogate --------
         if not trainer.surrogates:
             raise RuntimeError("[UE] No surrogate bound.")
         _, s_model = next(iter(trainer.surrogates.items()))
@@ -181,18 +175,22 @@ class MinMinUE:
         for p in s_model.parameters():
             p.requires_grad = False
 
-        # noise table（sample-wise），形状必须与输入一致
-        delta_tbl = nb.batch_noise(keys_list).to(device).float()  # [N,C_in,...]
+        # -------- init / clamp noise --------
+        delta_tbl = nb.batch_noise(keys_list).to(device).float()  # [N, C_in, ...]
         if delta_tbl.shape[:2] != x.shape[:2]:
             raise RuntimeError(
                 f"[UE] noise shape mismatch: noise {tuple(delta_tbl.shape)} vs input {tuple(x.shape)}"
             )
 
+        # 保险：把历史噪声先 clamp 一次，防止之前 epoch 的越界残留
+        delta_tbl = delta_tbl.clamp(-eps, eps)
+
         last_loss = torch.tensor(0.0, device=device)
 
+        # -------- PGD 内层循环 --------
         with torch.enable_grad():
             for _ in range(max(1, num_steps)):
-                # x + delta
+                # x + delta，保证输入 surrogate 的图像始终在 [0,1]
                 perturb_img = (x + delta_tbl).clamp(0.0, 1.0).detach().requires_grad_(True)
                 xn = perturb_img.clone()
                 self._norm_inplace(xn, mean, std)
@@ -203,30 +201,17 @@ class MinMinUE:
                 loss = seg_loss_fn(logits, y.unsqueeze(1))
                 last_loss = loss.detach()
 
-                # grad wrt perturb_img
                 (g,) = torch.autograd.grad(
                     loss, perturb_img, retain_graph=False, create_graph=False
-                )  # [N,C_in,...]
+                )
 
                 # PGD 梯度下降（min-min）
                 delta_tbl = delta_tbl - step_size * g.sign()
 
-                # 像素盒约束：x + δ ∈ [0,1] 且 ‖δ‖_∞ ≤ eps，逐 sample / 逐通道
-                lower_pixel = -x            # [N,C_in,...]
-                upper_pixel = 1.0 - x       # [N,C_in,...]
+                # **唯一且强制的 L_inf 投影**
+                delta_tbl = delta_tbl.clamp(-eps, eps)
 
-                lower = torch.maximum(
-                    torch.full_like(delta_tbl, -eps),
-                    lower_pixel,
-                )
-                upper = torch.minimum(
-                    torch.full_like(delta_tbl, eps),
-                    upper_pixel,
-                )
-
-                delta_tbl = torch.max(torch.min(delta_tbl, upper), lower).detach()
-
-        # 写回 noise backend（sample-wise）
+        # -------- 写回 noise backend --------
         nb.commit_batch(keys_list, delta_tbl.detach().cpu())
 
         delta_linf = float(delta_tbl.detach().abs().max().cpu())

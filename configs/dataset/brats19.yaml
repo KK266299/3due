@@ -1,4 +1,4 @@
-name: grape
+name: brats19
 train_csv_path: /home/dengzhipeng/data/brain_processed/brats19/train.csv
 val_csv_path: /home/dengzhipeng/data/brain_processed/brats19/val.csv
 test_csv_path: /home/dengzhipeng/data/brain_processed/brats19/test.csv

@@ -1,7 +1,8 @@
 python main.py \
-  model.pretrained=true \
+  method=poison_files \
+  model.pretrained=false \
   dataset=brats19 \
-  task.run_name=clean \
+  task.run_name=victim_minmin_20251215 \
   model=unet \
   model.name=unet \
   task=brats19_seg \
@@ -9,8 +10,29 @@ python main.py \
   training.optimizer=adam \
   training.optimizers.adam.lr=5e-4 \
   training.gpu_ids=[0] \
-  training.batch_size=16
-pkolj# python main.py \
+  training.batch_size=4 \
+  training.data.poison.perturb_type=samplewise \
+  training.data.poison.key.type=samplewise \
+  training.data.poison.key.from=field \
+  training.data.poison.key.field=case_id \
+  training.data.poison.source.type=manifest \
+  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/minmin_noise/20251214_231446/noise/epoch_0099/manifest.json
+
+
+
+# python main.py \
+#   model.pretrained=true \
+#   dataset=brats19 \
+#   task.run_name=clean \
+#   model=unet \
+#   model.name=unet \
+#   task=brats19_seg \
+#   training.epochs=100 \
+#   training.optimizer=adam \
+#   training.optimizers.adam.lr=5e-4 \
+#   training.gpu_ids=[0] \
+#   training.batch_size=16
+# python main.py \
 #   model.pretrained=false \
 #   model.embed_dim=64 \
 #   dataset=grape \

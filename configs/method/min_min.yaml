@@ -5,7 +5,7 @@ training:
   model_save_freq: 10
   epochs: 3
   batch_size: 64
-  num_workers: 4
+  num_workers: 2
   sampler:
     name: pk
     p: 32  # every batch 32 different patients
@@ -19,7 +19,6 @@ training:
       normalize: false
 
 ue:
-  base_task_builder: mimic_cxr
   store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
 
   key:
