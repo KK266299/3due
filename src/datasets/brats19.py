@@ -190,7 +190,7 @@ class Brats19Builder(BaseDatasetBuilder):
           - 否则根据 config.dataset.transforms3d 中的开关构造一个通用 3D seg transform：
                 dataset:
                   ...
-                  transforms3d:
+                  transforms:
                     normalize: true
                     geom_aug: true
                     intensity_aug: true
@@ -208,13 +208,13 @@ class Brats19Builder(BaseDatasetBuilder):
 
         # ---- 2) 否则根据 config.dataset.transforms3d 构造一个通用 3D seg transform ----
         if transform is None:
-            dcfg: DictConfig = require_config(self.config, "dataset")
-            tcfg: DictConfig = get_config(dcfg, "transforms3d", DictConfig({}))
+            dcfg: DictConfig = require_config(self.config, "training.data")
+            tcfg: DictConfig = get_config(dcfg, "transforms", DictConfig({}))
 
             # 全局开关（geom/intensity 只在 train split 真正生效）
-            normalize = bool(get_config(tcfg, "normalize", True))
-            geom_aug = bool(get_config(tcfg, "geom_aug", True))
-            intensity_aug = bool(get_config(tcfg, "intensity_aug", True))
+            normalize = bool(require_config(tcfg, "normalize"))
+            geom_aug = bool(require_config(tcfg, "geom_aug"))
+            intensity_aug = bool(require_config(tcfg, "intensity_aug"))
             mean = get_config(tcfg, "mean", [0.0, 0.0, 0.0, 0.0])
             std = get_config(tcfg, "std", [1.0, 1.0, 1.0, 1.0])
 

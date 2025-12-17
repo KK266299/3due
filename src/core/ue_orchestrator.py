@@ -233,7 +233,10 @@ def generate_training_free(
 
     union: List[Any] = []
     seen = set()
+    #@xinyao:增加dsnone检查
     for ds in ds_list:
+        if ds is None:
+            continue
         ks = collect_keys(ds, key_spec, classwise=classwise)
         if classwise:
             for k in ks:

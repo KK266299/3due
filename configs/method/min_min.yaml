@@ -19,7 +19,6 @@ training:
       normalize: false
 
 ue:
-  base_task_builder: mimic_cxr
   store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
 
   key:

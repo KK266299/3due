@@ -1,0 +1,53 @@
+# @package _global_
+#
+# AR-ROI: 带ROI感知的自回归扰动噪声 (Training-Free)
+#
+# 参考文献:
+#   1. Sandoval-Segura et al. "Autoregressive Perturbations for Data Poisoning"
+#   2. "Safeguarding Medical Image Segmentation Datasets against Unauthorized
+#      Training via Contour- and Texture-Aware Perturbations"
+#
+# 核心思想:
+#   "To adapt LSP and AR for MIS tasks, we treat pixels inside and outside
+#   the ROI as two distinct classes."
+#   (为了将LSP和AR方法适配到医学图像分割任务，我们将ROI内外的像素视为两个不同的类别)
+#
+# ROI模式特点:
+#   - 背景区域 (label==0): 使用 ar_coeffs 生成噪声
+#   - ROI区域 (label>0): 使用 ar_coeffs_roi 生成噪声
+#   - 不同的噪声模式创建类别可分离的扰动
+#
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_free    # Training-Free方法
+    name: ar
+    params:
+      # 图像尺寸
+      image_size: ${training.data.transforms.image_size}
+
+      # AR系数模式 - 使用不同模式以创建类别可分离的扰动
+      ar_coeffs: geo_a1_r12      # 背景区域: 几何序列 (平滑渐变)
+      ar_coeffs_roi: fibonacci   # ROI区域: 斐波那契 (更具变化)
+
+      # 扰动幅度
+      epsilon: 0.0313725         # 8/255
+
+      # 随机种子
+      seed: 0
+
+      # ROI感知模式: 启用!
+      roi_mode: binary
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
