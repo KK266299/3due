@@ -2,7 +2,7 @@ python main.py \
   method=poison_files \
   model.pretrained=false \
   dataset=brats19 \
-  task.run_name=victim_minmin_20251215 \
+  task.run_name=victim_minmin_20251217 \
   model=unet \
   model.name=unet \
   task=brats19_seg \
@@ -10,13 +10,13 @@ python main.py \
   training.optimizer=adam \
   training.optimizers.adam.lr=5e-4 \
   training.gpu_ids=[0] \
-  training.batch_size=4 \
+  training.batch_size=1 \
   training.data.poison.perturb_type=samplewise \
   training.data.poison.key.type=samplewise \
   training.data.poison.key.from=field \
   training.data.poison.key.field=case_id \
   training.data.poison.source.type=manifest \
-  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/minmin_noise/20251214_231446/noise/epoch_0099/manifest.json
+  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/minmin_noise_step_5e-3/20251216_195958/noise/epoch_0099/manifest.json
 
 
 
