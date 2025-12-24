@@ -11,7 +11,7 @@ arxiv_result/
 __pycache__/
 *.py[cod]
 *$py.class
-
+*.cpython-310.pyc
 # C extensions
 *.so
 
