@@ -1,0 +1,4 @@
+defaults:
+  - _base
+name: attention_unet
+num_classes: 1

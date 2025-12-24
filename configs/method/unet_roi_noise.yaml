@@ -1,17 +1,18 @@
 # @package _global_
-# UNet-based ROI Noise Generator Configuration
-# Noise is only applied to ROI (tumor) regions
-# Usage: python ue_generate.py method=unet_roi_noise ...
+# UNet ROI Noise Generator Configuration
+#
+# Similar to unet_noise, but only generates noise within ROI regions.
+# ROI is defined as: label > 0 (foreground), background has no noise.
 
 training:
-  model_save_start: 9999  # No model saving for noise generation
+  model_save_start: 9999
   model_save_freq: 10
   epochs: 100
   batch_size: 8
-  num_workers: 2
+  num_workers: 0
   sampler:
     name: pk
-    p: 32
+    p: 4
     k: 2
   data:
     poison:
@@ -33,27 +34,23 @@ ue:
     kind: training_based
     name: unet_roi_noise
     params:
-      epsilon: 0.0313725        # 8/255 - L_inf bound
-      noise_step: 1             # Generator update steps per batch
-      step_size: 0.0039215      # Not used by UNet (kept for compatibility)
-      surrogate_step: 20        # S-step batches per epoch
-      roi_threshold: 0          # ROI = (label > roi_threshold)
-                                # 0 means any non-background pixel
+      epsilon: 0.0313725        # 8/255 L_inf bound
+      noise_step: 1             # UNet training iterations per batch
+      step_size: 5e-3           # (unused, kept for compatibility)
+      surrogate_step: 2         # S-step: batches per epoch
 
-  # UNet ROI Noise Generator Configuration
-  noise_generator:
-    in_channels: 4              # BraTS19: 4 MRI modalities
-    spatial_dims: 3             # 3D volumes
-    channels: [16, 32, 64, 128] # Lightweight generator
+  # Noise UNet configuration
+  noise_unet:
+    channels: [16, 32, 64, 128]
     strides: [2, 2, 2]
-    num_res_units: 2
-    norm: "INSTANCE"
+    num_res_units: 1
     act: "LEAKYRELU"
+    norm: "INSTANCE"
     dropout: 0.0
     optimizer:
       name: adam
       lr: 1e-4
-      weight_decay: 0.0
+      weight_decay: 1e-5
       betas: [0.9, 0.999]
 
   eot:
@@ -63,7 +60,6 @@ ue:
     pix_aug: true
     same_on_batch: false
 
-  # Surrogate model (same as min_min)
   surrogates:
     s_seg:
       backbone: unet
@@ -76,12 +72,7 @@ ue:
       norm: "INSTANCE"
       act: "RELU"
       dropout: 0.0
-      optimizer:
-        name: adam
-        lr: 5e-4
-        weight_decay: 5e-4
-        betas: [0.9, 0.9999]
-        eps: 1.0e-8
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
 
   io:
     enabled: true

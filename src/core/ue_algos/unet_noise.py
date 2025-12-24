@@ -1,158 +1,132 @@
 # file: src/core/ue_algos/unet_noise.py
 """
-UNet-based Noise Generator for 3D Segmentation UE.
+UNet Noise Generator for 3D segmentation (e.g., BraTS19).
 
-This module replaces PGD-based noise update in MinMin with a learnable
-UNet noise generator. The generator takes [image, current_noise] as input
-and outputs noise UPDATE (delta_update), similar to PGD iteration.
+This algorithm replaces the PGD noise update in MinMin with a trainable U-Net
+that generates noise. The U-Net takes the original image as input and outputs
+perturbation noise directly.
 
-Key difference from PGD:
-  - PGD:  delta = delta - step_size * sign(gradient)
-  - UNet: delta = delta + UNet([x, delta])  (learned update)
+Core differences from MinMin:
+  - MinMin: PGD gradient descent to update noise directly
+  - UNetNoise: Train a U-Net to predict noise, then store generated noise
 
-Usage:
-    method=unet_noise
+Training loop:
+  1. Surrogate-step: Same as MinMin, train surrogate on noisy images
+  2. Noise-step:
+     - Forward original image through noise U-Net to get noise prediction
+     - Add noise to image, pass through surrogate, compute loss
+     - Backprop to update noise U-Net parameters
+     - Store generated noise to backend
 """
 from __future__ import annotations
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Any
 
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from monai.losses import DiceCELoss
 from monai.networks.nets import UNet as MonaiUNet
 
 from ...registry import register_plugin
 from ...utils.config import get_config, require_config
+from ...utils.logger import get_logger
 
 
-class NoiseGenerator(nn.Module):
+def _build_noise_unet(cfg: DictConfig, in_channels: int, spatial_dims: int = 3) -> nn.Module:
     """
-    UNet-based noise UPDATE generator.
-
-    Input:  [image, current_noise] concatenated [B, 2*C_in, D, H, W]
-    Output: noise_update [B, C_in, D, H, W]
-
-    Update rule:
-        delta_new = clamp(delta_old + delta_update, -eps, eps)
-        Ensure: x + delta_new ∈ [0, 1]
+    Build a small U-Net for noise generation.
+    Input: original image [B, C, D, H, W]
+    Output: noise [B, C, D, H, W] (same shape as input)
     """
-    def __init__(
-        self,
-        in_channels: int,
-        spatial_dims: int = 3,
-        channels: List[int] = None,
-        strides: List[int] = None,
-        num_res_units: int = 2,
-        norm: str = "INSTANCE",
-        act: str = "LEAKYRELU",
-        dropout: float = 0.0,
-        epsilon: float = 8/255.0,
-        step_size: float = 2/255.0,
-    ):
+    channels = list(get_config(cfg, "channels", [16, 32, 64, 128]))
+    strides = list(get_config(cfg, "strides", [2, 2, 2]))
+    num_res_units = int(get_config(cfg, "num_res_units", 1))
+    act = get_config(cfg, "act", "LEAKYRELU")
+    norm = get_config(cfg, "norm", "INSTANCE")
+    dropout = float(get_config(cfg, "dropout", 0.0))
+
+    unet = MonaiUNet(
+        spatial_dims=spatial_dims,
+        in_channels=in_channels,
+        out_channels=in_channels,  # output same channels as input
+        channels=channels,
+        strides=strides,
+        num_res_units=num_res_units,
+        act=act,
+        norm=norm,
+        dropout=dropout,
+    )
+    return unet
+
+
+class NoiseUNetWrapper(nn.Module):
+    """
+    Wrapper for noise U-Net that applies tanh and scales output to [-eps, eps].
+    """
+    def __init__(self, unet: nn.Module, epsilon: float = 8/255):
         super().__init__()
-
-        if channels is None:
-            channels = [16, 32, 64, 128]
-        if strides is None:
-            strides = [2, 2, 2]
-
+        self.unet = unet
         self.epsilon = epsilon
-        self.step_size = step_size
 
-        # UNet backbone: [image, noise] concat -> noise_update
-        # Input: 2 * in_channels (image + current noise)
-        # Output: in_channels (noise update)
-        self.unet = MonaiUNet(
-            spatial_dims=spatial_dims,
-            in_channels=in_channels * 2,  # [x, delta] concatenated
-            out_channels=in_channels,      # Output noise update
-            channels=channels,
-            strides=strides,
-            num_res_units=num_res_units,
-            act=act,
-            norm=norm,
-            dropout=dropout,
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        delta: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Generate noise UPDATE (not the full noise).
-
         Args:
-            x:     Input image [B, C, D, H, W]
-            delta: Current noise [B, C, D, H, W]
-
+            x: Input image [B, C, D, H, W] in [0, 1]
         Returns:
-            delta_new: Updated noise [B, C, D, H, W] satisfying:
-                       - |delta_new| <= epsilon (L_inf constraint)
-                       - x + delta_new ∈ [0, 1] (valid image constraint)
+            Noise [B, C, D, H, W] in [-eps, eps]
         """
-        # Concatenate image and current noise
-        concat_input = torch.cat([x, delta], dim=1)  # [B, 2*C, D, H, W]
-
-        # Generate update direction (like sign(gradient) in PGD)
-        raw_update = self.unet(concat_input)
-
-        # Use tanh to bound update magnitude, scale by step_size
-        # This replaces: step_size * sign(gradient)
-        delta_update = torch.tanh(raw_update) * self.step_size
-
-        # Apply update: delta_new = delta_old + delta_update
-        delta_new = delta + delta_update
-
-        # Constraint 1: L_inf bound |delta| <= epsilon
-        delta_new = delta_new.clamp(-self.epsilon, self.epsilon)
-
-        # Constraint 2: x + delta ∈ [0, 1]
-        # delta >= -x  (so x + delta >= 0)
-        # delta <= 1-x (so x + delta <= 1)
-        delta_new = torch.max(delta_new, -x)
-        delta_new = torch.min(delta_new, 1.0 - x)
-
-        return delta_new
+        raw_noise = self.unet(x)
+        # Apply tanh to bound output to [-1, 1], then scale to [-eps, eps]
+        noise = torch.tanh(raw_noise) * self.epsilon
+        return noise
 
 
 @register_plugin("unet_noise")
 class UNetNoiseUE:
     """
-    UNet-based Noise Generator for 3D segmentation (e.g., BraTS19).
+    UNet-based noise generation for 3D segmentation UE.
 
-    This replaces PGD noise updates with a learnable UNet noise generator.
-    The generator learns to produce adversarial noise that minimizes
-    segmentation loss.
+    Instead of using PGD to update noise iteratively, this method uses a
+    trainable U-Net to generate noise. The U-Net is trained to minimize
+    the segmentation loss on noisy images.
 
-    Batch requirements:
-      - batch["image"]: FloatTensor [B, C, D, H, W]
-      - batch["label"]: LongTensor  [B, D, H, W]
-      - batch["key"]:   sample-wise key (for noise backend storage)
+    Assumptions (same as MinMin):
+      - Batch:
+          batch["image"]: FloatTensor [B, C, ...]      (3D: [B,C,D,H,W])
+          batch["label"]: LongTensor  [B,   ...]       (3D: [B,D,H,W])
+          batch["key"]:   sample-wise key
+      - Surrogate:
+          s_model(x) -> logits: [B, C_seg, ...]
+      - Noise backend:
+          noise_backend.batch_noise(keys) -> [N, C_in, ...]
 
-    Surrogate output:
-      - s_model(x) -> logits: [B, C_seg, D, H, W]
-
-    Noise backend (for caching/export):
-      - noise_backend.batch_noise(keys) -> [N, C_in, D, H, W]
-      - noise_backend.commit_batch(keys, delta) writes back updated noise
+    Additional components:
+      - noise_unet: U-Net that generates noise from input images
+      - opt_noise_unet: Optimizer for the noise U-Net
     """
 
     def __init__(self):
-        self._seg_loss: Optional[DiceCELoss] = None
-        self._noise_gen: Optional[NoiseGenerator] = None
-        self._noise_opt: Optional[torch.optim.Optimizer] = None
+        self._seg_loss: DiceCELoss | None = None
+        self._noise_unet: NoiseUNetWrapper | None = None
+        self._opt_noise_unet: torch.optim.Optimizer | None = None
+        self._noise_unet_device: torch.device | None = None
+        self._initialized: bool = False
+        self.logger = get_logger()
 
     @staticmethod
     def _norm_inplace(x: torch.Tensor, mean, std):
-        """In-place per-channel normalize for ND volume."""
+        """
+        In-place per-channel normalize for ND volume.
+        x: [B, C, ...]
+        """
         for c, (m, s) in enumerate(zip(mean, std)):
             x[:, c].sub_(float(m)).div_(float(s))
         return x
 
     def _get_seg_loss(self, trainer) -> DiceCELoss:
-        """Build DiceCELoss consistent with SegTrainer config."""
+        """
+        Build DiceCELoss consistent with SegTrainer configuration.
+        """
         if self._seg_loss is not None:
             return self._seg_loss
 
@@ -176,79 +150,53 @@ class UNetNoiseUE:
         )
         return self._seg_loss
 
-    def _get_noise_generator(self, trainer) -> NoiseGenerator:
-        """Build or return cached noise generator."""
-        if self._noise_gen is not None:
-            return self._noise_gen
+    def _init_noise_unet(self, trainer, in_channels: int, spatial_dims: int = 3):
+        """
+        Initialize the noise U-Net and its optimizer (lazy, once).
+        """
+        if self._initialized:
+            return
 
         cfg = trainer.config
         device = trainer.device
 
-        algo = require_config(cfg, "ue.algorithm")
-        params = require_config(algo, "params")
-        eps = float(get_config(params, "epsilon", 8 / 255.0))
-        step_size = float(get_config(params, "step_size", 2 / 255.0))
+        # Get noise UNet config
+        noise_unet_cfg = get_config(cfg, "ue.noise_unet", DictConfig({}))
+        eps = float(get_config(cfg, "ue.algorithm.params.epsilon", 8/255))
 
-        # Generator config - from ue.noise_generator or defaults
-        gen_cfg = get_config(cfg, "ue.noise_generator", DictConfig({}))
-        in_channels = int(get_config(gen_cfg, "in_channels", 4))
-        spatial_dims = int(get_config(gen_cfg, "spatial_dims", 3))
-        channels = list(get_config(gen_cfg, "channels", [16, 32, 64, 128]))
-        strides = list(get_config(gen_cfg, "strides", [2, 2, 2]))
-        num_res_units = int(get_config(gen_cfg, "num_res_units", 2))
-        norm = str(get_config(gen_cfg, "norm", "INSTANCE"))
-        act = str(get_config(gen_cfg, "act", "LEAKYRELU"))
-        dropout = float(get_config(gen_cfg, "dropout", 0.0))
+        # Build noise UNet
+        base_unet = _build_noise_unet(noise_unet_cfg, in_channels, spatial_dims)
+        self._noise_unet = NoiseUNetWrapper(base_unet, epsilon=eps)
+        self._noise_unet = self._noise_unet.to(device)
+        self._noise_unet_device = device
 
-        self._noise_gen = NoiseGenerator(
-            in_channels=in_channels,
-            spatial_dims=spatial_dims,
-            channels=channels,
-            strides=strides,
-            num_res_units=num_res_units,
-            norm=norm,
-            act=act,
-            dropout=dropout,
-            epsilon=eps,
-            step_size=step_size,
-        ).to(device)
-
-        # Build optimizer for noise generator
-        opt_cfg = get_config(gen_cfg, "optimizer", DictConfig({"name": "adam", "lr": 1e-4}))
-        opt_name = str(get_config(opt_cfg, "name", "adam")).lower()
+        # Build optimizer
+        opt_cfg = get_config(noise_unet_cfg, "optimizer", DictConfig({}))
         lr = float(get_config(opt_cfg, "lr", 1e-4))
-        weight_decay = float(get_config(opt_cfg, "weight_decay", 0.0))
+        weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
+        betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
 
-        if opt_name == "adam":
-            betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
-            self._noise_opt = torch.optim.Adam(
-                self._noise_gen.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=betas,
-            )
-        elif opt_name == "sgd":
-            momentum = float(get_config(opt_cfg, "momentum", 0.9))
-            self._noise_opt = torch.optim.SGD(
-                self._noise_gen.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-                momentum=momentum,
-            )
-        else:
-            self._noise_opt = torch.optim.Adam(
-                self._noise_gen.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-            )
+        self._opt_noise_unet = torch.optim.Adam(
+            self._noise_unet.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
 
-        return self._noise_gen
+        self._initialized = True
+        self.logger.info(
+            f"[UNetNoise] Initialized noise UNet: in_channels={in_channels}, "
+            f"spatial_dims={spatial_dims}, eps={eps:.6f}, lr={lr}"
+        )
 
     # ---------------- Surrogate-step: Update surrogate ---------------- #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        Update surrogate parameters only, noise is fixed.
-        Loss: segmentation DiceCE
+        Update surrogate parameters only, do not update noise.
+        Uses generated noise from noise U-Net.
+
+        This is similar to MinMin, but noise comes from U-Net prediction
+        instead of noise backend (for training, we still read from backend).
         """
         cfg = trainer.config
         device = trainer.device
@@ -257,7 +205,7 @@ class UNetNoiseUE:
             raise RuntimeError("[UE] noise_backend is required.")
 
         # data
-        x = batch["image"].to(device).float()
+        x = batch["image"].to(device).float()  # [B, C, ...]
         y = batch["label"]
         y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(
             y, device=device, dtype=torch.long
@@ -265,13 +213,17 @@ class UNetNoiseUE:
         keys: Iterable[int] = batch["key"]
 
         B, C_in = x.shape[:2]
+        spatial_dims = len(x.shape) - 2  # 3 for 3D
+
+        # Initialize noise UNet if not done
+        self._init_noise_unet(trainer, C_in, spatial_dims)
 
         # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
-        # Get noise from backend (previously generated by noise_step)
-        delta = nb.batch_noise(list(keys)).to(device).float()
+        # Get noise from backend (like MinMin for consistency during surrogate training)
+        delta = nb.batch_noise(list(keys)).to(device).float()  # [B, C_in, ...]
         if delta.shape[:2] != x.shape[:2]:
             raise RuntimeError(
                 f"[UE] noise shape mismatch: noise {tuple(delta.shape)} vs input {tuple(x.shape)}"
@@ -311,15 +263,17 @@ class UNetNoiseUE:
             "loss": loss_val,
         }
 
-    # ---------------- N-step: Update noise via UNet generator ---------------- #
+    # ---------------- N-step: Update noise via UNet ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        Update noise generator to minimize segmentation loss.
+        Update noise using trainable U-Net instead of PGD.
 
-        Key difference from PGD:
-          - PGD iterates multiple steps per batch, updating only delta
-          - UNet generator updates its parameters once per batch
-          - noise_step controls gradient accumulation steps (default=1)
+        Process:
+          1. Forward image through noise U-Net to get noise prediction
+          2. Add noise to image, normalize, pass through frozen surrogate
+          3. Compute segmentation loss
+          4. Backprop to update noise U-Net parameters
+          5. Store generated noise to backend
         """
         cfg = trainer.config
         device = trainer.device
@@ -328,7 +282,7 @@ class UNetNoiseUE:
             raise RuntimeError("[UE] noise_backend is required.")
 
         # -------- data & config --------
-        x = batch["image"].to(device).float()
+        x = batch["image"].to(device).float()  # [B, C_in, ...]
         y = batch["label"]
         y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(
             y, device=device, dtype=torch.long
@@ -336,19 +290,22 @@ class UNetNoiseUE:
         keys = batch["key"]
         keys_list: List[int] = list(keys)
 
-        N, C_in = x.shape[:2]
+        B, C_in = x.shape[:2]
+        spatial_dims = len(x.shape) - 2
+
+        # Initialize if needed
+        self._init_noise_unet(trainer, C_in, spatial_dims)
 
         algo = require_config(cfg, "ue.algorithm")
         params = require_config(algo, "params")
         eps = float(get_config(params, "epsilon", 8 / 255.0))
+        num_steps = int(get_config(params, "noise_step", 1))  # training iterations per batch
 
         # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
         seg_loss_fn = self._get_seg_loss(trainer)
-        noise_gen = self._get_noise_generator(trainer)
-        noise_opt = self._noise_opt
 
         # -------- freeze surrogate --------
         if not trainer.surrogates:
@@ -358,45 +315,44 @@ class UNetNoiseUE:
         for p in s_model.parameters():
             p.requires_grad = False
 
-        # -------- Get current noise from backend --------
-        delta = nb.batch_noise(keys_list).to(device).float()
-        if delta.shape[:2] != x.shape[:2]:
-            raise RuntimeError(
-                f"[UE] noise shape mismatch: noise {tuple(delta.shape)} vs input {tuple(x.shape)}"
-            )
-        delta = delta.clamp(-eps, eps)
+        # -------- train noise UNet --------
+        self._noise_unet.train()
+        last_loss = torch.tensor(0.0, device=device)
 
-        # -------- Single forward-backward pass (efficient) --------
-        noise_gen.train()
+        for _ in range(max(1, num_steps)):
+            # Generate noise from UNet
+            delta = self._noise_unet(x)  # [B, C_in, ...], already clamped to [-eps, eps]
 
-        # UNet generates updated noise
-        delta_new = noise_gen(x, delta)
+            # Create perturbed image
+            perturb_img = (x + delta).clamp(0.0, 1.0)
+            xn = perturb_img.clone()
+            self._norm_inplace(xn, mean, std)
 
-        # Apply noise to image
-        perturb_img = (x + delta_new).clamp(0.0, 1.0)
-        xn = perturb_img.clone()
-        self._norm_inplace(xn, mean, std)
+            # Forward through surrogate
+            out = s_model(xn)
+            logits = out[0] if isinstance(out, (tuple, list)) else out
 
-        out = s_model(xn)
-        logits = out[0] if isinstance(out, (tuple, list)) else out
+            # Compute loss (min-min: minimize loss)
+            loss = seg_loss_fn(logits, y.unsqueeze(1))
+            last_loss = loss.detach()
 
-        # Minimize segmentation loss
-        loss = seg_loss_fn(logits, y.unsqueeze(1))
+            # Backprop to update noise UNet
+            self._opt_noise_unet.zero_grad(set_to_none=True)
+            loss.backward()
+            self._opt_noise_unet.step()
 
-        # Update generator (single step per batch)
-        noise_opt.zero_grad(set_to_none=True)
-        loss.backward()
-        noise_opt.step()
-
-        # -------- Write back noise to backend for export --------
+        # -------- Store generated noise to backend --------
+        # Generate final noise and commit
+        self._noise_unet.eval()
         with torch.no_grad():
-            noise_gen.eval()
-            delta_final = noise_gen(x, delta)
-            delta_final = delta_final.clamp(-eps, eps)
-            nb.commit_batch(keys_list, delta_final.detach().cpu())
+            final_delta = self._noise_unet(x)  # [B, C_in, ...]
+            # Extra clamp for safety
+            final_delta = final_delta.clamp(-eps, eps)
 
-        delta_linf = float(delta_final.detach().abs().max().cpu())
+        nb.commit_batch(keys_list, final_delta.detach().cpu())
+
+        delta_linf = float(final_delta.detach().abs().max().cpu())
         return {
-            "noise_loss": float(loss.detach().cpu()),
+            "noise_loss": float(last_loss.cpu()),
             "delta_linf": delta_linf,
         }

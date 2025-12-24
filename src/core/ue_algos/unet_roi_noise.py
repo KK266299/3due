@@ -1,24 +1,16 @@
 # file: src/core/ue_algos/unet_roi_noise.py
 """
-UNet-based ROI Noise Generator for 3D Segmentation UE.
+UNet ROI Noise Generator for 3D segmentation (e.g., BraTS19).
 
-This module generates noise that is ONLY applied to ROI (Region of Interest)
-regions defined by the label mask. Non-ROI regions receive zero noise.
+This algorithm is similar to UNet Noise, but only generates noise within
+the ROI (Region of Interest) area. ROI is defined as label > 0.
 
-Key design (similar to PGD but with UNet):
-  - Input:  [image, current_noise] concatenated
-  - Output: noise UPDATE (delta_update)
-  - Update: delta_new = delta_old + delta_update
-  - ROI:    delta_new = delta_new * roi_mask (noise only in ROI)
-
-This is useful for targeted perturbations that focus on tumor/lesion regions
-in medical imaging applications like BraTS19.
-
-Usage:
-    method=unet_roi_noise
+Key difference from UNet Noise:
+  - UNet Noise: generates noise for the entire image
+  - UNet ROI Noise: generates noise only within ROI (label > 0), background = 0
 """
 from __future__ import annotations
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List
 
 import torch
 import torch.nn as nn
@@ -28,162 +20,121 @@ from monai.networks.nets import UNet as MonaiUNet
 
 from ...registry import register_plugin
 from ...utils.config import get_config, require_config
+from ...utils.logger import get_logger
 
 
-class ROINoiseGenerator(nn.Module):
+def _build_noise_unet(cfg: DictConfig, in_channels: int, spatial_dims: int = 3) -> nn.Module:
     """
-    UNet-based ROI noise UPDATE generator.
-
-    Input:  [image, current_noise] concatenated [B, 2*C_in, D, H, W]
-    Output: noise_update [B, C_in, D, H, W], masked to ROI regions
-
-    Update rule:
-        delta_update = UNet([x, delta_old])
-        delta_new = clamp(delta_old + delta_update, -eps, eps)
-        delta_new = delta_new * roi_mask  (zero outside ROI)
-        Ensure: x + delta_new ∈ [0, 1]
+    Build a small U-Net for noise generation.
+    Input: original image [B, C, D, H, W]
+    Output: noise [B, C, D, H, W] (same shape as input)
     """
-    def __init__(
-        self,
-        in_channels: int,
-        spatial_dims: int = 3,
-        channels: List[int] = None,
-        strides: List[int] = None,
-        num_res_units: int = 2,
-        norm: str = "INSTANCE",
-        act: str = "LEAKYRELU",
-        dropout: float = 0.0,
-        epsilon: float = 8/255.0,
-        step_size: float = 2/255.0,
-    ):
+    channels = list(get_config(cfg, "channels", [16, 32, 64, 128]))
+    strides = list(get_config(cfg, "strides", [2, 2, 2]))
+    num_res_units = int(get_config(cfg, "num_res_units", 1))
+    act = get_config(cfg, "act", "LEAKYRELU")
+    norm = get_config(cfg, "norm", "INSTANCE")
+    dropout = float(get_config(cfg, "dropout", 0.0))
+
+    unet = MonaiUNet(
+        spatial_dims=spatial_dims,
+        in_channels=in_channels,
+        out_channels=in_channels,
+        channels=channels,
+        strides=strides,
+        num_res_units=num_res_units,
+        act=act,
+        norm=norm,
+        dropout=dropout,
+    )
+    return unet
+
+
+class NoiseUNetWrapper(nn.Module):
+    """
+    Wrapper for noise U-Net that applies tanh and scales output to [-eps, eps].
+    """
+    def __init__(self, unet: nn.Module, epsilon: float = 8/255):
         super().__init__()
-
-        if channels is None:
-            channels = [16, 32, 64, 128]
-        if strides is None:
-            strides = [2, 2, 2]
-
+        self.unet = unet
         self.epsilon = epsilon
-        self.step_size = step_size
 
-        # UNet backbone: [image, noise] concat -> noise_update
-        self.unet = MonaiUNet(
-            spatial_dims=spatial_dims,
-            in_channels=in_channels * 2,  # [x, delta] concatenated
-            out_channels=in_channels,
-            channels=channels,
-            strides=strides,
-            num_res_units=num_res_units,
-            act=act,
-            norm=norm,
-            dropout=dropout,
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        delta: torch.Tensor,
-        roi_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Generate ROI-masked noise UPDATE.
-
         Args:
-            x:        Input image [B, C, D, H, W]
-            delta:    Current noise [B, C, D, H, W]
-            roi_mask: Binary mask [B, D, H, W] or [B, 1, D, H, W]
-                      If None, returns unmasked noise (full image)
-
+            x: Input image [B, C, D, H, W] in [0, 1]
         Returns:
-            delta_new: Updated noise [B, C, D, H, W] satisfying:
-                       - |delta_new| <= epsilon (L_inf constraint)
-                       - x + delta_new ∈ [0, 1] (valid image constraint)
-                       - delta_new = 0 outside ROI
+            Noise [B, C, D, H, W] in [-eps, eps]
         """
-        # Concatenate image and current noise
-        concat_input = torch.cat([x, delta], dim=1)  # [B, 2*C, D, H, W]
-
-        # Generate update direction
-        raw_update = self.unet(concat_input)
-
-        # Use tanh to bound update magnitude, scale by step_size
-        delta_update = torch.tanh(raw_update) * self.step_size
-
-        # Apply update: delta_new = delta_old + delta_update
-        delta_new = delta + delta_update
-
-        # Constraint 1: L_inf bound |delta| <= epsilon
-        delta_new = delta_new.clamp(-self.epsilon, self.epsilon)
-
-        # Constraint 2: x + delta ∈ [0, 1]
-        delta_new = torch.max(delta_new, -x)
-        delta_new = torch.min(delta_new, 1.0 - x)
-
-        # Constraint 3: ROI mask - zero noise outside ROI
-        if roi_mask is not None:
-            if roi_mask.ndim == 4:
-                roi_mask = roi_mask.unsqueeze(1)  # [B, 1, D, H, W]
-            mask_float = roi_mask.float()
-            delta_new = delta_new * mask_float
-
-        return delta_new
+        raw_noise = self.unet(x)
+        noise = torch.tanh(raw_noise) * self.epsilon
+        return noise
 
 
 @register_plugin("unet_roi_noise")
 class UNetROINoiseUE:
     """
-    UNet-based ROI Noise Generator for 3D segmentation (e.g., BraTS19).
+    UNet-based ROI noise generation for 3D segmentation UE.
 
-    This generates noise that is ONLY applied to ROI (Region of Interest)
-    regions. The ROI is determined by the label mask (label > 0).
+    Similar to UNetNoiseUE, but only generates noise within ROI regions.
+    ROI is defined as: label > 0 (foreground), background (label == 0) has no noise.
 
-    Key difference from unet_noise:
-      - Noise is multiplied by ROI mask before application
-      - Only tumor/lesion regions receive perturbations
-      - Background regions remain unperturbed
-
-    Batch requirements:
-      - batch["image"]: FloatTensor [B, C, D, H, W]
-      - batch["label"]: LongTensor  [B, D, H, W]  (used for ROI mask)
-      - batch["key"]:   sample-wise key (for noise backend storage)
-
-    ROI mask generation:
-      - roi_mask = (label > 0)  # Any non-background class
-      - Configurable via ue.algorithm.params.roi_threshold
+    Assumptions (same as MinMin/UNetNoise):
+      - Batch:
+          batch["image"]: FloatTensor [B, C, ...]      (3D: [B,C,D,H,W])
+          batch["label"]: LongTensor  [B,   ...]       (3D: [B,D,H,W])
+          batch["key"]:   sample-wise key
+      - Surrogate:
+          s_model(x) -> logits: [B, C_seg, ...]
+      - Noise backend:
+          noise_backend.batch_noise(keys) -> [N, C_in, ...]
     """
 
     def __init__(self):
-        self._seg_loss: Optional[DiceCELoss] = None
-        self._noise_gen: Optional[ROINoiseGenerator] = None
-        self._noise_opt: Optional[torch.optim.Optimizer] = None
+        self._seg_loss: DiceCELoss | None = None
+        self._noise_unet: NoiseUNetWrapper | None = None
+        self._opt_noise_unet: torch.optim.Optimizer | None = None
+        self._noise_unet_device: torch.device | None = None
+        self._initialized: bool = False
+        self.logger = get_logger()
 
     @staticmethod
     def _norm_inplace(x: torch.Tensor, mean, std):
-        """In-place per-channel normalize for ND volume."""
+        """
+        In-place per-channel normalize for ND volume.
+        x: [B, C, ...]
+        """
         for c, (m, s) in enumerate(zip(mean, std)):
             x[:, c].sub_(float(m)).div_(float(s))
         return x
 
     @staticmethod
-    def _get_roi_mask(
-        label: torch.Tensor,
-        threshold: int = 0
-    ) -> torch.Tensor:
+    def _create_roi_mask(label: torch.Tensor, spatial_shape: tuple) -> torch.Tensor:
         """
-        Generate ROI mask from label.
+        Create ROI mask from label. ROI = label > 0.
 
         Args:
-            label:     Label tensor [B, D, H, W]
-            threshold: Pixel value threshold for ROI (default: 0)
-                       roi = (label > threshold)
-
+            label: [B, D, H, W] or [B, 1, D, H, W]
+            spatial_shape: target spatial shape
         Returns:
-            mask: Binary mask [B, D, H, W], True for ROI regions
+            mask: [B, 1, D, H, W] with 1 for ROI, 0 for background
         """
-        return (label > threshold).float()
+        # Ensure label is [B, D, H, W]
+        if label.dim() == 5:
+            label = label.squeeze(1)
+
+        # Create binary mask: ROI = label > 0
+        mask = (label > 0).float()  # [B, D, H, W]
+
+        # Add channel dimension: [B, 1, D, H, W]
+        mask = mask.unsqueeze(1)
+
+        return mask
 
     def _get_seg_loss(self, trainer) -> DiceCELoss:
-        """Build DiceCELoss consistent with SegTrainer config."""
+        """
+        Build DiceCELoss consistent with SegTrainer configuration.
+        """
         if self._seg_loss is not None:
             return self._seg_loss
 
@@ -207,79 +158,47 @@ class UNetROINoiseUE:
         )
         return self._seg_loss
 
-    def _get_noise_generator(self, trainer) -> ROINoiseGenerator:
-        """Build or return cached ROI noise generator."""
-        if self._noise_gen is not None:
-            return self._noise_gen
+    def _init_noise_unet(self, trainer, in_channels: int, spatial_dims: int = 3):
+        """
+        Initialize the noise U-Net and its optimizer (lazy, once).
+        """
+        if self._initialized:
+            return
 
         cfg = trainer.config
         device = trainer.device
 
-        algo = require_config(cfg, "ue.algorithm")
-        params = require_config(algo, "params")
-        eps = float(get_config(params, "epsilon", 8 / 255.0))
-        step_size = float(get_config(params, "step_size", 2 / 255.0))
+        noise_unet_cfg = get_config(cfg, "ue.noise_unet", DictConfig({}))
+        eps = float(get_config(cfg, "ue.algorithm.params.epsilon", 8/255))
 
-        # Generator config - from ue.noise_generator or defaults
-        gen_cfg = get_config(cfg, "ue.noise_generator", DictConfig({}))
-        in_channels = int(get_config(gen_cfg, "in_channels", 4))
-        spatial_dims = int(get_config(gen_cfg, "spatial_dims", 3))
-        channels = list(get_config(gen_cfg, "channels", [16, 32, 64, 128]))
-        strides = list(get_config(gen_cfg, "strides", [2, 2, 2]))
-        num_res_units = int(get_config(gen_cfg, "num_res_units", 2))
-        norm = str(get_config(gen_cfg, "norm", "INSTANCE"))
-        act = str(get_config(gen_cfg, "act", "LEAKYRELU"))
-        dropout = float(get_config(gen_cfg, "dropout", 0.0))
+        base_unet = _build_noise_unet(noise_unet_cfg, in_channels, spatial_dims)
+        self._noise_unet = NoiseUNetWrapper(base_unet, epsilon=eps)
+        self._noise_unet = self._noise_unet.to(device)
+        self._noise_unet_device = device
 
-        self._noise_gen = ROINoiseGenerator(
-            in_channels=in_channels,
-            spatial_dims=spatial_dims,
-            channels=channels,
-            strides=strides,
-            num_res_units=num_res_units,
-            norm=norm,
-            act=act,
-            dropout=dropout,
-            epsilon=eps,
-            step_size=step_size,
-        ).to(device)
-
-        # Build optimizer for noise generator
-        opt_cfg = get_config(gen_cfg, "optimizer", DictConfig({"name": "adam", "lr": 1e-4}))
-        opt_name = str(get_config(opt_cfg, "name", "adam")).lower()
+        opt_cfg = get_config(noise_unet_cfg, "optimizer", DictConfig({}))
         lr = float(get_config(opt_cfg, "lr", 1e-4))
-        weight_decay = float(get_config(opt_cfg, "weight_decay", 0.0))
+        weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
+        betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
 
-        if opt_name == "adam":
-            betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
-            self._noise_opt = torch.optim.Adam(
-                self._noise_gen.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=betas,
-            )
-        elif opt_name == "sgd":
-            momentum = float(get_config(opt_cfg, "momentum", 0.9))
-            self._noise_opt = torch.optim.SGD(
-                self._noise_gen.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-                momentum=momentum,
-            )
-        else:
-            self._noise_opt = torch.optim.Adam(
-                self._noise_gen.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-            )
+        self._opt_noise_unet = torch.optim.Adam(
+            self._noise_unet.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
 
-        return self._noise_gen
+        self._initialized = True
+        self.logger.info(
+            f"[UNetROINoise] Initialized noise UNet: in_channels={in_channels}, "
+            f"spatial_dims={spatial_dims}, eps={eps:.6f}, lr={lr}"
+        )
 
     # ---------------- Surrogate-step: Update surrogate ---------------- #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        Update surrogate parameters only, noise is fixed.
-        Noise is applied only to ROI regions.
+        Update surrogate parameters only, do not update noise.
+        Uses noise from backend (with ROI mask applied).
         """
         cfg = trainer.config
         device = trainer.device
@@ -287,7 +206,6 @@ class UNetROINoiseUE:
         if nb is None:
             raise RuntimeError("[UE] noise_backend is required.")
 
-        # data
         x = batch["image"].to(device).float()
         y = batch["label"]
         y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(
@@ -296,30 +214,19 @@ class UNetROINoiseUE:
         keys: Iterable[int] = batch["key"]
 
         B, C_in = x.shape[:2]
+        spatial_dims = len(x.shape) - 2
 
-        # ROI config
-        algo = require_config(cfg, "ue.algorithm")
-        params = require_config(algo, "params")
-        roi_threshold = int(get_config(params, "roi_threshold", 0))
+        self._init_noise_unet(trainer, C_in, spatial_dims)
 
-        # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
-        # Get noise from backend (previously generated, already ROI-masked)
         delta = nb.batch_noise(list(keys)).to(device).float()
         if delta.shape[:2] != x.shape[:2]:
             raise RuntimeError(
                 f"[UE] noise shape mismatch: noise {tuple(delta.shape)} vs input {tuple(x.shape)}"
             )
 
-        # Apply ROI mask to ensure noise is only in ROI regions
-        roi_mask = self._get_roi_mask(y, roi_threshold)
-        if roi_mask.ndim == 4:
-            roi_mask = roi_mask.unsqueeze(1)  # [B, 1, D, H, W]
-        delta = delta * roi_mask
-
-        # select surrogate and optimizer
         if not trainer.surrogates:
             raise RuntimeError("[UE] No surrogate bound.")
         name, s_model = next(iter(trainer.surrogates.items()))
@@ -333,7 +240,6 @@ class UNetROINoiseUE:
         for p in s_model.parameters():
             p.requires_grad = True
 
-        # forward with ROI-masked noisy input
         noisy = (x + delta).clamp(0.0, 1.0)
         xn = noisy.clone()
         self._norm_inplace(xn, mean, std)
@@ -353,15 +259,19 @@ class UNetROINoiseUE:
             "loss": loss_val,
         }
 
-    # ---------------- N-step: Update ROI noise via UNet generator ---------------- #
+    # ---------------- N-step: Update noise via UNet (ROI only) ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        Update ROI noise generator to minimize segmentation loss.
+        Update noise using trainable U-Net, but only within ROI regions.
 
-        Key difference from PGD:
-          - PGD iterates multiple steps per batch, updating only delta
-          - UNet generator updates its parameters once per batch
-          - Noise is only applied to ROI regions (label > threshold)
+        Process:
+          1. Forward image through noise U-Net to get noise prediction
+          2. Create ROI mask from label (ROI = label > 0)
+          3. Apply ROI mask to noise (background noise = 0)
+          4. Add masked noise to image, pass through frozen surrogate
+          5. Compute segmentation loss
+          6. Backprop to update noise U-Net parameters
+          7. Store masked noise to backend
         """
         cfg = trainer.config
         device = trainer.device
@@ -369,7 +279,6 @@ class UNetROINoiseUE:
         if nb is None:
             raise RuntimeError("[UE] noise_backend is required.")
 
-        # -------- data & config --------
         x = batch["image"].to(device).float()
         y = batch["label"]
         y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(
@@ -378,23 +287,20 @@ class UNetROINoiseUE:
         keys = batch["key"]
         keys_list: List[int] = list(keys)
 
-        N, C_in = x.shape[:2]
+        B, C_in = x.shape[:2]
+        spatial_dims = len(x.shape) - 2
+
+        self._init_noise_unet(trainer, C_in, spatial_dims)
 
         algo = require_config(cfg, "ue.algorithm")
         params = require_config(algo, "params")
         eps = float(get_config(params, "epsilon", 8 / 255.0))
-        roi_threshold = int(get_config(params, "roi_threshold", 0))
+        num_steps = int(get_config(params, "noise_step", 1))
 
-        # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
         seg_loss_fn = self._get_seg_loss(trainer)
-        noise_gen = self._get_noise_generator(trainer)
-        noise_opt = self._noise_opt
-
-        # -------- Generate ROI mask --------
-        roi_mask = self._get_roi_mask(y, roi_threshold)  # [B, D, H, W]
 
         # -------- freeze surrogate --------
         if not trainer.surrogates:
@@ -404,59 +310,52 @@ class UNetROINoiseUE:
         for p in s_model.parameters():
             p.requires_grad = False
 
-        # -------- Get current noise from backend --------
-        delta = nb.batch_noise(keys_list).to(device).float()
-        if delta.shape[:2] != x.shape[:2]:
-            raise RuntimeError(
-                f"[UE] noise shape mismatch: noise {tuple(delta.shape)} vs input {tuple(x.shape)}"
-            )
-        delta = delta.clamp(-eps, eps)
-        roi_mask_expanded = roi_mask.unsqueeze(1) if roi_mask.ndim == 4 else roi_mask
-        delta = delta * roi_mask_expanded.float()
+        # -------- create ROI mask --------
+        # ROI = label > 0, mask shape: [B, 1, D, H, W]
+        roi_mask = self._create_roi_mask(y, x.shape[2:])
+        # Expand to match input channels: [B, C_in, D, H, W]
+        roi_mask = roi_mask.expand(-1, C_in, -1, -1, -1).to(device)
 
-        # -------- Single forward-backward pass (efficient) --------
-        noise_gen.train()
+        # -------- train noise UNet --------
+        self._noise_unet.train()
+        last_loss = torch.tensor(0.0, device=device)
 
-        # UNet generates updated ROI-masked noise
-        delta_new = noise_gen(x, delta, roi_mask)
+        for _ in range(max(1, num_steps)):
+            # Generate noise from UNet
+            delta_raw = self._noise_unet(x)  # [B, C_in, ...]
 
-        # Apply noise to image
-        perturb_img = (x + delta_new).clamp(0.0, 1.0)
-        xn = perturb_img.clone()
-        self._norm_inplace(xn, mean, std)
+            # Apply ROI mask: only keep noise in ROI regions
+            delta = delta_raw * roi_mask  # background noise = 0
 
-        out = s_model(xn)
-        logits = out[0] if isinstance(out, (tuple, list)) else out
+            # Create perturbed image
+            perturb_img = (x + delta).clamp(0.0, 1.0)
+            xn = perturb_img.clone()
+            self._norm_inplace(xn, mean, std)
 
-        # Minimize segmentation loss
-        loss = seg_loss_fn(logits, y.unsqueeze(1))
+            # Forward through surrogate
+            out = s_model(xn)
+            logits = out[0] if isinstance(out, (tuple, list)) else out
 
-        # Update generator (single step per batch)
-        noise_opt.zero_grad(set_to_none=True)
-        loss.backward()
-        noise_opt.step()
+            # Compute loss
+            loss = seg_loss_fn(logits, y.unsqueeze(1))
+            last_loss = loss.detach()
 
-        # -------- Write back ROI-masked noise to backend for export --------
+            # Backprop to update noise UNet
+            self._opt_noise_unet.zero_grad(set_to_none=True)
+            loss.backward()
+            self._opt_noise_unet.step()
+
+        # -------- Store masked noise to backend --------
+        self._noise_unet.eval()
         with torch.no_grad():
-            noise_gen.eval()
-            delta_final = noise_gen(x, delta, roi_mask)
-            delta_final = delta_final.clamp(-eps, eps)
-            nb.commit_batch(keys_list, delta_final.detach().cpu())
+            final_delta_raw = self._noise_unet(x)
+            final_delta = final_delta_raw * roi_mask  # Apply ROI mask
+            final_delta = final_delta.clamp(-eps, eps)
 
-        # Compute stats only on ROI regions
-        if roi_mask.ndim == 4:
-            roi_mask_expanded = roi_mask.unsqueeze(1)
-        else:
-            roi_mask_expanded = roi_mask
-        roi_delta = delta_final * roi_mask_expanded.float()
-        roi_pixels = roi_mask_expanded.float().sum()
-        if roi_pixels > 0:
-            delta_linf = float(roi_delta.abs().max().cpu())
-        else:
-            delta_linf = 0.0
+        nb.commit_batch(keys_list, final_delta.detach().cpu())
 
+        delta_linf = float(final_delta.detach().abs().max().cpu())
         return {
-            "noise_loss": float(loss.detach().cpu()),
+            "noise_loss": float(last_loss.cpu()),
             "delta_linf": delta_linf,
-            "roi_coverage": float(roi_pixels.cpu()) / max(1, roi_mask_expanded.numel()),
         }

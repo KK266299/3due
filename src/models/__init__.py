@@ -27,6 +27,9 @@ from .efficientnet import (
 )
 
 from .unet import UNet
+from .unet_plusplus import UNetPlusPlus
+from .attention_unet import AttentionUNet
+from .trans_unet import TransUNet
 
 # Register models with the unified registry
 register_model('resnet18')(ResNet18)
@@ -65,5 +68,5 @@ __all__ = [
     "EfficientNet","EfficientNetB0", "EfficientNetB1", "EfficientNetB2", "EfficientNetB3",
     "EfficientNetB4", "EfficientNetB5", "EfficientNetB6", "EfficientNetB7",
     "EfficientNetV2S", "EfficientNetV2M", "EfficientNetV2L",
-    "UNet",
+    "UNet", "UNetPlusPlus", "AttentionUNet", "TransUNet",
 ]

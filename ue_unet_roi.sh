@@ -11,23 +11,20 @@
 # ============================================================================
 
 python ue_generate.py \
-  dataset=brats19 \
-  task.run_name=unet_roi_noise_exp \
-  method=unet_roi_noise \
-  task=brats19_ue \
-  training.epochs=100 \
-  training.batch_size=8 \
-  training.gpu_ids=[1] \
-  ue.key.type=samplewise \
-  ue.key.from=field \
-  ue.key.field=case_id \
-  ue.algorithm.params.epsilon=0.0313725 \
-  ue.algorithm.params.step_size=0.0039215 \
-  ue.algorithm.params.surrogate_step=2 \
-  ue.algorithm.params.roi_threshold=0 \
-  ue.noise_generator.optimizer.lr=1e-4 \
-  ue.io.save_from_epoch=0 \
-  ue.io.save_every=10
+    dataset=brats19 \
+    task.run_name=unet_roi_noise_4_255 \
+    method=unet_roi_noise \
+    task=brats19_ue \
+    training.epochs=100 \
+    ue.key.type=samplewise \
+    ue.key.from=field \
+    ue.key.field=case_id \
+    training.batch_size=4 \
+    training.gpu_ids=[2] \
+    ue.algorithm.params.epsilon=0.0156863 \
+    ue.algorithm.params.surrogate_step=10 \
+    ue.io.save_from_epoch=50 \
+    ue.io.save_every=10
 
 # python main.py \
 #   method=poison_files \

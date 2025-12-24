@@ -1,0 +1,5 @@
+defaults:
+  - _base
+name: unet_plusplus
+num_classes: 1
+deep_supervision: false

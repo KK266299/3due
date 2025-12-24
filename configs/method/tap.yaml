@@ -1,11 +1,21 @@
 # @package _global_
+# TAP: Adversarial Examples Make Strong Poisons
+# 适配 3D 医学图像分割任务 (BraTS19)
+#
+# 核心区别（vs min-min）：
+#   - min-min: PGD descent (梯度下降，最小化 loss)
+#   - TAP: PGD ascent (梯度上升，最大化 loss)
+#
+# 支持两种模式：
+#   1. 预训练模式 (有 weights_path): 加载预训练权重，冻结模型，不训练 surrogate
+#   2. 在线训练模式 (无 weights_path): 边训练 surrogate 边生成噪声
 
 training:
-  model_save_start: 9999 # no need to save for minmin
+  model_save_start: 9999  # no need to save surrogate model
   model_save_freq: 10
   epochs: 3
   batch_size: 64
-  num_workers: 4
+  num_workers: 0
   sampler:
     name: pk
     p: 32  # every batch 32 different patients
@@ -14,26 +24,27 @@ training:
     poison:
       enabled: false
     transforms:
-      pixel_aug: false
-      forbid_geom_aug: true
+      geom_aug: false
+      intensity_aug: false
       normalize: false
 
 ue:
-  base_task_builder: mimic_cxr
   store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
-  reid_margin: 0.2      # triplet loss margin
+
   key:
-    type: classwise
+    type: samplewise
     from: field
-    field: meta.subject_id
+    field: case_id
+
   algorithm:
     kind: training_based
     name: tap
     params:
-      epsilon: 0.0313725        # 8/255
-      noise_step: 10             # N-step 内层 PGD 步数
-      step_size: 0.0039215      # 1/255
-      surrogate_step: 20             # S-step 每 epoch 多少个 batch
+      epsilon: 0.0313725        # 8/255 - L_inf bound
+      noise_step: 10            # N-step 内层 PGD 步数
+      step_size: 0.0039215      # 1/255 - PGD step size
+      surrogate_step: 20        # S-step 每 epoch 多少个 batch 训练 surrogate
+
   eot:
     enabled: false
     n: 3                        # 2~4 起步
@@ -42,28 +53,27 @@ ue:
     same_on_batch: false        # true = 整个 batch 用同一随机参数
 
   surrogates:
-    s_reid:
-      reid: true
-      pretrained: true
-      drop_rate: 0.2
-      backbone: efficientnet_b2
-      embed_dim: 128
-      optimizer: { name: adam, lr: 1e-5, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
-      weights_path: /home/dengzhipeng/data/project/reid_ue/outputs/mimic_cxr_reid/clean/20250916_143337/checkpoints/checkpoints/best_model.pth
-
-    s_cls:
-      pretrained: true
-      backbone: resnet50
-      drop_rate: 0.2
-      num_classes: 13         
-      optimizer: { name: adam, lr: 1e-5, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+      # 预训练权重路径（可选）
+      # 如果提供，则使用预训练模式：加载权重，冻结模型，不训练
+      # 如果不提供或为 null，则使用在线训练模式
+      weights_path: /home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251213_211122/checkpoints/checkpoints/best_model.pth
 
   io:
     enabled: true
     include_manifest: true
-    strategy: shards
-    shard_size: 2048
+    strategy: files
     dtype: int8
     save_from_epoch: 30
-    save_every: 10  
-
+    save_every: 10

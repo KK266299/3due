@@ -1,0 +1,19 @@
+python ue_generate.py \
+  dataset=brats19 \
+  task.run_name=sep_noise \
+  method=sep \
+  task=brats19_ue \
+  training.epochs=1 \
+  training.batch_size=8 \
+  training.gpu_ids=[0] \
+  ue.key.type=samplewise \
+  ue.key.from=field \
+  ue.key.field=case_id \
+  ue.algorithm.params.epsilon=0.0313725 \
+  ue.algorithm.params.step_size=0.0039215 \
+  ue.algorithm.params.surrogate_step=1 \
+  ue.algorithm.params.noise_step=10 \
+  ue.algorithm.params.svrg_M=5 \
+  ue.io.save_from_epoch=0 \
+  ue.io.save_every=1 \
+  'ue.sep.ckpt_paths=[/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_9.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_19.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_29.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_39.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_49.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_59.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_69.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_79.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_89.pth,/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/checkpoint_epoch_99.pth]'
