@@ -1,0 +1,119 @@
+# @package _global_
+# Inter-Slice Consistency Attack Configuration
+#
+# This method extends UNet Noise with inter-slice consistency constraints,
+# specifically designed for 3D medical imaging data (e.g., CT, MRI).
+#
+# Key features:
+#   - Inter-slice consistency loss: ensures coherent noise across depth
+#   - ROI-aware: optional focusing on regions of interest
+#   - Gradient-aware: adapts noise smoothness based on image gradients
+#
+# Maximum noise bound: 8/255 ≈ 0.0313725 (L∞ constraint)
+
+training:
+  model_save_start: 9999  # no need to save model for noise generation
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 4
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4   # every batch 4 different patients (smaller for 3D data)
+    k: 2   # each patient 2 images
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: unet_noise_slice
+    params:
+      # L∞ noise bound
+      epsilon: 0.0313725          # 8/255
+
+      # Training iterations
+      noise_step: 1               # UNet training iterations per batch
+      surrogate_step: 2           # S-step: batches per epoch for surrogate training
+
+      # Inter-slice consistency parameters
+      lambda_consistency: 0.5     # Weight for consistency loss (recommended: 0.1 ~ 1.0)
+
+      # Consistency mode: controls how slice consistency affects noise
+      #   - "smooth":  Minimize slice differences (encourage similar noise across slices)
+      #   - "disrupt": Maximize slice differences (encourage different noise across slices)
+      #   - "periodic": Encourage periodic noise pattern along depth axis
+      consistency_mode: "disrupt"
+
+      # Consistency type: how to compute slice differences
+      #   - "l2": Simple L2 distance
+      #   - "gradient_aware": Weight by inverse image gradient
+      consistency_type: "l2"
+
+      # Periodic mode settings
+      periodic_wavelength: 4      # Wavelength in slices for periodic mode
+
+      # ROI-aware settings
+      roi_aware: true             # Enable ROI-aware noise (focus on foreground)
+      bidirectional: true         # Use bidirectional slice consistency
+
+      # Legacy (unused, kept for compatibility)
+      step_size: 5e-3
+
+  # Noise UNet configuration
+  noise_unet:
+    # Smaller UNet for noise generation (lighter than surrogate)
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    # Optimizer for noise UNet
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  # Surrogate model for computing segmentation loss
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 0
+    save_every: 10

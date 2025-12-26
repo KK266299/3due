@@ -1,0 +1,93 @@
+# @package _global_
+# UNet Boundary-Aware Noise Generator Configuration
+#
+# Similar to unet_noise, but weights noise based on boundary proximity.
+# Boundary regions (from GT) receive higher noise weight than interior regions.
+# Background has no noise.
+#
+# Key parameters:
+#   - boundary_width: Morphological kernel radius for boundary extraction
+#   - interior_weight: Noise weight for interior (non-boundary) foreground
+#   - boundary_weight: Noise weight for boundary regions
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: unet_boundary_noise
+    params:
+      epsilon: 0.0313725        # 8/255 L_inf bound
+      noise_step: 1             # UNet training iterations per batch
+      step_size: 5e-3           # (unused, kept for compatibility)
+      surrogate_step: 2         # S-step: batches per epoch
+      # Boundary-specific parameters
+      boundary_width: 3         # Morphological kernel radius (voxels)
+      interior_weight: 0.3      # Noise weight for interior regions [0, 1]
+      boundary_weight: 1.0      # Noise weight for boundary regions [0, 1]
+
+  # Noise UNet configuration
+  noise_unet:
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10

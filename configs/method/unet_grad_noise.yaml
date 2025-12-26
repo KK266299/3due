@@ -1,0 +1,96 @@
+# @package _global_
+# Gradient-Guided UNet Noise Generator Configuration
+#
+# 核心思想：在ROI区域内，根据图像的梯度引导噪声强度
+#   - 图像梯度大（边缘、纹理变化）→ 噪声强
+#   - 图像梯度小（平滑区域）→ 噪声弱
+#   - 噪声连续分布，最大 8/255
+#
+# 使用方法:
+#   python ue_generate.py \
+#     dataset=brats19 \
+#     task.run_name=unet_grad_noise_exp1 \
+#     method=unet_grad_noise \
+#     task=brats19_ue \
+#     training.epochs=100
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: unet_grad_noise
+    params:
+      # L_inf noise bound (8/255)
+      epsilon: 0.0313725
+      # UNet training iterations per batch
+      noise_step: 1
+      # Surrogate training batches per epoch
+      surrogate_step: 10
+
+  # Noise UNet configuration
+  noise_unet:
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  # Surrogate model configuration
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10
