@@ -2,7 +2,7 @@ python main.py \
   method=poison_files \
   model.pretrained=false \
   dataset=brats19 \
-  task.run_name=victim_unet_boundary_6 \
+  task.run_name=victim_unet_slice_in_out_4_255 \
   model=unet \
   model.name=unet \
   task=brats19_seg \
@@ -10,19 +10,14 @@ python main.py \
   training.optimizer=adam \
   training.optimizers.adam.lr=5e-4 \
   training.gpu_ids=[4] \
-  training.batch_size=4 \
-  training.eval_batch_size=4 \
+  training.batch_size=8 \
+  training.eval_batch_size=8 \
   training.data.poison.perturb_type=samplewise \
   training.data.poison.key.type=samplewise \
   training.data.poison.key.from=field \
   training.data.poison.key.field=case_id \
   training.data.poison.source.type=manifest \
-  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/unet_noise_boundary_0_6/20251225_142346/noise/epoch_0099/manifest.json
-
-
-
-# python main.py \
-#   model.pretrained=true \
+  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/unet_slice_in_out_4_255/20260103_093048/noise/epoch_0099/manifest.json
 #   dataset=brats19 \
 #   task.run_name=clean \
 #   model=unet \

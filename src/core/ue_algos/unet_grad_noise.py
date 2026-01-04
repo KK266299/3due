@@ -8,12 +8,17 @@ Gradient-Guided UNet Noise Generator for 3D Medical Image Segmentation.
   - 图像梯度小的区域（平滑区域）噪声弱
   - 噪声连续分布，最大幅度为 8/255
 
+数据流（避免噪声被梯度权重压缩）：
+  1. raw = UNet(x)                         # 原始输出，无约束
+  2. weighted = raw * grad_weight * roi_mask  # 梯度加权
+  3. delta = tanh(weighted) * ε            # 最后才约束到[-ε, ε]
+
 Training loop:
   1. Surrogate-step: 与MinMin相同，在加噪图像上训练代理模型
   2. Noise-step:
-     - UNet生成基础噪声
+     - UNet生成原始输出（不加tanh）
      - 计算图像的3D梯度作为权重
-     - 噪声 = 基础噪声 * 梯度权重 * ROI掩码
+     - 梯度加权后才做tanh约束
      - 反向传播更新UNet
 """
 from __future__ import annotations
@@ -55,16 +60,22 @@ def _build_noise_unet(cfg: DictConfig, in_channels: int, spatial_dims: int = 3) 
 
 
 class NoiseUNetWrapper(nn.Module):
-    """Wrapper for noise U-Net that applies tanh and scales output to [-eps, eps]."""
+    """
+    Wrapper for noise U-Net.
+
+    注意：这里不应用tanh约束，输出原始值。
+    tanh约束在梯度加权之后进行，避免噪声被压缩。
+    """
     def __init__(self, unet: nn.Module, epsilon: float = 8/255):
         super().__init__()
         self.unet = unet
         self.epsilon = epsilon
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 输出原始值，不做tanh约束
+        # tanh在noise_step_batch中梯度加权之后进行
         raw_noise = self.unet(x)
-        noise = torch.tanh(raw_noise) * self.epsilon
-        return noise
+        return raw_noise
 
 
 class GradientComputer3D:
@@ -308,7 +319,10 @@ class UNetGradNoiseUE:
         """
         使用UNet生成噪声，根据图像梯度加权。
 
-        噪声 = UNet输出 * 图像梯度权重 * ROI掩码
+        数据流（避免噪声被压缩）：
+          1. raw = UNet(x)                    # 原始输出，无约束
+          2. weighted = raw * grad_weight * roi_mask  # 梯度加权
+          3. delta = tanh(weighted) * ε       # 最后才约束到[-ε, ε]
         """
         cfg = trainer.config
         device = trainer.device
@@ -360,11 +374,14 @@ class UNetGradNoiseUE:
         last_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
-            # UNet生成基础噪声 [-eps, eps]
-            delta_raw = self._noise_unet(x)
+            # 1. UNet生成原始输出（无约束）
+            raw = self._noise_unet(x)
 
-            # 噪声 = 基础噪声 * 梯度权重 * ROI掩码
-            delta = delta_raw * gradient_weight * roi_mask
+            # 2. 梯度加权 + ROI掩码
+            weighted = raw * gradient_weight * roi_mask
+
+            # 3. 最后才做tanh约束到[-ε, ε]，避免噪声被压缩
+            delta = torch.tanh(weighted) * eps
 
             perturb_img = (x + delta).clamp(0.0, 1.0)
             xn = perturb_img.clone()
@@ -383,9 +400,10 @@ class UNetGradNoiseUE:
         # 存储最终噪声
         self._noise_unet.eval()
         with torch.no_grad():
-            final_delta_raw = self._noise_unet(x)
-            final_delta = final_delta_raw * gradient_weight * roi_mask
-            final_delta = final_delta.clamp(-eps, eps)
+            raw = self._noise_unet(x)
+            weighted = raw * gradient_weight * roi_mask
+            final_delta = torch.tanh(weighted) * eps
+            final_delta = final_delta.clamp(-eps, eps)  # 额外保险
 
         nb.commit_batch(keys_list, final_delta.detach().cpu())
 

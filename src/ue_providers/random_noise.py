@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union
 import torch
 import numpy as np
 import hashlib
@@ -10,6 +10,8 @@ from ..registry import register_provider
 class RandomNoiseProvider:
     """
     RandomNoiseProvider — training-free, key-deterministic random perturbations.
+
+    Supports both 2D (C, H, W) and 3D (C, D, H, W) image sizes.
 
     Supported modes (mode):
       - "uniform":   U(-1, 1) then L∞ normalization -> [-eps, eps]
@@ -24,8 +26,9 @@ class RandomNoiseProvider:
     ----------
     epsilon : float
         L∞ bound (in pre-normalized space), e.g., 8/255.
-    image_size : (C, H, W)
-        Input channels, height, width (before Normalize).
+    image_size : (C, H, W) or (C, D, H, W)
+        Input shape. If 3 elements: 2D mode (C, H, W).
+        If 4 elements: 3D mode (C, D, H, W).
     seed : int
         Global seed; local seed is derived from (seed, key, key_type).
     mode : str
@@ -41,7 +44,7 @@ class RandomNoiseProvider:
 
     Methods
     ----
-    get_noise(key, key_type) -> FloatTensor [C,H,W] ∈ [-eps, +eps] (CPU)
+    get_noise(key, key_type) -> FloatTensor [C,H,W] or [C,D,H,W] ∈ [-eps, +eps] (CPU)
         key_type ∈ {"classwise", "samplewise"}
     """
 
@@ -49,7 +52,7 @@ class RandomNoiseProvider:
         self,
         *,
         epsilon: float,
-        image_size: Tuple[int, int, int],
+        image_size: Union[Tuple[int, int, int], Tuple[int, int, int, int]],
         seed: int = 0,
         mode: str = "uniform",
         params: Optional[Dict[str, Any]] = None,
@@ -58,7 +61,21 @@ class RandomNoiseProvider:
         dtype: torch.dtype = torch.float32,
     ):
         self.eps = float(epsilon)
-        self.C, self.H, self.W = map(int, image_size)
+
+        # Support both 2D (C, H, W) and 3D (C, D, H, W)
+        size_tuple = tuple(map(int, image_size))
+        if len(size_tuple) == 3:
+            self.C, self.H, self.W = size_tuple
+            self.D = None
+            self.is_3d = False
+        elif len(size_tuple) == 4:
+            self.C, self.D, self.H, self.W = size_tuple
+            self.is_3d = True
+        else:
+            raise ValueError(
+                f"[RandomNoise] image_size must be (C,H,W) or (C,D,H,W), got {size_tuple}"
+            )
+
         self.seed = int(seed)
         self.mode = str(mode).lower()
         self.params = params or {}
@@ -84,15 +101,28 @@ class RandomNoiseProvider:
         else:
             lseed = (self.seed * 2654435761 + kid) & 0x7FFFFFFF
 
-        if self.tied_channels:
-            one = self._synthesize_one(lseed)  # [1,H,W]
-            noise = one.expand(self.C, self.H, self.W).contiguous()
+        if self.is_3d:
+            # 3D mode: generate [C, D, H, W] noise
+            if self.tied_channels:
+                one = self._synthesize_one_3d(lseed)  # [1, D, H, W]
+                noise = one.expand(self.C, self.D, self.H, self.W).contiguous()
+            else:
+                noise_list = []
+                for c in range(self.C):
+                    lseed_c = (lseed + (c + 1) * 104729) & 0x7FFFFFFF
+                    noise_list.append(self._synthesize_one_3d(lseed_c))  # [1, D, H, W]
+                noise = torch.cat(noise_list, dim=0)  # [C, D, H, W]
         else:
-            noise_list = []
-            for c in range(self.C):
-                lseed_c = (lseed + (c + 1) * 104729) & 0x7FFFFFFF
-                noise_list.append(self._synthesize_one(lseed_c))  # [1,H,W]
-            noise = torch.cat(noise_list, dim=0)  # [C,H,W]
+            # 2D mode: generate [C, H, W] noise
+            if self.tied_channels:
+                one = self._synthesize_one_2d(lseed)  # [1, H, W]
+                noise = one.expand(self.C, self.H, self.W).contiguous()
+            else:
+                noise_list = []
+                for c in range(self.C):
+                    lseed_c = (lseed + (c + 1) * 104729) & 0x7FFFFFFF
+                    noise_list.append(self._synthesize_one_2d(lseed_c))  # [1, H, W]
+                noise = torch.cat(noise_list, dim=0)  # [C, H, W]
 
         noise = noise.clamp(min=-self.eps, max=self.eps).to(self.out_dtype)
         return noise.cpu()
@@ -117,60 +147,87 @@ class RandomNoiseProvider:
             return int(h[:16], 16)
 
     @torch.no_grad()
-    def _synthesize_one(self, local_seed: int) -> torch.Tensor:
+    def _synthesize_one_2d(self, local_seed: int) -> torch.Tensor:
         """
-        Generate one-channel noise [1,H,W], deterministic with respect to local_seed.
+        Generate one-channel 2D noise [1, H, W], deterministic with respect to local_seed.
         All modes will finally normalize/clip to [-eps, eps].
         """
         gen = torch.Generator(device="cpu")
         gen.manual_seed(int(local_seed))
 
         d = self.device if self.device is not None else "cpu"
+        shape = (1, self.H, self.W)
 
+        return self._apply_noise_mode(gen, d, shape)
+
+    @torch.no_grad()
+    def _synthesize_one_3d(self, local_seed: int) -> torch.Tensor:
+        """
+        Generate one-channel 3D noise [1, D, H, W], deterministic with respect to local_seed.
+        All modes will finally normalize/clip to [-eps, eps].
+        """
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(int(local_seed))
+
+        d = self.device if self.device is not None else "cpu"
+        shape = (1, self.D, self.H, self.W)
+
+        return self._apply_noise_mode(gen, d, shape)
+
+    @torch.no_grad()
+    def _apply_noise_mode(
+        self,
+        gen: torch.Generator,
+        device,
+        shape: Tuple[int, ...]
+    ) -> torch.Tensor:
+        """
+        Apply noise generation based on mode. Works for both 2D and 3D shapes.
+        """
         if self.mode == "uniform":
-            arr = torch.empty((1, self.H, self.W), dtype=torch.float32, device="cpu")
+            arr = torch.empty(shape, dtype=torch.float32, device="cpu")
             arr.uniform_(-1.0, 1.0, generator=gen)
-            arr = arr.to(d)
+            arr = arr.to(device)
             # directly scale to [-eps, eps]
             arr = arr * self.eps
             return arr
 
         elif self.mode == "gaussian":
-            arr = torch.randn((1, self.H, self.W), generator=gen, dtype=torch.float32, device="cpu")
-            arr = arr.to(d)
+            arr = torch.randn(shape, generator=gen, dtype=torch.float32, device="cpu")
+            arr = arr.to(device)
             # L∞ normalization to avoid Gaussian tail exceeding eps
-            max_abs = arr.abs().amax(dim=(-1, -2), keepdim=True) + 1e-12
+            max_abs = arr.abs().amax() + 1e-12
             arr = arr / max_abs * self.eps
             return arr
 
         elif self.mode == "rademacher":
             # with 0.5 probability, set to +eps or -eps
-            bern = torch.rand((1, self.H, self.W), generator=gen, dtype=torch.float32, device="cpu")
+            bern = torch.rand(shape, generator=gen, dtype=torch.float32, device="cpu")
             sign = torch.where(bern < 0.5, -1.0, 1.0)
-            arr = (sign * self.eps).to(d)
+            arr = (sign * self.eps).to(device)
             return arr
 
         elif self.mode == "saltpepper":
             # sparse pulse noise: set to ±eps with probability p, others are 0
             p = float(self.params.get("p", 0.01))  # 单像素被扰动的概率
             pepper_prob = float(self.params.get("pepper_prob", 0.5))  # 负脉冲比例
-            r = torch.rand((1, self.H, self.W), generator=gen, dtype=torch.float32, device="cpu")
-            rp = torch.rand((1, self.H, self.W), generator=gen, dtype=torch.float32, device="cpu")
+            r = torch.rand(shape, generator=gen, dtype=torch.float32, device="cpu")
+            rp = torch.rand(shape, generator=gen, dtype=torch.float32, device="cpu")
 
-            zeros = torch.zeros((1, self.H, self.W), dtype=torch.float32)
-            pos = torch.full((1, self.H, self.W), self.eps, dtype=torch.float32)
-            neg = torch.full((1, self.H, self.W), -self.eps, dtype=torch.float32)
+            zeros = torch.zeros(shape, dtype=torch.float32)
+            pos = torch.full(shape, self.eps, dtype=torch.float32)
+            neg = torch.full(shape, -self.eps, dtype=torch.float32)
 
             arr = torch.where(r > p, zeros, torch.where(rp < pepper_prob, neg, pos))
-            arr = arr.to(d)
+            arr = arr.to(device)
             return arr
 
         elif self.mode == "sparse":
             # sparse additive: sample U(-1,1) with probability q, others are 0, then normalize/clip to eps
             q = float(self.params.get("q", 0.05))
-            mask = (torch.rand((1, self.H, self.W), generator=gen, dtype=torch.float32, device="cpu") < q).float()
-            vals = torch.empty((1, self.H, self.W), dtype=torch.float32, device="cpu").uniform_(-1.0, 1.0, generator=gen)
-            arr = (mask * vals).to(d) * self.eps
+            mask = (torch.rand(shape, generator=gen, dtype=torch.float32, device="cpu") < q).float()
+            vals = torch.empty(shape, dtype=torch.float32, device="cpu").uniform_(-1.0, 1.0, generator=gen)
+            arr = (mask * vals).to(device) * self.eps
             return arr
 
         else:

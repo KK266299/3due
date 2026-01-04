@@ -1,0 +1,42 @@
+# @package _global_
+# Random Noise 3D - Training-free UE generation for 3D medical imaging
+# Supports: gaussian, uniform, rademacher, saltpepper, sparse modes
+
+training:
+  data:
+    transforms:
+      forbid_geom_aug: true
+      normalize: false  # poisoned dataset needs False on train
+    poison:
+      enabled: true
+      perturb_type: samplewise
+      apply_stage: before_normalize
+      key: { type: samplewise, from: field, field: case_id }
+      source:
+        type: files
+        manifest_path: ${ue.store_dir}/manifest.json
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  algorithm:
+    kind: training_free
+    name: random_noise
+    params:
+      epsilon: 0.0313725        # 8/255
+      image_size: [4, 160, 160, 160]  # [C, D, H, W] for BraTS19
+      seed: 42
+      mode: gaussian            # gaussian, uniform, rademacher, saltpepper, sparse
+      params: {}                # mode-specific params, e.g., {"q": 0.05} for sparse
+      tied_channels: false
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
