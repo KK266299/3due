@@ -6,14 +6,26 @@ from .brats19 import (
     BraTS19VolumeDataset,
 )
 
+from .kits19 import (
+    KiTS19VolumeDataset,
+)
+
 # Import builders so they register themselves
 from .brats19 import (
     Brats19SegBuilder,
     Brats19UEBuilder,
 )
 
+from .kits19 import (
+    Kits19SegBuilder,
+    Kits19UEBuilder,
+)
+
 # Register dataset implementations with the unified registry
 register_dataset('brats19_seg')(BraTS19VolumeDataset)
+register_dataset('kits19_seg')(KiTS19VolumeDataset)
+
 __all__ = [
     'BraTS19VolumeDataset',
+    'KiTS19VolumeDataset',
 ]

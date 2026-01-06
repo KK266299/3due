@@ -1,0 +1,5 @@
+name: kits19
+train_csv_path: /home/dengzhipeng/data/brain_processed/kits19/train.csv
+val_csv_path: /home/dengzhipeng/data/brain_processed/kits19/val.csv
+test_csv_path: /home/dengzhipeng/data/brain_processed/kits19/test.csv
+image_folder: /home/dengzhipeng/data/brain_processed/kits19/h5

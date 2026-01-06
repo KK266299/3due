@@ -1,0 +1,6 @@
+defaults:
+  - /_global_patches: kits19_ue 
+  - _base
+
+name: kits19_ue
+save_dir: /home/dengzhipeng/data/project/3d_ue/outputs/kits19_ue

@@ -1,8 +1,8 @@
 {
     "folders": [
         {
-            "name": "brats19",
-            "path": "/home/dengzhipeng/data/brain/brats19/MICCAI_BraTS_2019_Data_Training"
+            "name": "processed_kits19",
+            "path": "/home/dengzhipeng/data/brain_processed/kits19"
         },
         {
             "name": "processed_brats19",

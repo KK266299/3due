@@ -11,16 +11,16 @@
 # ============================================================================
 
 python ue_generate.py \
-    dataset=brats19 \
+    dataset=kits19 \
     task.run_name=unet_roi_noise_4_255 \
     method=unet_roi_noise \
-    task=brats19_ue \
+    task=kits19_ue \
     training.epochs=100 \
     ue.key.type=samplewise \
     ue.key.from=field \
     ue.key.field=case_id \
-    training.batch_size=4 \
-    training.gpu_ids=[2] \
+    training.batch_size=8 \
+    training.gpu_ids=[5] \
     ue.algorithm.params.epsilon=0.0156863 \
     ue.algorithm.params.surrogate_step=10 \
     ue.io.save_from_epoch=50 \

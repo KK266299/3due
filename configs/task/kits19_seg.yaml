@@ -1,0 +1,7 @@
+defaults:
+  - /_global_patches: kits19_seg 
+  - _base
+
+name: kits19_seg
+save_dir: /home/dengzhipeng/data/project/3d_ue/outputs/kits19_seg
+eval_strategy: kits19_seg
