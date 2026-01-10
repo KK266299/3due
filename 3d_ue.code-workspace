@@ -5,6 +5,10 @@
             "path": "/home/dengzhipeng/data/brain_processed/kits19"
         },
         {
+            "name": "processed_flare21",
+            "path": "/home/dengzhipeng/data/brain_processed/flare21"
+        },
+        {
             "name": "processed_brats19",
             "path": "/home/dengzhipeng/data/brain_processed/brats19"
         },
