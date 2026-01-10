@@ -71,25 +71,44 @@ class Kits19SegmentationEvaluationStrategy:
             get_not_nans=True,
         )
 
-        # Optional loss for reporting
+        # Optional loss for reporting (should align with training config)
+        # 优先使用 training.criterion 配置，如果没有则使用 evaluation.loss
+        train_crit_cfg = get_config(self.config, "training.criterion", DictConfig({}))
         loss_cfg = get_config(self.config, "evaluation.loss", DictConfig({}))
-        include_background = bool(get_config(loss_cfg, "include_background", False))
-        squared_pred = bool(get_config(loss_cfg, "squared_pred", False))
-        jaccard = bool(get_config(loss_cfg, "jaccard", False))
-        lambda_dice = float(get_config(loss_cfg, "lambda_dice", 1.0))
-        lambda_ce = float(get_config(loss_cfg, "lambda_ce", 1.0))
+        
+        include_background = bool(get_config(loss_cfg, "include_background", 
+                                             get_config(train_crit_cfg, "include_background", False)))
+        squared_pred = bool(get_config(loss_cfg, "squared_pred", 
+                                       get_config(train_crit_cfg, "squared_pred", False)))
+        jaccard = bool(get_config(loss_cfg, "jaccard", 
+                                  get_config(train_crit_cfg, "jaccard", False)))
+        lambda_dice = float(get_config(loss_cfg, "lambda_dice", 
+                                       get_config(train_crit_cfg, "lambda_dice", 1.0)))
+        lambda_ce = float(get_config(loss_cfg, "lambda_ce", 
+                                     get_config(train_crit_cfg, "lambda_ce", 1.0)))
+        # 类别权重：优先使用训练配置，用于确保评估时的损失计算与训练一致
+        ce_weight = get_config(loss_cfg, "ce_weight", 
+                              get_config(train_crit_cfg, "ce_weight", None))
+        weight = None
+        if ce_weight is not None:
+            # Note: 这里不能直接使用 device，因为此时 device 还没有传入
+            # 权重会在 evaluate_epoch 中设置到正确的 device
+            self._ce_weight_list = ce_weight
+        else:
+            self._ce_weight_list = None
 
-        # 3-class multi-class Dice+CE loss
-        self.loss_fn = DiceCELoss(
-            include_background=include_background,
-            to_onehot_y=True,
-            softmax=True,
-            squared_pred=squared_pred,
-            jaccard=jaccard,
-            lambda_dice=lambda_dice,
-            lambda_ce=lambda_ce,
-            reduction="mean",
-        )
+        # 3-class multi-class Dice+CE loss (weight will be set in evaluate_epoch)
+        self.loss_fn_config = {
+            "include_background": include_background,
+            "to_onehot_y": True,
+            "softmax": True,
+            "squared_pred": squared_pred,
+            "jaccard": jaccard,
+            "lambda_dice": lambda_dice,
+            "lambda_ce": lambda_ce,
+            "reduction": "mean",
+        }
+        self.loss_fn = None  # 将在 evaluate_epoch 中初始化
 
     # ------------------------------------------------------------------ #
     # helpers: build 2 KiTS19 regions from label id map
@@ -133,6 +152,14 @@ class Kits19SegmentationEvaluationStrategy:
     ) -> Dict[str, float]:
         model.eval()
         model.to(device)
+
+        # 初始化损失函数（确保权重在正确的 device 上）
+        if self.loss_fn is None:
+            weight = None
+            if self._ce_weight_list is not None:
+                weight = torch.tensor(self._ce_weight_list, dtype=torch.float32, device=device)
+            self.loss_fn_config["weight"] = weight
+            self.loss_fn = DiceCELoss(**self.loss_fn_config)
 
         total_loss = 0.0
         n_samples = 0
@@ -180,9 +207,22 @@ class Kits19SegmentationEvaluationStrategy:
             n_samples += bs
 
         # ---- aggregate Dice with not_nans ----
+        # MONAI DiceMetric.aggregate() returns:
+        #   dice: [N, C] where N is total number of samples, C is number of channels (2 for Kidney, Tumor)
+        #   not_nans: [N, C] indicating which samples/channels have valid values
         dice, not_nans = self.dice_metric.aggregate()
-        dice = dice.view(-1, 2)
-        not_nans = not_nans.view(-1, 2)
+        # Ensure correct shape: [N, 2] for (Kidney, Tumor)
+        if dice.ndim == 1:
+            # If single sample, reshape to [1, 2]
+            dice = dice.view(1, -1)
+            not_nans = not_nans.view(1, -1)
+        elif dice.ndim == 2:
+            # Already in correct shape [N, 2]
+            pass
+        else:
+            # Flatten to [N, 2]
+            dice = dice.view(-1, 2)
+            not_nans = not_nans.view(-1, 2)
 
         region_dice = []
         region_has_samples = []
@@ -210,9 +250,16 @@ class Kits19SegmentationEvaluationStrategy:
             avg_dc = 0.0
 
         # ---- aggregate IoU with not_nans ----
+        # Similar shape handling as Dice
         miou_vals, miou_not_nans = self.miou_metric.aggregate()
-        miou_vals = miou_vals.view(-1, 2)
-        miou_not_nans = miou_not_nans.view(-1, 2)
+        if miou_vals.ndim == 1:
+            miou_vals = miou_vals.view(1, -1)
+            miou_not_nans = miou_not_nans.view(1, -1)
+        elif miou_vals.ndim == 2:
+            pass
+        else:
+            miou_vals = miou_vals.view(-1, 2)
+            miou_not_nans = miou_not_nans.view(-1, 2)
 
         region_iou = []
         region_has_iou_samples = []

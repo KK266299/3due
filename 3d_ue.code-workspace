@@ -9,6 +9,10 @@
             "path": "/home/dengzhipeng/data/brain_processed/brats19"
         },
         {
+            "name": "kits19_raw",
+            "path": "/home/dengzhipeng/data/kits19"
+        },
+        {
             "name": "3d_ue",
             "path": "/home/dengzhipeng/project/3due"
         },

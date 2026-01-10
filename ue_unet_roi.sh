@@ -20,7 +20,7 @@ python ue_generate.py \
     ue.key.from=field \
     ue.key.field=case_id \
     training.batch_size=8 \
-    training.gpu_ids=[5] \
+    training.gpu_ids=[0] \
     ue.algorithm.params.epsilon=0.0156863 \
     ue.algorithm.params.surrogate_step=10 \
     ue.io.save_from_epoch=50 \

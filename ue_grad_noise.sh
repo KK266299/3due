@@ -1,16 +1,41 @@
 python ue_generate.py \
-    dataset=brats19 \
+    dataset=kits19 \
     task.run_name=unet_grad_noise_change_4_255 \
     method=unet_grad_noise \
-    task=brats19_ue \
+    task=kits19_ue \
     training.epochs=100 \
     training.batch_size=8 \
     training.eval_batch_size=8 \
     training.gpu_ids=[3] \
     ue.key.type=samplewise \
+    ue.surrogates.s_seg.in_channels=1 \
+    ue.surrogates.s_seg.num_classes=3 \
     ue.key.from=field \
     ue.key.field=case_id \
     ue.algorithm.params.epsilon=0.0156863 \
     ue.algorithm.params.surrogate_step=10 \
     ue.io.save_from_epoch=50 \
     ue.io.save_every=10
+
+python ue_generate.py \
+    dataset=kits19 \
+    task.run_name=unet_slice_in_out_4_255 \
+    method=unet_noise_slice_in_out \
+    task=kits19_ue \
+    training.epochs=100 \
+    ue.key.type=samplewise \
+    ue.key.from=field \
+    ue.key.field=case_id \
+    training.batch_size=8 \
+    training.eval_batch_size=8 \
+    training.gpu_ids=[2] \
+    ue.algorithm.params.epsilon=0.0156863 \
+    ue.io.save_from_epoch=50 \
+    ue.io.save_every=10 \
+    ue.surrogates.s_seg.in_channels=1 \
+    ue.surrogates.s_seg.num_classes=3 \
+    ue.algorithm.params.lambda_intra=0.3 \
+    ue.algorithm.params.lambda_inter=0.5 \
+    ue.algorithm.params.intra_smooth_type=tv \
+    ue.algorithm.params.surrogate_step=10 \
+    ue.algorithm.params.roi_aware=true

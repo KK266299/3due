@@ -1,18 +1,23 @@
 data:
-  # KiTS19 原始数据根目录，下面有 case_00000 ~ case_00209 子目录
-  raw_root: /home/dengzhipeng/data/kits19/data
-
+  # FLARE21 原始数据目录
+  # 图像目录：包含 train_XXX_0000.nii.gz 格式的文件
+  img_root: /home/dengzhipeng/data/brain_processed/flare21/TrainingImg
+  # 标签目录：包含 train_XXX.nii.gz 格式的文件
+  mask_root: /home/dengzhipeng/data/brain_processed/flare21/TrainingMask
   # 预处理结果保存目录
-  preproc_root: /home/dengzhipeng/data/brain_processed/kits19
+  preproc_root: /home/dengzhipeng/data/brain_processed/flare21
 
-  # 通道顺序（KiTS19 只有单通道 CT，按文件名关键词匹配）
-  modalities: [imaging]
+  # 标签重映射规则（原始→目标）
+  # FLARE21 原始标签: 0=background, 1=liver, 2=kidney, 3=spleen, 4=pancreas
+
 
   # 标签重映射规则（原始→目标），KiTS19: 0=background, 1=kidney, 2=tumor
   label_remap:
     0: 0
     1: 1
     2: 2
+    3: 3
+    4: 4
 
   # ========== 重采样配置 ==========
   # 重采样模式: "shape" (固定尺寸) 或 "spacing" (基于spacing，参考nnU-Net/motokimura)

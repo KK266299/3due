@@ -33,6 +33,7 @@ class SegTrainer(TrainerBase):
           jaccard: False
           lambda_dice: 1.0
           lambda_ce: 1.0
+          ce_weight: [0.1, 1.0, 5.0]  # 类别权重，用于处理类别不平衡
     """
 
     def __init__(self, config: DictConfig, device: torch.device, evaluation_strategy):
@@ -46,6 +47,8 @@ class SegTrainer(TrainerBase):
         self.jaccard = bool(get_config(crit_cfg, "jaccard", False))
         self.lambda_dice = float(get_config(crit_cfg, "lambda_dice", 1.0))
         self.lambda_ce = float(get_config(crit_cfg, "lambda_ce", 1.0))
+        # 类别权重，用于处理类别不平衡（如KiTS19的肿瘤类别）
+        self.ce_weight = get_config(crit_cfg, "ce_weight", None)
 
         self._loss = self._build_loss()
 
@@ -55,6 +58,11 @@ class SegTrainer(TrainerBase):
           - 输入: logits [B, C, ...]
           - 标签: y_id [B, ...]（class index），内部自动 one-hot
         """
+        # 处理类别权重
+        weight = None
+        if self.ce_weight is not None:
+            weight = torch.tensor(self.ce_weight, dtype=torch.float32, device=self.device)
+
         return DiceCELoss(
             include_background=self.include_background,
             to_onehot_y=True,          # 标签是 class index，[B,...]
@@ -64,6 +72,7 @@ class SegTrainer(TrainerBase):
             lambda_dice=self.lambda_dice,
             lambda_ce=self.lambda_ce,
             reduction="mean",
+            weight=weight,             # 类别权重（用于Dice和CE）
         )
 
     def _init_epoch_metrics(self) -> Dict[str, Any]:
