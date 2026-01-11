@@ -1,12 +1,12 @@
-# @package _global_        
+# @package _global_
 
 dataset:
   task: ue
-  
+
 model:
-  in_channels: 4          
-  num_classes: 4          
-  spatial_dims: 3         
+  in_channels: 1
+  num_classes: 5
+  spatial_dims: 3
   channels: [32, 64, 128, 256, 512]
   strides: [2, 2, 2, 2]
   num_res_units: 2
@@ -20,9 +20,10 @@ training:
       normalize: false
       geom_aug: false
       intensity_aug: false
-      image_size: [4, 160, 160, 160]
-      mean: [0.0, 0.0, 0.0, 0.0]
-      std:  [1.0, 1.0, 1.0, 1.0]
+      image_size: [1, 160, 160, 160]
+      mean: [0.0]
+      std:  [1.0]
+
 ue:
   algorithm:
     params:
