@@ -7,15 +7,15 @@
 
 ## 1. 核心设定与记号
 
-- 输入体数据：\( I \in \mathbb{R}^{B\times C\times D\times H\times W} \)
-- 标签/ROI mask：\( M \in \{0,1\}^{B\times 1\times D\times H\times W} \)，ROI = label > 0
-- 噪声生成器（例如 noise-UNet）：\( G_\theta \)
-- 噪声：\( \delta = G_\theta(I) \)
-- 代理分割模型：\( f \)
-- CAM / attention map：\( A \in \mathbb{R}^{B\times 1\times D\times H\times W} \)
-- 梯度强度图（层内结构引导）：\( G(I) \)
+- 输入体数据：$ I \in \mathbb{R}^{B\times C\times D\times H\times W} $
+- 标签/ROI mask：$ M \in \{0,1\}^{B\times 1\times D\times H\times W} $，ROI = label > 0
+- 噪声生成器（例如 noise-UNet）：$ G_\theta $
+- 噪声：$ \delta = G_\theta(I) $
+- 代理分割模型：$ f $
+- CAM / attention map：$ A \in \mathbb{R}^{B\times 1\times D\times H\times W} $
+- 梯度强度图（层内结构引导）：$ G(I) $
 
-**ROI-aware 约束**：所有噪声与损失只在 \(M\) 内计算。
+**ROI-aware 约束**：所有噪声与损失只在 $M$ 内计算。
 
 ---
 
@@ -24,20 +24,20 @@
 ### 2.1 噪声生成的权重图
 将梯度引导与 CAM 引导融合为权重图：
 
-\[
+$$
 W = \alpha\, G(I) + (1-\alpha)\, A
-\]
+$$
 
-其中 \(\alpha\in[0,1]\) 可调（建议 0.5 起步）。
+其中 $\alpha\in[0,1]$ 可调（建议 0.5 起步）。
 
 ### 2.2 ROI-aware 噪声成形
 
-\[
+$$
 \delta = \tanh\big(G_\theta(I) \odot W \odot M\big) \cdot \epsilon
-\]
+$$
 
-- \(\tanh\) 限制扰动幅度
-- \(\epsilon\) 控制 L∞ 范围
+- $\tanh$ 限制扰动幅度
+- $\epsilon$ 控制 $L_\infty$ 范围
 - ROI 外噪声为 0
 
 **解释**：噪声集中在“模型关注区域 (CAM)”并沿“图像梯度结构”变化，保证扰动具有结构性与可解释性。
@@ -47,29 +47,29 @@ W = \alpha\, G(I) + (1-\alpha)\, A
 ## 3. 层间一致性破坏（频域版本）
 
 ### 3.1 Slice 频谱
-对第 \(d\) 个 slice 的 ROI 噪声做 2D FFT：
+对第 $d$ 个 slice 的 ROI 噪声做 2D FFT：
 
-\[
+$$
 \mathcal{F}_d = |\mathrm{FFT2}(\delta_d \odot M_d)|
-\]
+$$
 
 归一化：
 
-\[
+$$
 \hat{\mathcal{F}}_d = \frac{\mathcal{F}_d}{\|\mathcal{F}_d\|_2 + \epsilon}
-\]
+$$
 
 ### 3.2 频域层间差异损失（disrupt）
 
-\[
+$$
 \mathcal{L}_{freq}^{inter} = \frac{1}{D-1}\sum_{d=1}^{D-1}\|\hat{\mathcal{F}}_d - \hat{\mathcal{F}}_{d+1}\|_2^2
-\]
+$$
 
 **目标：**最大化层间频谱差异
 
-\[
+$$
 \mathcal{L}_{total} = \mathcal{L}_{seg} - \lambda_{inter}\, \mathcal{L}_{freq}^{inter} + \lambda_{cam}\, \mathcal{L}_{cam}
-\]
+$$
 
 ---
 
@@ -77,17 +77,17 @@ W = \alpha\, G(I) + (1-\alpha)\, A
 
 ### 4.1 CAM 对齐度
 
-\[
+$$
 \text{CAMAlign} = \frac{\langle |\delta|, A \rangle}{\|\delta\|_2\,\|A\|_2}
-\]
+$$
 
 ### 4.2 CAM 损失
 
-\[
+$$
 \mathcal{L}_{cam} = 1 - \text{CAMAlign}
-\]
+$$
 
-**解释**：最小化 \(\mathcal{L}_{cam}\) 促使噪声与 CAM 区域一致。
+**解释**：最小化 $\mathcal{L}_{cam}$ 促使噪声与 CAM 区域一致。
 
 ---
 
@@ -95,15 +95,15 @@ W = \alpha\, G(I) + (1-\alpha)\, A
 
 你希望 **层间频域差异大** 且 **层内频域差异小**，可以加入层内平滑项：
 
-\[
+$$
 \mathcal{L}_{freq}^{intra} = \|\nabla_{u,v} \hat{\mathcal{F}}_d\|_2^2
-\]
+$$
 
 最终：
 
-\[
+$$
 \mathcal{L}_{total} = \mathcal{L}_{seg} - \lambda_{inter}\, \mathcal{L}_{freq}^{inter} + \lambda_{intra}\, \mathcal{L}_{freq}^{intra} + \lambda_{cam}\, \mathcal{L}_{cam}
-\]
+$$
 
 ---
 
@@ -133,30 +133,30 @@ W = \alpha\, G(I) + (1-\alpha)\, A
 ### 8.1 指标定义
 
 - **层间频谱破坏度**
-  \[
+  $$
   \text{SliceSpecDiv} = \mathcal{L}_{freq}^{inter}
-  \]
+  $$
 
 - **ROI 噪声占比**
-  \[
+  $$
   R_{ROI} = \frac{\|\delta \odot M\|_2}{\|\delta\|_2}
-  \]
+  $$
 
 - **CAM 对齐度**
-  \[
+  $$
   \text{CAMAlign} = \frac{\langle |\delta|, A \rangle}{\|\delta\|_2\,\|A\|_2}
-  \]
+  $$
 
 - **梯度一致性**
-  \[
+  $$
   \text{GradAlign} = \frac{\langle |\delta|, G(I) \rangle}{\|\delta\|_2\,\|G(I)\|_2}
-  \]
+  $$
 
 ### 8.2 与 CAM/attention map 结合的解释方式
 
-- 在 **CAM 高响应区域**统计 \(\text{SliceSpecDiv}\)，展示模型关注区域的频谱一致性被破坏。
+- 在 **CAM 高响应区域**统计 $\text{SliceSpecDiv}$，展示模型关注区域的频谱一致性被破坏。
 - 绘制 **CAM 热图 + 噪声幅度图** 的重叠可视化，展示“关注区域噪声更强”。
-- 通过 \(\text{CAMAlign}\) 与 \(\text{GradAlign}\) 同时报表，说明噪声既符合结构梯度也对齐模型关注。
+- 通过 $\text{CAMAlign}$ 与 $\text{GradAlign}$ 同时报表，说明噪声既符合结构梯度也对齐模型关注。
 
 ---
 
@@ -197,4 +197,3 @@ loss = seg_loss - lambda_inter * freq_loss + lambda_cam * cam_loss
 1. **结构化攻击**：层间频谱一致性破坏（而非随机噪声）
 2. **ROI-aware 语义扰动**：噪声集中病灶区域
 3. **解释性闭环**：CAM 对齐 + 梯度对齐 + 频谱破坏度共同解释攻击机制
-
