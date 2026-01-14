@@ -1,0 +1,106 @@
+# @package _global_
+# Coherent Spectral UE: Frequency-Domain Perturbation for 3D Medical Image Segmentation
+#
+# Usage:
+#   python ue_generate.py \
+#     dataset=brats19 \
+#     task=brats19_ue \
+#     method=unet_frequency \
+#     task.run_name=freq_enhance \
+#     ue.algorithm.params.mode=enhance \
+#     training.epochs=100 \
+#     training.batch_size=8 \
+#     training.gpu_ids=[0]
+#
+# Modes:
+#   - "enhance": z-axis lowpass -> high inter-slice coherence -> misleading 3D structure
+#   - "destroy": z-axis highpass -> low inter-slice coherence -> disrupt 3D consistency
+
+training:
+  model_save_start: 9999  # no need to save model for UE generation
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 8   # every batch 8 different patients
+    k: 1   # each patient 1 image
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: unet_frequency
+    params:
+      # === Perturbation Bound ===
+      epsilon: 0.01568627       # 4/255 = 0.01568627
+
+      # === Coherence Mode ===
+      # "enhance": z-lowpass (high coherence, misleading 3D structure)
+      # "destroy": z-highpass (low coherence, disrupt 3D consistency)
+      mode: "enhance"
+
+      # === Spectral Mask Parameters ===
+      # z-axis (inter-slice) filter
+      z_cutoff: 0.1            # Cutoff frequency for z-axis (normalized 0-0.5)
+      z_sigma: 0.05            # Gaussian sigma for soft transition
+
+      # xy-plane (intra-slice) bandpass filter
+      xy_center: 0.15          # Center frequency (mid-frequency)
+      xy_sigma: 0.1            # Bandwidth
+
+      # === ROI Mask ===
+      roi_aware: true          # Apply soft ROI mask
+      roi_sigma: 2.0           # Gaussian blur sigma for soft boundary
+
+      # === Optimization ===
+      noise_step: 10           # N-step inner loop iterations
+      lr: 0.01                 # Learning rate for spectral parameters
+      weight_decay: 0.0        # Weight decay (usually 0 for noise)
+      init_scale: 0.01         # Initial scale for learnable parameters
+
+      # === Surrogate Training ===
+      surrogate_step: 2        # S-step: batches per epoch for surrogate update
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4           # BraTS: 4 modalities
+      num_classes: 4           # BraTS: 4 classes
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 0         # Start saving from epoch 0
+    save_every: 10             # Save every 10 epochs

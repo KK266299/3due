@@ -1,0 +1,23 @@
+python ue_generate.py \
+  dataset=brats19 \
+  task=brats19_ue \
+  method=unet_frequency \
+  task.run_name=freq_enhance \
+  ue.algorithm.params.mode=enhance \
+  ue.algorithm.params.epsilon=0.01568627 \
+  ue.algorithm.params.z_cutoff=0.1 \
+  ue.algorithm.params.z_sigma=0.05 \
+  ue.algorithm.params.xy_center=0.15 \
+  ue.algorithm.params.xy_sigma=0.1 \
+  ue.algorithm.params.roi_sigma=2.0 \
+  ue.algorithm.params.lr=0.01 \
+  ue.algorithm.params.noise_step=10 \
+  ue.algorithm.params.surrogate_step=10 \
+  ue.key.type=samplewise \
+  ue.key.from=field \
+  ue.key.field=case_id \
+  ue.io.save_from_epoch=50 \
+  ue.io.save_every=10 \
+  training.epochs=100 \
+  training.batch_size=8 \
+  training.gpu_ids=[0]
