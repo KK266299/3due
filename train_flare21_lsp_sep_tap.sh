@@ -1,0 +1,79 @@
+#!/bin/bash
+# ============================================================================
+# FLARE21 LSP/SEP/TAP 噪声验证训练脚本 (UNet, 4/255)
+# ============================================================================
+
+# ============================================================================
+# LSP 噪声训练
+# ============================================================================
+python main.py \
+  method=poison_files \
+  model.pretrained=false \
+  dataset=flare21 \
+  task.run_name=victim_lsp_4_255 \
+  model=unet \
+  model.name=unet \
+  task=flare21_seg \
+  training.epochs=100 \
+  training.optimizer=adam \
+  training.optimizers.adam.lr=5e-4 \
+  training.gpu_ids=[0] \
+  training.batch_size=8 \
+  training.eval_batch_size=8 \
+  training.data.poison.enabled=true \
+  training.data.poison.perturb_type=samplewise \
+  training.data.poison.key.type=samplewise \
+  training.data.poison.key.from=field \
+  training.data.poison.key.field=case_id \
+  training.data.poison.source.type=manifest \
+  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/lsp_noise_4_255/20260112_231332/ue/lsp/manifest.json
+
+# ============================================================================
+# SEP 噪声训练
+# ============================================================================
+python main.py \
+  method=poison_files \
+  model.pretrained=false \
+  dataset=flare21 \
+  task.run_name=victim_sep_4_255 \
+  model=unet \
+  model.name=unet \
+  task=flare21_seg \
+  training.epochs=100 \
+  training.optimizer=adam \
+  training.optimizers.adam.lr=5e-4 \
+  training.gpu_ids=[0] \
+  training.batch_size=8 \
+  training.eval_batch_size=8 \
+  training.data.poison.enabled=true \
+  training.data.poison.perturb_type=samplewise \
+  training.data.poison.key.type=samplewise \
+  training.data.poison.key.from=field \
+  training.data.poison.key.field=case_id \
+  training.data.poison.source.type=manifest \
+  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/sep_noise_4_255/20260112_232738/noise/epoch_0000/manifest.json
+
+# ============================================================================
+# TAP 噪声训练
+# ============================================================================
+python main.py \
+  method=poison_files \
+  model.pretrained=false \
+  dataset=flare21 \
+  task.run_name=victim_tap_4_255 \
+  model=unet \
+  model.name=unet \
+  task=flare21_seg \
+  training.epochs=100 \
+  training.optimizer=adam \
+  training.optimizers.adam.lr=5e-4 \
+  training.gpu_ids=[0] \
+  training.batch_size=8 \
+  training.eval_batch_size=8 \
+  training.data.poison.enabled=true \
+  training.data.poison.perturb_type=samplewise \
+  training.data.poison.key.type=samplewise \
+  training.data.poison.key.from=field \
+  training.data.poison.key.field=case_id \
+  training.data.poison.source.type=manifest \
+  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/tap_noise_4_255/20260112_235547/noise/epoch_0099/manifest.json
