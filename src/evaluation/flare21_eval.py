@@ -1,53 +1,78 @@
 # file: src/evaluation/flare21_eval.py
+"""
+Evaluation for FLARE21 abdominal CT organ segmentation.
+
+Combines:
+  1. Segmentation quality metrics (Dice, IoU per organ)
+  2. Perturbation quality metrics (PSNR, SSIM via IQA-PyTorch)
+
+FLARE21 has 4 organs:
+  - Liver (1)
+  - Kidney (2)
+  - Spleen (3)
+  - Pancreas (4)
+
+Usage:
+    from src.evaluation.flare21_eval import Flare21SegmentationEvaluationStrategy
+
+    evaluator = Flare21SegmentationEvaluationStrategy(config)
+    metrics = evaluator.evaluate_epoch(model, data_loader, device)
+"""
 from __future__ import annotations
-from typing import Dict, Optional
+from typing import Dict, Optional, List
+import math
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 from torch.utils.data import DataLoader
 from omegaconf import DictConfig
+from tqdm import tqdm
+import numpy as np
 
 from monai.metrics import DiceMetric, MeanIoU
 from monai.losses import DiceCELoss
-from tqdm import tqdm
 
 from ..utils.config import get_config
 from ..registry import register_evaluation_strategy
+from ..utils.eval_metrics import (
+    compute_psnr,
+    compute_ssim,
+    HAS_PYIQA,
+)
+
+if HAS_PYIQA:
+    from ..utils.eval_metrics import IQAPyTorchMetrics
 
 
 @register_evaluation_strategy("flare21_seg")
 class Flare21SegmentationEvaluationStrategy:
     """
-    Evaluation for FLARE21 3D abdominal organ segmentation.
+    Evaluation for FLARE21 abdominal organ segmentation.
+
+    Computes:
+      - Per-organ Dice scores (Liver, Kidney, Spleen, Pancreas)
+      - Mean Dice across organs
+      - Mean IoU
+      - Validation loss
 
     Assumptions:
       - Dataset returns:
-          batch["image"] -> FloatTensor [B, C, D, H, W], C=1 for CT
-          batch["label"] -> LongTensor  [B, D, H, W] with {0:background, 1:liver, 2:kidney, 3:spleen, 4:pancreas}
+          batch["image"] -> FloatTensor [B, 1, D, H, W] (CT, single channel)
+          batch["label"] -> LongTensor  [B, D, H, W] with {0:bg, 1:liver, 2:kidney, 3:spleen, 4:pancreas}
 
       - Model outputs:
-          logits        -> FloatTensor [B, 5, D, H, W] (multi-class)
-
-      - Metrics computed on 4 FLARE21 organs:
-          Liver:    label == 1
-          Kidney:   label == 2
-          Spleen:   label == 3
-          Pancreas: label == 4
+          logits -> FloatTensor [B, 5, D, H, W] (5-class: bg + 4 organs)
 
     Config keys (optional):
-
       evaluation.seg:
-        class_indices:
-          bg:       0
-          liver:    1
-          kidney:   2
-          spleen:   3
-          pancreas: 4
+        num_classes: 5
+        organ_names: [liver, kidney, spleen, pancreas]
 
-      evaluation.loss (optional):
-        include_background: False
-        squared_pred: False
-        jaccard: False
+      evaluation.loss:
+        include_background: false
+        squared_pred: false
+        jaccard: false
         lambda_dice: 1.0
         lambda_ce: 1.0
     """
@@ -56,98 +81,52 @@ class Flare21SegmentationEvaluationStrategy:
         self.config = config or DictConfig({})
 
         seg_cfg = get_config(self.config, "evaluation.seg", DictConfig({}))
-        ci = get_config(seg_cfg, "class_indices", DictConfig({}))
+        self.num_classes = int(get_config(seg_cfg, "num_classes", 5))
+        self.organ_names = list(get_config(
+            seg_cfg, "organ_names",
+            ["liver", "kidney", "spleen", "pancreas"]
+        ))
 
-        # 原始标签索引
-        self.idx_bg       = int(get_config(ci, "bg",       0))
-        self.idx_liver    = int(get_config(ci, "liver",    1))
-        self.idx_kidney   = int(get_config(ci, "kidney",   2))
-        self.idx_spleen   = int(get_config(ci, "spleen",   3))
-        self.idx_pancreas = int(get_config(ci, "pancreas", 4))
-
-        # MONAI metrics on [B, 4, D, H, W] for (Liver, Kidney, Spleen, Pancreas)
+        # Dice metric per class (excluding background)
         self.dice_metric = DiceMetric(
-            include_background=True,
+            include_background=False,  # Exclude background (class 0)
             reduction="none",
             get_not_nans=True,
         )
         self.miou_metric = MeanIoU(
-            include_background=True,
+            include_background=False,
             reduction="none",
             get_not_nans=True,
         )
 
-        # Optional loss for reporting (should align with training config)
-        train_crit_cfg = get_config(self.config, "training.criterion", DictConfig({}))
+        # Loss function
         loss_cfg = get_config(self.config, "evaluation.loss", DictConfig({}))
-
-        include_background = bool(get_config(loss_cfg, "include_background",
-                                             get_config(train_crit_cfg, "include_background", False)))
-        squared_pred = bool(get_config(loss_cfg, "squared_pred",
-                                       get_config(train_crit_cfg, "squared_pred", False)))
-        jaccard = bool(get_config(loss_cfg, "jaccard",
-                                  get_config(train_crit_cfg, "jaccard", False)))
-        lambda_dice = float(get_config(loss_cfg, "lambda_dice",
-                                       get_config(train_crit_cfg, "lambda_dice", 1.0)))
-        lambda_ce = float(get_config(loss_cfg, "lambda_ce",
-                                     get_config(train_crit_cfg, "lambda_ce", 1.0)))
-        # 类别权重
-        ce_weight = get_config(loss_cfg, "ce_weight",
-                              get_config(train_crit_cfg, "ce_weight", None))
-        if ce_weight is not None:
-            self._ce_weight_list = ce_weight
-        else:
-            self._ce_weight_list = None
-
-        # 5-class multi-class Dice+CE loss (weight will be set in evaluate_epoch)
-        self.loss_fn_config = {
-            "include_background": include_background,
-            "to_onehot_y": True,
-            "softmax": True,
-            "squared_pred": squared_pred,
-            "jaccard": jaccard,
-            "lambda_dice": lambda_dice,
-            "lambda_ce": lambda_ce,
-            "reduction": "mean",
-        }
-        self.loss_fn = None  # 将在 evaluate_epoch 中初始化
-
-    # ------------------------------------------------------------------ #
-    # helpers: build 4 FLARE21 organ masks from label id map
-    # ------------------------------------------------------------------ #
-
-    def _build_region_masks(self, y_id: torch.Tensor) -> torch.Tensor:
-        """
-        输入:
-          y_id: [B, D, H, W] LongTensor
-
-        输出:
-          y_reg: [B, 4, D, H, W] float32
-                 channel 0: Liver
-                 channel 1: Kidney
-                 channel 2: Spleen
-                 channel 3: Pancreas
-        """
-        liver    = self.idx_liver
-        kidney   = self.idx_kidney
-        spleen   = self.idx_spleen
-        pancreas = self.idx_pancreas
-
-        # Individual organ regions
-        y_liver    = (y_id == liver)
-        y_kidney   = (y_id == kidney)
-        y_spleen   = (y_id == spleen)
-        y_pancreas = (y_id == pancreas)
-
-        y_reg = torch.stack(
-            [y_liver.float(), y_kidney.float(), y_spleen.float(), y_pancreas.float()],
-            dim=1,   # -> [B, 4, D, H, W]
+        self.loss_fn = DiceCELoss(
+            include_background=bool(get_config(loss_cfg, "include_background", False)),
+            to_onehot_y=True,
+            softmax=True,
+            squared_pred=bool(get_config(loss_cfg, "squared_pred", False)),
+            jaccard=bool(get_config(loss_cfg, "jaccard", False)),
+            lambda_dice=float(get_config(loss_cfg, "lambda_dice", 1.0)),
+            lambda_ce=float(get_config(loss_cfg, "lambda_ce", 1.0)),
+            reduction="mean",
         )
-        return y_reg
 
-    # ------------------------------------------------------------------ #
-    # main API
-    # ------------------------------------------------------------------ #
+    def _one_hot_encode(self, y: Tensor, num_classes: int) -> Tensor:
+        """
+        Convert class indices to one-hot encoding.
+
+        Args:
+            y: [B, D, H, W] class indices
+            num_classes: Number of classes
+
+        Returns:
+            [B, num_classes, D, H, W] one-hot tensor
+        """
+        B, D, H, W = y.shape
+        one_hot = torch.zeros(B, num_classes, D, H, W, device=y.device, dtype=torch.float32)
+        one_hot.scatter_(1, y.unsqueeze(1), 1)
+        return one_hot
 
     @torch.no_grad()
     def evaluate_epoch(
@@ -156,145 +135,309 @@ class Flare21SegmentationEvaluationStrategy:
         data_loader: DataLoader,
         device: torch.device,
     ) -> Dict[str, float]:
+        """
+        Evaluate segmentation quality for one epoch.
+
+        Args:
+            model: Segmentation model
+            data_loader: Validation data loader
+            device: Device to use
+
+        Returns:
+            Dictionary of metrics
+        """
         model.eval()
         model.to(device)
-
-        # 初始化损失函数（确保权重在正确的 device 上）
-        if self.loss_fn is None:
-            weight = None
-            if self._ce_weight_list is not None:
-                weight = torch.tensor(self._ce_weight_list, dtype=torch.float32, device=device)
-            self.loss_fn_config["weight"] = weight
-            self.loss_fn = DiceCELoss(**self.loss_fn_config)
 
         total_loss = 0.0
         n_samples = 0
 
-        # reset accumulators
         self.dice_metric.reset()
         self.miou_metric.reset()
 
         pbar = tqdm(data_loader, desc="Evaluate SEG (FLARE21)", leave=False)
         for batch in pbar:
-            x = batch["image"].to(device)                # [B, C, D, H, W]
-            y_raw = batch["label"].to(device).long()     # [B,D,H,W] or [B,1,D,H,W]
+            x = batch["image"].to(device).float()
+            y_raw = batch["label"].to(device).long()
 
-            # 统一成 [B,D,H,W]
+            # Ensure [B, D, H, W]
             if y_raw.ndim == 5:
-                if y_raw.size(1) != 1:
-                    raise ValueError(f"[Flare21SegEval] label ndim=5 but channel={y_raw.size(1)} != 1")
                 y_id = y_raw[:, 0]
-            elif y_raw.ndim == 4:
-                y_id = y_raw
             else:
-                raise ValueError(f"[Flare21SegEval] Unsupported label shape: {y_raw.shape}")
+                y_id = y_raw
 
-            # --- build FLARE21 region GT: [B,4,D,H,W] (Liver, Kidney, Spleen, Pancreas) ---
-            y_reg = self._build_region_masks(y_id)
+            # Forward
+            logits = model(x)  # [B, 5, D, H, W]
 
-            # --- forward ---
-            logits = model(x)                            # [B, 5, D, H, W]
+            # Predictions
+            prob = torch.softmax(logits, dim=1)
+            y_pred_id = prob.argmax(dim=1)  # [B, D, H, W]
 
-            # multi-class prediction
-            prob = torch.softmax(logits, dim=1)          # [B, 5, D, H, W]
-            y_pred_id = prob.argmax(dim=1)               # [B, D, H, W]
+            # One-hot for metrics (MONAI expects [B, C, D, H, W])
+            y_one_hot = self._one_hot_encode(y_id, self.num_classes)
+            y_pred_one_hot = self._one_hot_encode(y_pred_id, self.num_classes)
 
-            # --- build FLARE21 region prediction ---
-            y_pred_reg = self._build_region_masks(y_pred_id)  # [B,4,D,H,W]
+            # Accumulate metrics (excluding background channel 0)
+            self.dice_metric(y_pred=y_pred_one_hot[:, 1:], y=y_one_hot[:, 1:])
+            self.miou_metric(y_pred=y_pred_one_hot[:, 1:], y=y_one_hot[:, 1:])
 
-            # --- accumulate metrics (region-based) ---
-            self.dice_metric(y_pred=y_pred_reg, y=y_reg)
-            self.miou_metric(y_pred=y_pred_reg, y=y_reg)
-
-            # --- val loss（5-class multi-class DiceCE）---
+            # Loss
             loss = self.loss_fn(logits, y_id.unsqueeze(1))
             bs = x.size(0)
             total_loss += float(loss.item()) * bs
             n_samples += bs
 
-        # ---- aggregate Dice with not_nans ----
+        # Aggregate Dice
         dice, not_nans = self.dice_metric.aggregate()
-        if dice.ndim == 1:
-            dice = dice.view(1, -1)
-            not_nans = not_nans.view(1, -1)
-        elif dice.ndim == 2:
-            pass
-        else:
-            dice = dice.view(-1, 4)
-            not_nans = not_nans.view(-1, 4)
+        dice = dice.view(-1, len(self.organ_names))
+        not_nans = not_nans.view(-1, len(self.organ_names))
 
-        region_dice = []
-        region_has_samples = []
-        region_names = ["liver", "kidney", "spleen", "pancreas"]
+        organ_dice = {}
+        valid_dices = []
 
-        for c in range(4):
+        for c, organ_name in enumerate(self.organ_names):
             val_mask = not_nans[:, c] > 0
-            has_samples = bool(val_mask.any().item())
-            region_has_samples.append(has_samples)
-
-            if has_samples:
-                mean_c = dice[val_mask, c].mean()
-                region_dice.append(float(mean_c.item()))
+            if val_mask.any():
+                mean_c = float(dice[val_mask, c].mean().item())
+                organ_dice[f"{organ_name}_dc"] = mean_c
+                valid_dices.append(mean_c)
             else:
-                region_dice.append(0.0)
+                organ_dice[f"{organ_name}_dc"] = 0.0
 
-        liver_dc, kidney_dc, spleen_dc, pancreas_dc = region_dice
+        avg_dc = float(np.mean(valid_dices)) if valid_dices else 0.0
 
-        # avg_dc: 只在有正样本的 region 上取平均
-        if any(region_has_samples):
-            valid_vals = [
-                d for d, flag in zip(region_dice, region_has_samples) if flag
-            ]
-            avg_dc = float(sum(valid_vals) / len(valid_vals))
-        else:
-            avg_dc = 0.0
-
-        # ---- aggregate IoU with not_nans ----
+        # Aggregate IoU
         miou_vals, miou_not_nans = self.miou_metric.aggregate()
-        if miou_vals.ndim == 1:
-            miou_vals = miou_vals.view(1, -1)
-            miou_not_nans = miou_not_nans.view(1, -1)
-        elif miou_vals.ndim == 2:
-            pass
-        else:
-            miou_vals = miou_vals.view(-1, 4)
-            miou_not_nans = miou_not_nans.view(-1, 4)
+        miou_vals = miou_vals.view(-1, len(self.organ_names))
+        miou_not_nans = miou_not_nans.view(-1, len(self.organ_names))
 
-        region_iou = []
-        region_has_iou_samples = []
-
-        for c in range(4):
+        valid_ious = []
+        for c, organ_name in enumerate(self.organ_names):
             val_mask = miou_not_nans[:, c] > 0
-            has_samples = bool(val_mask.any().item())
-            region_has_iou_samples.append(has_samples)
+            if val_mask.any():
+                mean_c = float(miou_vals[val_mask, c].mean().item())
+                organ_dice[f"{organ_name}_iou"] = mean_c
+                valid_ious.append(mean_c)
 
-            if has_samples:
-                mean_c = miou_vals[val_mask, c].mean()
-                region_iou.append(float(mean_c.item()))
-            else:
-                region_iou.append(0.0)
-
-        if any(region_has_iou_samples):
-            valid_iou_vals = [
-                v for v, flag in zip(region_iou, region_has_iou_samples) if flag
-            ]
-            miou = float(sum(valid_iou_vals) / len(valid_iou_vals))
-        else:
-            miou = 0.0
+        miou = float(np.mean(valid_ious)) if valid_ious else 0.0
 
         metrics = {
-            "loss":        float(total_loss / max(1, n_samples)),
-            "liver_dc":    liver_dc,
-            "kidney_dc":   kidney_dc,
-            "spleen_dc":   spleen_dc,
-            "pancreas_dc": pancreas_dc,
-            "avg_dc":      avg_dc,
-            "miou":        miou,
-            "jc":          miou,   # alias
+            "loss": float(total_loss / max(1, n_samples)),
+            **organ_dice,
+            "avg_dc": avg_dc,
+            "miou": miou,
         }
 
-        # reset for next epoch call
+        # Reset for next epoch
         self.dice_metric.reset()
         self.miou_metric.reset()
 
         return metrics
+
+
+@register_evaluation_strategy("flare21_perturbation")
+class Flare21PerturbationEvaluationStrategy:
+    """
+    Evaluation for perturbation quality on FLARE21 dataset.
+
+    Computes:
+      - PSNR (Peak Signal-to-Noise Ratio) ↑
+      - SSIM (Structural Similarity Index) ↑
+      - IQA-PyTorch metrics (if available)
+
+    Config:
+        evaluation.perturbation:
+            data_range: 1.0
+            use_pyiqa: true
+            pyiqa_metrics: [psnr, ssim]
+            sample_slices: 16  # Sample N slices for efficiency (null = all)
+    """
+
+    def __init__(self, config: Optional[DictConfig] = None):
+        self.config = config or DictConfig({})
+
+        pert_cfg = get_config(self.config, "evaluation.perturbation", DictConfig({}))
+        self.data_range = float(get_config(pert_cfg, "data_range", 1.0))
+        self.use_pyiqa = bool(get_config(pert_cfg, "use_pyiqa", True)) and HAS_PYIQA
+        self.pyiqa_metrics = list(get_config(pert_cfg, "pyiqa_metrics", ['psnr', 'ssim']))
+        self.sample_slices = get_config(pert_cfg, "sample_slices", 16)
+
+        # Initialize IQA-PyTorch
+        self._iqa_evaluator = None
+        if self.use_pyiqa:
+            try:
+                self._iqa_evaluator = IQAPyTorchMetrics(
+                    metrics=self.pyiqa_metrics,
+                    device='cuda' if torch.cuda.is_available() else 'cpu',
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize IQA-PyTorch: {e}")
+                self.use_pyiqa = False
+
+        # Accumulators
+        self._metrics_sum: Dict[str, float] = {}
+        self._n_samples: int = 0
+
+    def reset(self):
+        """Reset accumulators."""
+        self._metrics_sum = {}
+        self._n_samples = 0
+
+    @torch.no_grad()
+    def evaluate_batch(
+        self,
+        original: Tensor,
+        perturbed: Tensor,
+        noise: Optional[Tensor] = None,
+    ) -> Dict[str, float]:
+        """
+        Evaluate perturbation quality for a batch.
+
+        Args:
+            original: [B, C, D, H, W] original images
+            perturbed: [B, C, D, H, W] perturbed images
+            noise: Optional noise tensor
+
+        Returns:
+            Batch metrics
+        """
+        results = {}
+
+        # Built-in PSNR (volumetric)
+        psnr = compute_psnr(original, perturbed, data_range=self.data_range)
+        results['psnr'] = float(psnr.mean().item())
+
+        # Built-in SSIM (volumetric)
+        ssim = compute_ssim(original, perturbed, data_range=self.data_range)
+        results['ssim'] = float(ssim.item())
+
+        # Noise L-infinity norm
+        if noise is not None:
+            results['noise_linf'] = float(noise.abs().max().item())
+            results['noise_l2'] = float(noise.pow(2).mean().sqrt().item())
+
+        # IQA-PyTorch metrics (slice-wise)
+        if self.use_pyiqa and self._iqa_evaluator is not None:
+            iqa_results = self._iqa_evaluator.compute_3d_slicewise(
+                original, perturbed,
+                sample_slices=self.sample_slices,
+            )
+            for k, v in iqa_results.items():
+                results[f'{k}_iqa'] = v
+
+        # Accumulate
+        bs = original.shape[0]
+        for k, v in results.items():
+            if not math.isnan(v):
+                self._metrics_sum[k] = self._metrics_sum.get(k, 0.0) + v * bs
+        self._n_samples += bs
+
+        return results
+
+    def aggregate(self) -> Dict[str, float]:
+        """Aggregate accumulated metrics."""
+        if self._n_samples == 0:
+            return {}
+
+        results = {}
+        for k, v in self._metrics_sum.items():
+            results[k] = v / self._n_samples
+
+        return results
+
+    @torch.no_grad()
+    def evaluate_with_loader(
+        self,
+        data_loader: DataLoader,
+        noise_accessor,
+        device: torch.device,
+    ) -> Dict[str, float]:
+        """
+        Evaluate perturbation quality over entire dataset.
+
+        Args:
+            data_loader: DataLoader for clean images
+            noise_accessor: UEShardsAccessor to get noise
+            device: Device to use
+
+        Returns:
+            Aggregated metrics
+        """
+        self.reset()
+
+        pbar = tqdm(data_loader, desc="Evaluate Perturbation (FLARE21)", leave=False)
+        for batch_idx, batch in enumerate(pbar):
+            x = batch["image"].to(device).float()
+            keys = batch.get("key", range(batch_idx * x.shape[0], (batch_idx + 1) * x.shape[0]))
+
+            # Get noise
+            batch_noise = []
+            for key in keys:
+                noise = noise_accessor.get(key)
+                batch_noise.append(noise)
+
+            noise = torch.stack(batch_noise, dim=0).to(device).float()
+
+            # Handle channel mismatch
+            if noise.shape[1] != x.shape[1]:
+                if noise.shape[1] == 1:
+                    noise = noise.expand(-1, x.shape[1], *noise.shape[2:])
+
+            perturbed = (x + noise).clamp(0.0, 1.0)
+
+            self.evaluate_batch(x, perturbed, noise)
+
+            # Update progress bar
+            if self._n_samples > 0:
+                psnr = self._metrics_sum.get('psnr', 0) / self._n_samples
+                ssim = self._metrics_sum.get('ssim', 0) / self._n_samples
+                pbar.set_postfix({'psnr': f'{psnr:.2f}', 'ssim': f'{ssim:.4f}'})
+
+        return self.aggregate()
+
+
+@register_evaluation_strategy("flare21_combined")
+class Flare21CombinedEvaluationStrategy:
+    """
+    Combined evaluation for FLARE21: Segmentation + Perturbation quality.
+
+    Use this when you want to evaluate both segmentation performance
+    and perturbation invisibility in a single pass.
+    """
+
+    def __init__(self, config: Optional[DictConfig] = None):
+        self.config = config or DictConfig({})
+        self.seg_eval = Flare21SegmentationEvaluationStrategy(config)
+        self.pert_eval = Flare21PerturbationEvaluationStrategy(config)
+
+    @torch.no_grad()
+    def evaluate_epoch(
+        self,
+        model: nn.Module,
+        data_loader: DataLoader,
+        device: torch.device,
+        noise_accessor=None,
+    ) -> Dict[str, float]:
+        """
+        Evaluate both segmentation and perturbation quality.
+
+        Args:
+            model: Segmentation model
+            data_loader: Validation data loader
+            device: Device to use
+            noise_accessor: Optional noise accessor for perturbation metrics
+
+        Returns:
+            Combined metrics dictionary
+        """
+        # Segmentation metrics
+        seg_metrics = self.seg_eval.evaluate_epoch(model, data_loader, device)
+
+        # Perturbation metrics (if noise accessor provided)
+        pert_metrics = {}
+        if noise_accessor is not None:
+            pert_metrics = self.pert_eval.evaluate_with_loader(
+                data_loader, noise_accessor, device
+            )
+
+        return {**seg_metrics, **pert_metrics}

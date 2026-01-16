@@ -4,9 +4,11 @@
 from . import brats19_eval  # noqa: F401
 from . import kits19_eval  # noqa: F401
 from . import flare21_eval  # noqa: F401
+from . import perturbation_eval  # noqa: F401
 
 __all__ = [
     'brats19_eval',
     'kits19_eval',
     'flare21_eval',
+    'perturbation_eval',
 ]

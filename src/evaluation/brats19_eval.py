@@ -1,18 +1,29 @@
 # file: src/evaluation/brats19_seg.py
 from __future__ import annotations
 from typing import Dict, Optional
+import math
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 
 from monai.metrics import DiceMetric, MeanIoU
 from monai.losses import DiceCELoss
 from tqdm import tqdm
+import numpy as np
 
 from ..utils.config import get_config
 from ..registry import register_evaluation_strategy
+from ..utils.eval_metrics import (
+    compute_psnr,
+    compute_ssim,
+    HAS_PYIQA,
+)
+
+if HAS_PYIQA:
+    from ..utils.eval_metrics import IQAPyTorchMetrics
 
 
 @register_evaluation_strategy("brats19_seg")
@@ -276,3 +287,214 @@ class Brats19SegmentationEvaluationStrategy:
         self.miou_metric.reset()
 
         return metrics
+
+
+@register_evaluation_strategy("brats19_perturbation")
+class Brats19PerturbationEvaluationStrategy:
+    """
+    Evaluation for perturbation quality on BraTS19 dataset.
+
+    Computes:
+      - PSNR (Peak Signal-to-Noise Ratio) ↑
+      - SSIM (Structural Similarity Index) ↑
+      - IQA-PyTorch metrics (if available)
+
+    Config:
+        evaluation.perturbation:
+            data_range: 1.0
+            use_pyiqa: true
+            pyiqa_metrics: [psnr, ssim]
+            sample_slices: 16  # Sample N slices for efficiency (null = all)
+    """
+
+    def __init__(self, config: Optional[DictConfig] = None):
+        self.config = config or DictConfig({})
+
+        pert_cfg = get_config(self.config, "evaluation.perturbation", DictConfig({}))
+        self.data_range = float(get_config(pert_cfg, "data_range", 1.0))
+        self.use_pyiqa = bool(get_config(pert_cfg, "use_pyiqa", True)) and HAS_PYIQA
+        self.pyiqa_metrics = list(get_config(pert_cfg, "pyiqa_metrics", ['psnr', 'ssim']))
+        self.sample_slices = get_config(pert_cfg, "sample_slices", 16)
+
+        # Initialize IQA-PyTorch
+        self._iqa_evaluator = None
+        if self.use_pyiqa:
+            try:
+                self._iqa_evaluator = IQAPyTorchMetrics(
+                    metrics=self.pyiqa_metrics,
+                    device='cuda' if torch.cuda.is_available() else 'cpu',
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize IQA-PyTorch: {e}")
+                self.use_pyiqa = False
+
+        # Accumulators
+        self._metrics_sum: Dict[str, float] = {}
+        self._n_samples: int = 0
+
+    def reset(self):
+        """Reset accumulators."""
+        self._metrics_sum = {}
+        self._n_samples = 0
+
+    @torch.no_grad()
+    def evaluate_batch(
+        self,
+        original: Tensor,
+        perturbed: Tensor,
+        noise: Optional[Tensor] = None,
+    ) -> Dict[str, float]:
+        """
+        Evaluate perturbation quality for a batch.
+
+        Args:
+            original: [B, C, D, H, W] original images
+            perturbed: [B, C, D, H, W] perturbed images
+            noise: Optional noise tensor
+
+        Returns:
+            Batch metrics
+        """
+        results = {}
+
+        # Built-in PSNR (volumetric)
+        psnr = compute_psnr(original, perturbed, data_range=self.data_range)
+        results['psnr'] = float(psnr.mean().item())
+
+        # Built-in SSIM (volumetric)
+        ssim = compute_ssim(original, perturbed, data_range=self.data_range)
+        results['ssim'] = float(ssim.item())
+
+        # Noise statistics
+        if noise is not None:
+            results['noise_linf'] = float(noise.abs().max().item())
+            results['noise_l2'] = float(noise.pow(2).mean().sqrt().item())
+
+        # IQA-PyTorch metrics (slice-wise)
+        if self.use_pyiqa and self._iqa_evaluator is not None:
+            iqa_results = self._iqa_evaluator.compute_3d_slicewise(
+                original, perturbed,
+                sample_slices=self.sample_slices,
+            )
+            for k, v in iqa_results.items():
+                results[f'{k}_iqa'] = v
+
+        # Accumulate
+        bs = original.shape[0]
+        for k, v in results.items():
+            if not math.isnan(v):
+                self._metrics_sum[k] = self._metrics_sum.get(k, 0.0) + v * bs
+        self._n_samples += bs
+
+        return results
+
+    def aggregate(self) -> Dict[str, float]:
+        """Aggregate accumulated metrics."""
+        if self._n_samples == 0:
+            return {}
+
+        results = {}
+        for k, v in self._metrics_sum.items():
+            results[k] = v / self._n_samples
+
+        return results
+
+    @torch.no_grad()
+    def evaluate_with_loader(
+        self,
+        data_loader: DataLoader,
+        noise_accessor,
+        device: torch.device,
+    ) -> Dict[str, float]:
+        """
+        Evaluate perturbation quality over entire dataset.
+
+        Args:
+            data_loader: DataLoader for clean images
+            noise_accessor: UEShardsAccessor to get noise
+            device: Device to use
+
+        Returns:
+            Aggregated metrics
+        """
+        self.reset()
+
+        pbar = tqdm(data_loader, desc="Evaluate Perturbation (BraTS19)", leave=False)
+        for batch_idx, batch in enumerate(pbar):
+            x = batch["image"].to(device).float()
+            keys = batch.get("key", range(batch_idx * x.shape[0], (batch_idx + 1) * x.shape[0]))
+
+            # Get noise
+            batch_noise = []
+            for key in keys:
+                noise = noise_accessor.get(key)
+                batch_noise.append(noise)
+
+            noise = torch.stack(batch_noise, dim=0).to(device).float()
+
+            # Handle channel mismatch
+            if noise.shape[1] != x.shape[1]:
+                if noise.shape[1] == 1:
+                    noise = noise.expand(-1, x.shape[1], *noise.shape[2:])
+                elif x.shape[1] == 1:
+                    # Average noise across channels for single-channel image
+                    noise = noise.mean(dim=1, keepdim=True)
+
+            perturbed = (x + noise).clamp(0.0, 1.0)
+
+            self.evaluate_batch(x, perturbed, noise)
+
+            # Update progress bar
+            if self._n_samples > 0:
+                psnr = self._metrics_sum.get('psnr', 0) / self._n_samples
+                ssim = self._metrics_sum.get('ssim', 0) / self._n_samples
+                pbar.set_postfix({'psnr': f'{psnr:.2f}', 'ssim': f'{ssim:.4f}'})
+
+        return self.aggregate()
+
+
+@register_evaluation_strategy("brats19_combined")
+class Brats19CombinedEvaluationStrategy:
+    """
+    Combined evaluation for BraTS19: Segmentation + Perturbation quality.
+
+    Use this when you want to evaluate both segmentation performance
+    and perturbation invisibility in a single pass.
+    """
+
+    def __init__(self, config: Optional[DictConfig] = None):
+        self.config = config or DictConfig({})
+        self.seg_eval = Brats19SegmentationEvaluationStrategy(config)
+        self.pert_eval = Brats19PerturbationEvaluationStrategy(config)
+
+    @torch.no_grad()
+    def evaluate_epoch(
+        self,
+        model: nn.Module,
+        data_loader: DataLoader,
+        device: torch.device,
+        noise_accessor=None,
+    ) -> Dict[str, float]:
+        """
+        Evaluate both segmentation and perturbation quality.
+
+        Args:
+            model: Segmentation model
+            data_loader: Validation data loader
+            device: Device to use
+            noise_accessor: Optional noise accessor for perturbation metrics
+
+        Returns:
+            Combined metrics dictionary
+        """
+        # Segmentation metrics
+        seg_metrics = self.seg_eval.evaluate_epoch(model, data_loader, device)
+
+        # Perturbation metrics (if noise accessor provided)
+        pert_metrics = {}
+        if noise_accessor is not None:
+            pert_metrics = self.pert_eval.evaluate_with_loader(
+                data_loader, noise_accessor, device
+            )
+
+        return {**seg_metrics, **pert_metrics}
