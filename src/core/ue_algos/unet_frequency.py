@@ -2,11 +2,6 @@
 """
 Coherent Spectral UE: Frequency-Domain Perturbation for 3D Medical Image Segmentation.
 
-Motivation:
-  3D segmentation models rely heavily on inter-slice consistency. This method
-  generates perturbations in the frequency domain with explicit control over
-  spectral characteristics.
-
 Core Idea:
   - Learn a spectral tensor P (real + imag) in frequency domain
   - Apply fixed spectral mask M to control frequency support
@@ -15,7 +10,6 @@ Core Idea:
 
 What is being optimized:
   - The spectral tensor P (learnable parameters: P_real, P_imag)
-  - NOT the noise directly, but the frequency-domain representation
 
 What is stored to backend:
   - The generated noise delta (spatial domain), after ROI mask
@@ -23,14 +17,6 @@ What is stored to backend:
 Two Modes:
   - "enhance": z-axis lowpass -> high inter-slice coherence
   - "destroy": z-axis highpass -> low inter-slice coherence
-
-Training loop (same structure as UNetROINoiseUE):
-  1. Surrogate-step: Train surrogate on noisy images (noise from backend)
-  2. Noise-step:
-     - Generate delta = IFFT(M * P) with soft ROI mask
-     - Forward through frozen surrogate, compute seg loss
-     - Backprop to update P (spectral parameters)
-     - Store generated noise to backend
 
 Maximum noise bound: 4/255 (configurable via epsilon parameter)
 """
@@ -73,7 +59,7 @@ class SpectralNoiseGenerator(nn.Module):
         z_sigma: float = 0.05,
         xy_center: float = 0.15,
         xy_sigma: float = 0.1,
-        init_scale: float = 0.01,
+        init_scale: float = 0.1,  # 增大初始化尺度
     ):
         super().__init__()
         self.spatial_shape = spatial_shape
@@ -84,13 +70,12 @@ class SpectralNoiseGenerator(nn.Module):
         D, H, W = spatial_shape
 
         # ========== Learnable Parameters: P_real and P_imag ==========
-        # These are what we optimize during training
+        # 增大初始化尺度，确保初始噪声不为0
         self.P_real = nn.Parameter(torch.randn(num_channels, D, H, W) * init_scale)
         self.P_imag = nn.Parameter(torch.randn(num_channels, D, H, W) * init_scale)
 
         # ========== Fixed Spectral Mask M (not learnable) ==========
-        # Registered as buffer, will be created on first forward
-        self.register_buffer('spectral_mask', None)
+        # 预计算mask并注册为buffer
         self._mask_config = {
             'mode': mode,
             'z_cutoff': z_cutoff,
@@ -98,6 +83,9 @@ class SpectralNoiseGenerator(nn.Module):
             'xy_center': xy_center,
             'xy_sigma': xy_sigma,
         }
+        # 立即创建mask (不等到forward)
+        spectral_mask = self._create_spectral_mask(torch.device('cpu'))
+        self.register_buffer('spectral_mask', spectral_mask)
 
     def _create_spectral_mask(self, device: torch.device) -> torch.Tensor:
         """
@@ -123,58 +111,48 @@ class SpectralNoiseGenerator(nn.Module):
         xy_center = self._mask_config['xy_center']
         xy_sigma = self._mask_config['xy_sigma']
 
-        # Z-axis mask
+        # Z-axis mask (软权重)
         abs_k_z = torch.abs(k_z)
         if self._mask_config['mode'] == "enhance":
-            # Low-pass: high inter-slice coherence (misleading 3D structure)
+            # Low-pass: high inter-slice coherence
             M_z = torch.where(
                 abs_k_z <= z_cutoff,
                 torch.ones_like(abs_k_z),
                 torch.exp(-((abs_k_z - z_cutoff) ** 2) / (2 * z_sigma ** 2))
             )
         else:  # "destroy"
-            # High-pass: low inter-slice coherence (disrupt 3D consistency)
+            # High-pass: low inter-slice coherence
             M_z = 1.0 - torch.exp(-(k_z ** 2) / (2 * z_sigma ** 2))
 
-        # XY-plane mask: Band-pass (mid-frequency, avoid pure DC bias)
+        # XY-plane mask: Band-pass (软权重)
+        # 使用更宽的带通，确保有足够的能量通过
         M_xy = torch.exp(-((r_xy - xy_center) ** 2) / (2 * xy_sigma ** 2))
+
+        # 确保有一定的基础值，避免mask过小
+        M_xy = M_xy + 0.1  # 添加基础值
+        M_xy = M_xy.clamp(0, 1)
 
         # Combined mask
         M = M_z * M_xy
 
-        # Slight DC suppression for "enhance" mode to avoid global bias
+        # DC分量处理
         if self._mask_config['mode'] == "enhance":
             M[0, 0, 0] = M[0, 0, 0] * 0.5
 
         return M
 
-    def _ensure_mask(self, device: torch.device):
-        """Create spectral mask if not already created."""
-        if self.spectral_mask is None:
-            self.spectral_mask = self._create_spectral_mask(device)
-
     def forward(self) -> torch.Tensor:
         """
         Generate perturbation from learnable spectral tensor P.
 
-        Process:
-          1. P_complex = P_real + i * P_imag
-          2. P_masked = M * P_complex
-          3. Enforce Hermitian symmetry (ensure real output)
-          4. delta = IFFT3D(P_masked)
-          5. delta = tanh(delta) * epsilon
-
         Returns:
           delta: [C, D, H, W] perturbation in [-epsilon, epsilon]
         """
-        device = self.P_real.device
-        self._ensure_mask(device)
-
         # Step 1: Construct complex spectral tensor from learnable params
         P_complex = torch.complex(self.P_real, self.P_imag)  # [C, D, H, W]
 
         # Step 2: Apply fixed spectral mask M
-        # Expand M from [D,H,W] to [C,D,H,W]
+        # spectral_mask: [D, H, W] -> expand to [C, D, H, W]
         M = self.spectral_mask.unsqueeze(0).expand(self.num_channels, -1, -1, -1)
         P_masked = P_complex * M
 
@@ -201,8 +179,9 @@ class SpectralNoiseGenerator(nn.Module):
             for z in range(D - 1):
                 s1 = delta_mean[z].flatten()
                 s2 = delta_mean[z + 1].flatten()
-                corr = F.cosine_similarity(s1.unsqueeze(0), s2.unsqueeze(0))
-                correlations.append(corr.item())
+                if s1.norm() > 1e-8 and s2.norm() > 1e-8:
+                    corr = F.cosine_similarity(s1.unsqueeze(0), s2.unsqueeze(0))
+                    correlations.append(corr.item())
 
             return {
                 'mean_corr': sum(correlations) / len(correlations) if correlations else 0.0,
@@ -264,21 +243,8 @@ class FrequencyDomainUE:
     """
     Coherent Spectral UE for 3D Medical Image Segmentation.
 
-    ========== What is being optimized? ==========
-    The spectral tensor P (P_real and P_imag), NOT the noise directly.
-    P lives in frequency domain; noise is generated via IFFT(M * P).
-
-    ========== What is stored to backend? ==========
-    The generated noise delta (in spatial domain), after applying ROI mask.
-
-    Interface compatible with UNetROINoiseUE:
-      - surrogate_step_batch(): Update surrogate using noise from backend
-      - noise_step_batch(): Update P via backprop, store generated noise
-
-    Assumptions:
-      - batch["image"]: [B, C, D, H, W]
-      - batch["label"]: [B, D, H, W]
-      - batch["key"]: sample-wise key
+    Optimizes: spectral tensor P (P_real, P_imag)
+    Stores: spatial noise delta = IFFT(M * P) * ROI_soft
     """
 
     def __init__(self):
@@ -321,18 +287,13 @@ class FrequencyDomainUE:
         return self._seg_loss
 
     def _init_noise_generator(self, trainer, spatial_shape: Tuple[int, int, int], num_channels: int):
-        """
-        Initialize SpectralNoiseGenerator and optimizer (lazy, once).
-
-        Similar to _init_noise_unet in UNetROINoiseUE.
-        """
+        """Initialize SpectralNoiseGenerator and optimizer."""
         if self._initialized:
             return
 
         cfg = trainer.config
         device = trainer.device
 
-        # Get parameters from config (similar structure to noise_unet config)
         params = get_config(cfg, "ue.algorithm.params", DictConfig({}))
 
         epsilon = float(get_config(params, "epsilon", 4 / 255))
@@ -341,7 +302,7 @@ class FrequencyDomainUE:
         z_sigma = float(get_config(params, "z_sigma", 0.05))
         xy_center = float(get_config(params, "xy_center", 0.15))
         xy_sigma = float(get_config(params, "xy_sigma", 0.1))
-        init_scale = float(get_config(params, "init_scale", 0.01))
+        init_scale = float(get_config(params, "init_scale", 0.1))
 
         # Create spectral noise generator
         self._noise_gen = SpectralNoiseGenerator(
@@ -361,24 +322,25 @@ class FrequencyDomainUE:
         weight_decay = float(get_config(params, "weight_decay", 0.0))
 
         self._optimizer = torch.optim.Adam(
-            self._noise_gen.parameters(),  # This optimizes P_real and P_imag
+            self._noise_gen.parameters(),
             lr=lr,
             weight_decay=weight_decay,
         )
 
         self._initialized = True
-        self.logger.info(
-            f"[FrequencyUE] Initialized: shape={spatial_shape}, channels={num_channels}, "
-            f"eps={epsilon:.6f}, mode={mode}, lr={lr}"
-        )
+
+        # 验证初始化
+        with torch.no_grad():
+            test_delta = self._noise_gen()
+            delta_max = test_delta.abs().max().item()
+            self.logger.info(
+                f"[FrequencyUE] Initialized: shape={spatial_shape}, channels={num_channels}, "
+                f"eps={epsilon:.6f}, mode={mode}, lr={lr}, init_delta_max={delta_max:.6f}"
+            )
 
     # ---------------- Surrogate-step: Update surrogate ---------------- #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
-        """
-        Update surrogate parameters only, using noise from backend.
-
-        Same as UNetROINoiseUE.surrogate_step_batch().
-        """
+        """Update surrogate parameters only, using noise from backend."""
         cfg = trainer.config
         device = trainer.device
         nb = trainer.noise_backend
@@ -400,7 +362,6 @@ class FrequencyDomainUE:
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
-        # Get noise from backend (stored from previous noise_step)
         delta = nb.batch_noise(list(keys)).to(device).float()
         if delta.shape[:2] != x.shape[:2]:
             raise RuntimeError(
@@ -441,22 +402,7 @@ class FrequencyDomainUE:
 
     # ---------------- N-step: Update spectral params P ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
-        """
-        Update spectral parameters P via gradient descent.
-
-        ========== Key Difference from UNet methods ==========
-        - UNet: noise = UNet(x), optimizes UNet parameters
-        - This: noise = IFFT(M * P), optimizes P (P_real, P_imag)
-
-        Process:
-          1. Generate delta = IFFT(M * P) using SpectralNoiseGenerator
-          2. Create soft ROI mask from label
-          3. Apply ROI mask: delta_masked = delta * roi_mask
-          4. Add noise to image, forward through frozen surrogate
-          5. Compute segmentation loss
-          6. Backprop to update P (spectral parameters)
-          7. Store delta_masked to backend
-        """
+        """Update spectral parameters P via gradient descent."""
         cfg = trainer.config
         device = trainer.device
         nb = trainer.noise_backend
@@ -501,31 +447,30 @@ class FrequencyDomainUE:
         self._noise_gen.train()
         last_loss = torch.tensor(0.0, device=device)
 
-        for _ in range(max(1, num_steps)):
+        for step_idx in range(max(1, num_steps)):
             # Step 1: Generate delta from spectral tensor P
-            # This is where P_real and P_imag are used
             delta_base = self._noise_gen()  # [C, D, H, W]
 
-            # Expand to batch: [B, C, D, H, W]
-            delta = delta_base.unsqueeze(0).expand(B, -1, -1, -1, -1)
+            # Step 2: Expand to batch and clone (重要：使用clone确保独立tensor)
+            delta = delta_base.unsqueeze(0).expand(B, -1, -1, -1, -1).clone()
 
-            # Step 2: Apply soft ROI mask
+            # Step 3: Apply soft ROI mask
             delta_masked = delta * roi_mask
 
-            # Step 3: Create perturbed image
+            # Step 4: Create perturbed image
             perturb_img = (x + delta_masked).clamp(0.0, 1.0)
             xn = perturb_img.clone()
             self._norm_inplace(xn, mean, std)
 
-            # Step 4: Forward through frozen surrogate
+            # Step 5: Forward through frozen surrogate
             out = s_model(xn)
             logits = out[0] if isinstance(out, (tuple, list)) else out
 
-            # Step 5: Compute segmentation loss
+            # Step 6: Compute segmentation loss
             loss = seg_loss_fn(logits, y.unsqueeze(1))
             last_loss = loss.detach()
 
-            # Step 6: Backprop to update P (P_real, P_imag)
+            # Step 7: Backprop to update P (P_real, P_imag)
             self._optimizer.zero_grad(set_to_none=True)
             loss.backward()
             self._optimizer.step()
@@ -534,7 +479,8 @@ class FrequencyDomainUE:
         self._noise_gen.eval()
         with torch.no_grad():
             delta_base = self._noise_gen()
-            delta = delta_base.unsqueeze(0).expand(B, -1, -1, -1, -1)
+            # 使用repeat而不是expand，确保数据被复制
+            delta = delta_base.unsqueeze(0).repeat(B, 1, 1, 1, 1)
             delta_masked = delta * roi_mask
             delta_masked = delta_masked.clamp(-eps, eps)
 

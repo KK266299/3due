@@ -10,5 +10,6 @@ from . import unet_grad_noise
 from . import unet_noise_slice
 from . import unet_noise_slice_in_out
 from . import unet_frequency
+from . import unet_noise_slice_grad
 
-__all__ = ["min_min", "pue", "tap", "sep", "lsp", "unet_noise", "unet_roi_noise", "unet_boundary_noise", "unet_grad_noise", "unet_noise_slice", "unet_noise_slice_in_out", "unet_frequency"]
+__all__ = ["min_min", "pue", "tap", "sep", "lsp", "unet_noise", "unet_roi_noise", "unet_boundary_noise", "unet_grad_noise", "unet_noise_slice", "unet_noise_slice_in_out", "unet_frequency", "unet_noise_slice_grad"]

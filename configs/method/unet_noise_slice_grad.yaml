@@ -1,0 +1,110 @@
+# @package _global_
+# Inter-Slice Diversity + Gradient-Guided UNet Noise Generator
+#
+# 结合两种策略:
+#   1. 层间差异性约束: 最大化相邻层噪声差异 (利用层间低分辨率)
+#   2. 梯度引导噪声: 根据图像梯度调制噪声强度 (边缘区域噪声更强)
+#
+# 损失函数:
+#   L_total = L_seg - λ_inter × L_inter
+#
+# 噪声生成:
+#   δ = UNet(x) × gradient_weight × roi_mask
+#
+# Key parameters:
+#   - lambda_inter: Weight for inter-slice diversity (maximize)
+#   - use_gradient: Enable gradient-guided noise weighting
+#   - roi_aware: Only apply noise in foreground regions
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: unet_noise_slice_grad
+    params:
+      epsilon: 0.0313725        # 8/255 L_inf bound
+      noise_step: 1             # UNet training iterations per batch
+      step_size: 5e-3           # (unused, kept for compatibility)
+      surrogate_step: 10         # S-step: batches per epoch
+
+      # Inter-slice diversity parameters
+      lambda_inter: 0.5         # Weight for inter-slice diversity (maximize)
+
+      # Gradient-guided noise parameters
+      use_gradient: true        # Enable gradient-guided noise weighting
+
+      # ROI-aware settings
+      roi_aware: true           # Only apply noise in foreground regions
+
+      # Soft edge ROI mask parameters (高斯平滑软边缘)
+      soft_edge: true           # Enable soft edges (Gaussian smoothed ROI mask)
+      dilate_iter: 2            # Dilation iterations before smoothing (expand ROI boundary)
+      gaussian_sigma: 2.0       # Gaussian smoothing sigma
+      gaussian_kernel_size: 7   # Gaussian kernel size (odd number)
+
+  # Noise UNet configuration
+  noise_unet:
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10

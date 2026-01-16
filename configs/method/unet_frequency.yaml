@@ -71,7 +71,7 @@ ue:
       noise_step: 10           # N-step inner loop iterations
       lr: 0.01                 # Learning rate for spectral parameters
       weight_decay: 0.0        # Weight decay (usually 0 for noise)
-      init_scale: 0.01         # Initial scale for learnable parameters
+      init_scale: 0.1          # Initial scale for P (increased to ensure non-zero init)
 
       # === Surrogate Training ===
       surrogate_step: 2        # S-step: batches per epoch for surrogate update
