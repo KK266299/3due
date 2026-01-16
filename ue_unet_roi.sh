@@ -11,10 +11,10 @@
 # ============================================================================
 
 python ue_generate.py \
-    dataset=kits19 \
+    dataset=brats19 \
     task.run_name=unet_roi_noise_4_255 \
     method=unet_roi_noise \
-    task=kits19_ue \
+    task=brats19_ue \
     training.epochs=100 \
     ue.key.type=samplewise \
     ue.key.from=field \

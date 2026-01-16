@@ -1,0 +1,93 @@
+# @package _global_
+# Coherent Spectral UE Configuration
+#
+# Learnable spectral parameters with frequency-domain gating
+# and ROI-aware spatial masking.
+#
+# Key features:
+#   - Direct frequency-domain learning: P (real + imag) learned in frequency domain
+#   - Spectral coherence: fixed mask M constrains frequency support (z-axis low-freq + xy-plane band-pass)
+#   - ROI gating: constrains perturbations to ROI regions with smooth edges
+#   - Training flow: S-step (surrogate) + N-step (spectral parameters)
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: coherent_spectral_ue
+    params:
+      epsilon: 0.0156863        # 8/255 L_inf bound
+      noise_step: 1             # Gradient steps per batch for updating P
+      surrogate_step: 10         # S-step: batches per epoch
+
+      # Frequency-domain mask configuration
+      spectral_mask:
+        z_max: 0.125            # Z-axis frequency upper bound (low-freq for coherence)
+        xy_min: 0.05            # XY-plane radial frequency lower bound
+        xy_max: 0.3             # XY-plane radial frequency upper bound
+        init_scale: 0.01        # Initial scale for P_real, P_imag
+
+      # ROI spatial gating configuration
+      roi_gate:
+        enabled: true           # Enable ROI gating
+        dilate_kernel_size: 3   # ROI dilation kernel size (0 = no dilation)
+        gaussian_sigma: 2.0     # Gaussian smoothing sigma for soft edges
+
+      # Optimizer for spectral parameters P
+      optimizer:
+        lr: 1e-3                # Learning rate for P_real, P_imag
+        weight_decay: 1e-5      # Weight decay
+        betas: [0.9, 0.999]     # Adam betas
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10
