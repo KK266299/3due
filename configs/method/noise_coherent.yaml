@@ -61,7 +61,7 @@ ue:
 
       # === P 参数初始化 ===
       p_init:
-        init_scale: 0.01       # P 初始化尺度
+        init_scale: 10.0       # P 初始化尺度（较大值确保初始 delta 不为 0）
 
       # === 频域 Mask 参数 ===
       spectral_mask:

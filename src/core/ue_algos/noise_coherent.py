@@ -204,8 +204,8 @@ class SpectralPerturbation(nn.Module):
         self.C, self.D, self.H, self.W = image_shape
         self.epsilon = epsilon
 
-        # P 初始化
-        init_scale = float(get_config(p_init_config, "init_scale", 0.01))
+        # P 初始化：使用较大的随机值，确保初始 delta 不为 0
+        init_scale = float(get_config(p_init_config, "init_scale", 10.0))
         P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
         P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
 

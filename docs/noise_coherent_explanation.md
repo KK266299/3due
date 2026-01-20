@@ -21,9 +21,39 @@ P_imag = nn.Parameter(torch.randn(C, D, H, W) * init_scale)  # 虚部
 ```
 
 配置参数：
-- `p_init.init_scale`: 初始化尺度（默认 0.01）
+- `p_init.init_scale`: 初始化尺度（默认 10.0）
+  - **重要**：需要较大的初始值（如 10.0），因为经过 IFFT → tanh → epsilon 后值会被大幅缩小
+  - 如果 init_scale 太小（如 0.01），初始 δ 会接近 0
 
-### 1.2 直接更新 P
+### 1.2 为什么需要大的初始化尺度？
+
+由于扰动经过多个变换步骤，初始值需要足够大：
+
+```python
+# 假设 init_scale = 0.01（太小）
+P_real ∼ N(0, 0.01²)  # 很小的随机值
+
+# 经过 IFFT
+delta_raw = IFFT(P_complex * M).real  # 值进一步缩小（频域 mask 很稀疏）
+
+# 经过 tanh
+delta_tanh = tanh(delta_raw)  # 对小值，tanh(x) ≈ x
+
+# 乘以 epsilon
+delta = delta_tanh * epsilon  # 例如 0.0157
+
+# 结果：delta ≈ 0.0001 * 0.0157 ≈ 0.0000016（接近 0！）
+```
+
+**解决方案**：使用较大的 `init_scale`（如 10.0）：
+```python
+# init_scale = 10.0（合理）
+P_real ∼ N(0, 10²)  # 较大的随机值
+
+# 最终 delta 会有合理的幅度（接近 epsilon 范围）
+```
+
+### 1.3 直接更新 P
 **重要**：P 是直接通过梯度下降更新，**不是增量更新**。
 
 每次迭代：
@@ -260,7 +290,7 @@ ue:
 
       # P 初始化
       p_init:
-        init_scale: 0.01
+        init_scale: 10.0
 
       # 频域 mask
       spectral_mask:
