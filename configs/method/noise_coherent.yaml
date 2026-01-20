@@ -1,32 +1,40 @@
 # @package _global_
-# Noise Coherent: UNet-based P (Complex Spectral Parameters) Update
+# Noise Coherent: Learnable P (Complex Spectral Parameters) with UNet Update
 #
 # 核心思想:
-#   - UNet 输出 P 的实部和虚部增量 (delta_P_real, delta_P_imag)
-#   - 维护一个可学习的 P 参数，通过 UNet 的输出进行更新
-#   - P 更新后应用频域 mask，然后 IFFT 得到空域扰动
-#   - 支持 ROI 软边缘 mask，梯度可以回传更新 UNet
+#   - 维护可学习的 P 参数（频域，实部和虚部）
+#   - 应用频域 mask，IFFT 到空域
+#   - tanh + epsilon 限制扰动范围
+#   - 可选的 ROI 软边缘 mask
+#   - 最小化 surrogate 在扰动图像上的分割损失（min-min）
 #
 # 使用方法:
 #   python ue_generate.py \
-#     dataset=brats19 \
-#     task=brats19_ue \
+#     dataset=flare21 \
+#     task.run_name=noise_coherent_4_255 \
 #     method=noise_coherent \
-#     task.run_name=noise_coherent_exp \
+#     task=flare21_ue \
 #     training.epochs=100 \
-#     training.batch_size=4 \
-#     training.gpu_ids=[0]
+#     ue.key.type=samplewise \
+#     ue.key.from=field \
+#     ue.key.field=case_id \
+#     training.batch_size=8 \
+#     training.gpu_ids=[0] \
+#     ue.algorithm.params.epsilon=0.0156863 \
+#     ue.algorithm.params.surrogate_step=10 \
+#     ue.io.save_from_epoch=50 \
+#     ue.io.save_every=10
 
 training:
   model_save_start: 9999  # 不需要保存模型
   model_save_freq: 10
   epochs: 100
-  batch_size: 4
+  batch_size: 8
   num_workers: 0
   sampler:
     name: pk
     p: 4   # 每个batch 4个不同的patient
-    k: 1   # 每个patient 1张图像
+    k: 2   # 每个patient 2张图像
   data:
     poison:
       enabled: false
@@ -47,53 +55,31 @@ ue:
     kind: training_based
     name: noise_coherent
     params:
-      # === 扰动边界 ===
-      epsilon: 0.01568627       # 4/255 = 0.01568627
-
-      # === UNet 架构 ===
-      unet:
-        in_channels: 4          # 输入通道数（根据数据集修改）
-        out_channels: 8         # 输出 P 的实部和虚部（每个通道对应 real/imag）
-        spatial_dims: 3
-        channels: [32, 64, 128, 256]
-        strides: [2, 2, 2]
-        num_res_units: 2
-        norm: "INSTANCE"
-        act: "RELU"
-        dropout: 0.0
+      epsilon: 0.0313725       # 8/255 = 0.0313725, 4/255 = 0.0156863
+      noise_step: 1            # P 训练迭代次数 per batch
+      surrogate_step: 2        # S-step: 每个 epoch 更新 surrogate 的 batch 数
 
       # === P 参数初始化 ===
       p_init:
-        enabled: true           # 是否初始化 P（如果 false，则 P 从零开始）
-        init_scale: 0.01        # P 初始化尺度
-        learnable: true         # P 是否可学习（如果 true，P 作为参数优化）
-
-      # === P 更新策略 ===
-      p_update:
-        mode: "additive"        # "additive": P = P + UNet(x), "replace": P = UNet(x)
-        update_scale: 0.1       # UNet 输出的缩放系数
+        init_scale: 0.01       # P 初始化尺度
 
       # === 频域 Mask 参数 ===
       spectral_mask:
-        z_max: 0.125            # Z 轴（层间）低频截止
-        xy_min: 0.05            # XY 平面（层内）带通下限
-        xy_max: 0.3             # XY 平面（层内）带通上限
+        z_max: 0.125           # Z 轴（层间）低频截止
+        xy_min: 0.05           # XY 平面（层内）带通下限
+        xy_max: 0.3            # XY 平面（层内）带通上限
 
       # === ROI 软边缘 ===
       roi_gate:
-        enabled: true           # 启用 ROI gating
-        dilate_kernel_size: 3   # ROI 膨胀卷积核
-        gaussian_sigma: 2.0     # 高斯平滑 sigma（控制边缘软化程度）
+        enabled: false         # 启用/禁用 ROI 软边缘（false = 硬边缘）
+        dilate_kernel_size: 3  # ROI 膨胀卷积核
+        gaussian_sigma: 2.0    # 高斯平滑 sigma（控制边缘软化程度）
 
-      # === 优化器（针对 UNet 和 P） ===
+      # === 优化器（针对 P） ===
       optimizer:
-        lr: 1.0e-3              # 学习率
-        weight_decay: 1.0e-5    # 权重衰减
-        betas: [0.9, 0.999]     # Adam betas
-
-      # === 训练步数 ===
-      noise_step: 5             # N-step: 每个 batch 的内循环迭代次数
-      surrogate_step: 2         # S-step: 每个 epoch 更新 surrogate 的 batch 数
+        lr: 1.0e-3             # 学习率
+        weight_decay: 1.0e-5   # 权重衰减
+        betas: [0.9, 0.999]    # Adam betas
 
   eot:
     enabled: false
@@ -105,8 +91,8 @@ ue:
   surrogates:
     s_seg:
       backbone: unet
-      in_channels: 4           # BraTS: 4 modalities
-      num_classes: 4           # BraTS: 4 classes
+      in_channels: 4           # 根据数据集修改
+      num_classes: 4           # 根据数据集修改
       spatial_dims: 3
       channels: [32, 64, 128, 256, 512]
       strides: [2, 2, 2, 2]

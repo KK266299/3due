@@ -1,40 +1,40 @@
 # file: src/core/ue_algos/noise_coherent.py
 """
-Noise Coherent: UNet-based P (Complex Spectral Parameters) Update
+Noise Coherent: Learnable P (Complex Spectral Parameters) for 3D Segmentation UE
 
 核心思想:
-  - 使用 UNet 输出 P 的实部和虚部增量 (delta_P_real, delta_P_imag)
-  - 维护一个可学习的 P 参数，通过 UNet 的输出进行更新
-  - P 更新后应用频域 mask，然后 IFFT 得到空域扰动
-  - 支持 ROI 软边缘 mask，梯度可以回传更新 UNet 和 P
+  - 维护可学习的 P 参数（频域，实部和虚部）
+  - 应用固定的频域 mask，然后 IFFT 到空域
+  - tanh + epsilon 限制扰动范围
+  - 可选的 ROI 软边缘 mask（可开关）
+  - 最小化 surrogate 在扰动图像上的分割损失（min-min）
 
-Loss 计算方法:
-  1. 通过 UNet 生成 P 的实部和虚部增量
-  2. 更新 P: P_new = P + scale * UNet_output (additive mode)
-  3. 应用频域 mask: P_masked = P_new * M
-  4. IFFT 到空域: delta = IFFT(P_masked)
-  5. 应用 ROI 软边缘: delta = delta * ROI_mask
-  6. 生成扰动图像: x_perturbed = clip(x + delta, 0, 1)
-  7. 前向 surrogate: logits = surrogate(normalize(x_perturbed))
-  8. 计算分割损失: loss = DiceCELoss(logits, label)
-  9. 反向传播更新 UNet 和 P
+流程:
+  1. 初始化可学习的 P_real 和 P_imag
+  2. 构建复数 P = P_real + i * P_imag
+  3. 应用频域 mask: P_masked = P * M
+  4. IFFT 到空域: delta_raw = IFFT(P_masked).real
+  5. tanh + epsilon: delta = tanh(delta_raw) * epsilon
+  6. 可选 ROI gate: delta = delta * ROI_mask
+  7. 生成扰动图像: x_perturbed = clip(x + delta, 0, 1)
+  8. 前向冻结的 surrogate: logits = surrogate(x_perturbed)
+  9. 最小化分割损失: loss = DiceCELoss(logits, label)
+  10. 反向传播更新 P
 
 软边缘梯度回传:
-  - ROI_mask 通过高斯平滑生成，值在 [0, 1] 范围内
+  - 当 roi_gate.enabled=true 时，ROI_mask 通过高斯平滑生成，值在 [0, 1]
   - 软边缘区域 (0 < ROI_mask < 1) 的扰动会被缩放
-  - 梯度回传时，软边缘区域的梯度会乘以 ROI_mask
-  - 这意味着软边缘部分**可以参与梯度更新**，但梯度会被衰减
-  - 边缘越软（gaussian_sigma 越大），梯度衰减越平滑
+  - 梯度回传时，软边缘区域的梯度会乘以 ROI_mask，梯度平滑衰减
+  - 当 roi_gate.enabled=false 时，使用硬边缘（ROI_mask 为 0 或 1）
 """
 from __future__ import annotations
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
 from monai.losses import DiceCELoss
-from monai.networks.nets import UNet
 
 from ...registry import register_plugin
 from ...utils.config import get_config, require_config
@@ -118,28 +118,33 @@ class SpectralMaskGenerator:
 
 class ROISpatialGate(nn.Module):
     """
-    ROI 空域门控，带高斯平滑边缘。
+    ROI 空域门控，支持硬边缘和软边缘（高斯平滑）。
+
+    - enabled=false: 硬边缘（ROI_mask 为 0 或 1）
+    - enabled=true: 软边缘（高斯平滑，ROI_mask 在 [0, 1]）
 
     梯度回传:
-      - 软边缘通过高斯平滑生成，完全可微
-      - 梯度在边缘区域平滑衰减
-      - 边缘软化程度由 gaussian_sigma 控制
+      - 硬边缘: 梯度在 ROI 边界截断
+      - 软边缘: 梯度在边缘区域平滑衰减，完全可微
     """
 
     def __init__(self, roi_config: DictConfig):
         super().__init__()
+        self.enabled = bool(get_config(roi_config, "enabled", False))
         self.dilate_kernel_size = int(get_config(roi_config, "dilate_kernel_size", 3))
         self.gaussian_sigma = float(get_config(roi_config, "gaussian_sigma", 2.0))
 
     def forward(self, label: torch.Tensor) -> torch.Tensor:
         """
-        从分割标签生成平滑的 ROI mask。
+        从分割标签生成 ROI mask。
 
         Args:
             label: [B, D, H, W] or [B, 1, D, H, W] 分割标签
 
         Returns:
-            roi_mask: [B, 1, D, H, W] 平滑 ROI mask，值在 [0, 1]
+            roi_mask: [B, 1, D, H, W] ROI mask
+                - enabled=false: 值为 0 或 1（硬边缘）
+                - enabled=true: 值在 [0, 1]（软边缘）
         """
         # 确保 label 是 [B, D, H, W]
         if label.dim() == 5:
@@ -163,8 +168,8 @@ class ROISpatialGate(nn.Module):
         # 添加通道维度: [B, 1, D, H, W]
         mask = mask.unsqueeze(1)
 
-        # 高斯平滑用于软边缘（关键：保持梯度流动）
-        if self.gaussian_sigma > 0:
+        # 高斯平滑用于软边缘（仅当 enabled=true）
+        if self.enabled and self.gaussian_sigma > 0:
             kernel = _gaussian_kernel_3d(
                 self.gaussian_sigma, device=mask.device, dtype=mask.dtype
             )
@@ -176,115 +181,36 @@ class ROISpatialGate(nn.Module):
         return mask
 
 
-class UNetPGenerator(nn.Module):
+class SpectralPerturbation(nn.Module):
     """
-    使用 UNet 生成 P 的实部和虚部。
-
-    输入: 图像 x [B, C_in, D, H, W]
-    输出: P 的实部和虚部 [B, 2*C_out, D, H, W]
-           前 C_out 个通道是实部，后 C_out 个通道是虚部
-    """
-
-    def __init__(self, unet_config: DictConfig):
-        super().__init__()
-        in_channels = int(get_config(unet_config, "in_channels", 4))
-        out_channels = int(get_config(unet_config, "out_channels", 8))
-        spatial_dims = int(get_config(unet_config, "spatial_dims", 3))
-        channels = list(get_config(unet_config, "channels", [32, 64, 128, 256]))
-        strides = list(get_config(unet_config, "strides", [2, 2, 2]))
-        num_res_units = int(get_config(unet_config, "num_res_units", 2))
-        norm = str(get_config(unet_config, "norm", "INSTANCE"))
-        act = str(get_config(unet_config, "act", "RELU"))
-        dropout = float(get_config(unet_config, "dropout", 0.0))
-
-        # UNet 输出实部和虚部，所以输出通道是 out_channels * 2
-        self.out_channels = out_channels
-        self.unet = UNet(
-            spatial_dims=spatial_dims,
-            in_channels=in_channels,
-            out_channels=out_channels * 2,  # 实部 + 虚部
-            channels=channels,
-            strides=strides,
-            num_res_units=num_res_units,
-            norm=norm,
-            act=act,
-            dropout=dropout,
-        )
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        生成 P 的实部和虚部。
-
-        Args:
-            x: [B, C_in, D, H, W] 输入图像
-
-        Returns:
-            P_real: [B, C_out, D, H, W] P 的实部
-            P_imag: [B, C_out, D, H, W] P 的虚部
-        """
-        output = self.unet(x)  # [B, 2*C_out, D, H, W]
-
-        # 分离实部和虚部
-        P_real = output[:, : self.out_channels]  # [B, C_out, D, H, W]
-        P_imag = output[:, self.out_channels :]  # [B, C_out, D, H, W]
-
-        return P_real, P_imag
-
-
-class SpectralPerturbationModule(nn.Module):
-    """
-    频域扰动模块：维护 P 参数，通过 UNet 更新，应用频域 mask，IFFT 到空域。
+    频域扰动模块：维护可学习的 P（实部和虚部），应用频域 mask，IFFT 到空域。
 
     流程:
-      1. 输入图像 x [B, C_in, D, H, W]
-      2. UNet 生成 P 的实部和虚部增量 [B, C_out, D, H, W]
-      3. 更新 P: P_new = P + scale * delta_P (或 P_new = delta_P)
-      4. 应用频域 mask: P_masked = P_new * M
-      5. IFFT 到空域: delta = IFFT(P_masked)
-      6. 返回空域扰动 delta [B, C_out, D, H, W]
+      1. P = P_real + i * P_imag  [C, D, H, W]
+      2. 应用频域 mask: P_masked = P * M
+      3. IFFT 到空域: delta_raw = IFFT(P_masked).real
+      4. tanh + epsilon: delta = tanh(delta_raw) * epsilon
     """
 
     def __init__(
         self,
-        unet_config: DictConfig,
         p_init_config: DictConfig,
-        p_update_config: DictConfig,
         spectral_mask_config: DictConfig,
-        image_shape: Tuple[int, int, int, int],  # (C, D, H, W)
+        image_shape: tuple,  # (C, D, H, W)
+        epsilon: float,
         device: torch.device,
     ):
         super().__init__()
         self.C, self.D, self.H, self.W = image_shape
-
-        # UNet 生成器
-        self.unet_generator = UNetPGenerator(unet_config).to(device)
+        self.epsilon = epsilon
 
         # P 初始化
-        p_enabled = bool(get_config(p_init_config, "enabled", True))
         init_scale = float(get_config(p_init_config, "init_scale", 0.01))
-        learnable = bool(get_config(p_init_config, "learnable", True))
+        P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
+        P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
 
-        if p_enabled:
-            P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
-            P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
-            if learnable:
-                self.P_real = nn.Parameter(P_real_init)
-                self.P_imag = nn.Parameter(P_imag_init)
-            else:
-                self.register_buffer("P_real", P_real_init)
-                self.register_buffer("P_imag", P_imag_init)
-        else:
-            # 从零开始
-            if learnable:
-                self.P_real = nn.Parameter(torch.zeros(self.C, self.D, self.H, self.W, device=device))
-                self.P_imag = nn.Parameter(torch.zeros(self.C, self.D, self.H, self.W, device=device))
-            else:
-                self.register_buffer("P_real", torch.zeros(self.C, self.D, self.H, self.W, device=device))
-                self.register_buffer("P_imag", torch.zeros(self.C, self.D, self.H, self.W, device=device))
-
-        # P 更新策略
-        self.update_mode = str(get_config(p_update_config, "mode", "additive"))
-        self.update_scale = float(get_config(p_update_config, "update_scale", 0.1))
+        self.P_real = nn.Parameter(P_real_init)
+        self.P_imag = nn.Parameter(P_imag_init)
 
         # 固定频域 mask
         mask = SpectralMaskGenerator.build_mask(
@@ -292,41 +218,30 @@ class SpectralPerturbationModule(nn.Module):
         )
         self.register_buffer("spectral_mask", mask)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, batch_size: int) -> torch.Tensor:
         """
         生成空域扰动。
 
         Args:
-            x: [B, C_in, D, H, W] 输入图像
+            batch_size: batch size
 
         Returns:
-            delta: [B, C, D, H, W] 空域扰动
+            delta: [B, C, D, H, W] 扰动，范围 [-epsilon, epsilon]
         """
-        B = x.shape[0]
+        # 1. 构建复数 P
+        P_complex = torch.complex(self.P_real, self.P_imag)  # [C, D, H, W]
 
-        # 1. UNet 生成 P 的实部和虚部增量
-        delta_P_real, delta_P_imag = self.unet_generator(x)  # [B, C, D, H, W]
+        # 2. 应用频域 mask
+        P_masked = P_complex * self.spectral_mask  # [C, D, H, W] * [1, D, H, W]
 
-        # 2. 更新 P
-        if self.update_mode == "additive":
-            # P_new = P + scale * delta_P
-            P_real_new = self.P_real.unsqueeze(0) + self.update_scale * delta_P_real
-            P_imag_new = self.P_imag.unsqueeze(0) + self.update_scale * delta_P_imag
-        elif self.update_mode == "replace":
-            # P_new = delta_P
-            P_real_new = delta_P_real
-            P_imag_new = delta_P_imag
-        else:
-            raise ValueError(f"Unknown update mode: {self.update_mode}")
+        # 3. IFFT 到空域
+        delta_raw = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real  # [C, D, H, W]
 
-        # 3. 构建复数 P
-        P_complex = torch.complex(P_real_new, P_imag_new)  # [B, C, D, H, W]
+        # 4. tanh + epsilon
+        delta = torch.tanh(delta_raw) * self.epsilon  # [C, D, H, W]
 
-        # 4. 应用频域 mask
-        P_masked = P_complex * self.spectral_mask  # [B, C, D, H, W] * [1, D, H, W]
-
-        # 5. IFFT 到空域
-        delta = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real  # [B, C, D, H, W]
+        # 5. 扩展到 batch
+        delta = delta.unsqueeze(0).expand(batch_size, -1, -1, -1, -1)  # [B, C, D, H, W]
 
         return delta
 
@@ -334,34 +249,30 @@ class SpectralPerturbationModule(nn.Module):
 @register_plugin("noise_coherent")
 class NoiseCoherent:
     """
-    Noise Coherent: UNet-based P (Complex Spectral Parameters) Update
+    Noise Coherent: Learnable P (Complex Spectral Parameters) for 3D Segmentation UE
 
     核心流程:
-      1. 使用 UNet 生成 P 的实部和虚部增量
-      2. 更新 P（additive 或 replace 模式）
-      3. 应用频域 mask
-      4. IFFT 到空域得到扰动
-      5. 应用 ROI 软边缘 mask
-      6. 生成扰动图像
-      7. 前向 surrogate 计算损失
-      8. 反向传播更新 UNet 和 P
+      1. 维护可学习的 P_real 和 P_imag
+      2. 应用频域 mask，IFFT 到空域
+      3. tanh + epsilon 限制扰动
+      4. 可选 ROI gate（软边缘或硬边缘）
+      5. 生成扰动图像
+      6. 最小化 surrogate 的分割损失
+      7. 反向传播更新 P
 
     Loss 计算:
       - 使用 DiceCELoss（Dice + CrossEntropy）
-      - 目标是最大化 surrogate 的分割损失
-      - 梯度回传到 UNet 和 P 参数
+      - 目标: 最小化 surrogate 在扰动图像上的分割损失
+      - 梯度回传到 P_real 和 P_imag
 
     软边缘梯度回传:
-      - ROI mask 通过高斯平滑生成，值在 [0, 1]
-      - 扰动在边缘区域被平滑缩放: delta_masked = delta * ROI_mask
-      - 反向传播时，梯度也会被 ROI_mask 缩放
-      - 软边缘区域（0 < mask < 1）的梯度会被衰减但不会完全消失
-      - 这保证了边缘区域也能参与学习，避免硬边界的梯度截断
+      - roi_gate.enabled=true: 软边缘，梯度平滑衰减
+      - roi_gate.enabled=false: 硬边缘，梯度在边界截断
     """
 
     def __init__(self):
         self._seg_loss: DiceCELoss | None = None
-        self._spectral_module: SpectralPerturbationModule | None = None
+        self._spectral_module: SpectralPerturbation | None = None
         self._roi_gate: ROISpatialGate | None = None
         self._optimizer: torch.optim.Optimizer | None = None
         self._initialized: bool = False
@@ -374,7 +285,7 @@ class NoiseCoherent:
             x[:, c].sub_(float(m)).div_(float(s))
         return x
 
-    def _init_components(self, trainer, image_shape: Tuple[int, int, int, int]):
+    def _init_components(self, trainer, image_shape: tuple):
         """
         初始化组件（延迟初始化，仅一次）。
 
@@ -392,23 +303,18 @@ class NoiseCoherent:
         # 获取配置
         algo = require_config(cfg, "ue.algorithm")
         params = require_config(algo, "params")
-        unet_cfg = get_config(params, "unet", DictConfig({}))
+        eps = float(get_config(params, "epsilon", 8 / 255.0))
         p_init_cfg = get_config(params, "p_init", DictConfig({}))
-        p_update_cfg = get_config(params, "p_update", DictConfig({}))
         spectral_cfg = get_config(params, "spectral_mask", DictConfig({}))
         roi_cfg = get_config(params, "roi_gate", DictConfig({}))
 
         # 初始化频域扰动模块
-        self._spectral_module = SpectralPerturbationModule(
-            unet_cfg, p_init_cfg, p_update_cfg, spectral_cfg, image_shape, device
+        self._spectral_module = SpectralPerturbation(
+            p_init_cfg, spectral_cfg, image_shape, eps, device
         )
 
         # 初始化 ROI gate
-        roi_enabled = bool(get_config(roi_cfg, "enabled", True))
-        if roi_enabled:
-            self._roi_gate = ROISpatialGate(roi_cfg).to(device)
-        else:
-            self._roi_gate = None
+        self._roi_gate = ROISpatialGate(roi_cfg).to(device)
 
         # 初始化优化器
         opt_cfg = get_config(params, "optimizer", DictConfig({}))
@@ -416,17 +322,15 @@ class NoiseCoherent:
         weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
         betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
 
-        # 收集所有需要优化的参数
-        params_to_optimize = list(self._spectral_module.parameters())
-
         self._optimizer = torch.optim.Adam(
-            params_to_optimize, lr=lr, weight_decay=weight_decay, betas=betas
+            self._spectral_module.parameters(), lr=lr, weight_decay=weight_decay, betas=betas
         )
 
         self._initialized = True
+        roi_enabled = bool(get_config(roi_cfg, "enabled", False))
         self.logger.info(
             f"[NoiseCoherent] Initialized: image_shape={image_shape}, "
-            f"roi_enabled={roi_enabled}, lr={lr}"
+            f"epsilon={eps:.6f}, roi_soft_edge={roi_enabled}, lr={lr}"
         )
 
     def _get_seg_loss(self, trainer) -> DiceCELoss:
@@ -457,7 +361,7 @@ class NoiseCoherent:
     # ---------------- Surrogate-step: 更新 surrogate ---------------- #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        仅更新 surrogate 参数，不更新频域参数。
+        仅更新 surrogate 参数，不更新 P。
         使用来自 backend 的 noise（已应用频域 + ROI 约束）。
         """
         cfg = trainer.config
@@ -519,29 +423,25 @@ class NoiseCoherent:
             "loss": loss_val,
         }
 
-    # ---------------- N-step: 更新频域参数 ---------------- #
+    # ---------------- N-step: 更新 P ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        更新 UNet 和 P 参数以最大化 surrogate 损失。
+        更新 P 参数以最小化 surrogate 损失。
 
         流程:
-          1. UNet 生成 P 的实部和虚部增量
-          2. 更新 P: P_new = P + scale * delta_P (additive mode)
-          3. 应用频域 mask: P_masked = P_new * M
-          4. IFFT 到空域: delta = IFFT(P_masked)
-          5. 应用 ROI gate: delta = delta * ROI_mask
-          6. Clip 到 epsilon
-          7. 前向冻结的 surrogate
-          8. 计算损失并反向传播更新 P
-          9. 将最终 noise 存储到 backend
+          1. 生成扰动: delta = tanh(IFFT(P * M)) * epsilon
+          2. 应用 ROI gate: delta = delta * ROI_mask
+          3. 生成扰动图像: x_perturbed = clip(x + delta, 0, 1)
+          4. 前向冻结的 surrogate: logits = surrogate(x_perturbed)
+          5. 计算损失: loss = DiceCELoss(logits, label)
+          6. 反向传播更新 P
+          7. 将最终 noise 存储到 backend
 
-        软边缘梯度回传机制:
-          - ROI_mask 是通过高斯平滑生成的，值在 [0, 1] 范围
-          - 在边缘区域，mask 值在 0 和 1 之间平滑过渡
-          - 扰动被 mask 缩放: delta_masked = delta * ROI_mask
-          - 反向传播时，损失对 delta 的梯度为: dL/d(delta) = dL/d(delta_masked) * ROI_mask
-          - 因此，软边缘区域的梯度会被衰减但不会完全消失
-          - 这允许网络学习如何在边缘区域生成更好的扰动
+        软边缘梯度回传:
+          - roi_gate.enabled=true: ROI_mask 通过高斯平滑生成，值在 [0, 1]
+            梯度: dL/d(delta) = dL/d(delta_masked) * ROI_mask（平滑衰减）
+          - roi_gate.enabled=false: ROI_mask 为 0 或 1（硬边缘）
+            梯度: ROI 外部梯度为 0，内部梯度不变
         """
         cfg = trainer.config
         device = trainer.device
@@ -580,26 +480,20 @@ class NoiseCoherent:
         for p in s_model.parameters():
             p.requires_grad = False
 
-        # 获取 ROI mask（如果启用）
-        if self._roi_gate is not None:
-            roi_mask = self._roi_gate(y)  # [B, 1, D, H, W]
-            roi_mask = roi_mask.expand(-1, C_in, -1, -1, -1)  # [B, C, D, H, W]
-        else:
-            roi_mask = None
+        # 获取 ROI mask
+        roi_mask = self._roi_gate(y)  # [B, 1, D, H, W]
+        roi_mask = roi_mask.expand(-1, C_in, -1, -1, -1)  # [B, C, D, H, W]
 
-        # 训练频域参数
+        # 训练 P
+        self._spectral_module.train()
         last_loss = torch.tensor(0.0, device=device)
 
-        for step in range(max(1, num_steps)):
-            # 通过 UNet 生成扰动
-            delta = self._spectral_module(x)  # [B, C, D, H, W]
+        for _ in range(max(1, num_steps)):
+            # 生成扰动
+            delta_raw = self._spectral_module(B)  # [B, C, D, H, W]
 
-            # 应用 ROI gate（软边缘，梯度可以回传）
-            if roi_mask is not None:
-                delta = delta * roi_mask
-
-            # Clip 到 epsilon
-            delta = delta.clamp(-eps, eps)
+            # 应用 ROI gate
+            delta = delta_raw * roi_mask
 
             # 创建扰动图像
             perturb_img = (x + delta).clamp(0.0, 1.0)
@@ -610,11 +504,11 @@ class NoiseCoherent:
             out = s_model(xn)
             logits = out[0] if isinstance(out, (tuple, list)) else out
 
-            # 计算损失
+            # 计算损失（最小化）
             loss = seg_loss_fn(logits, y.unsqueeze(1))
             last_loss = loss.detach()
 
-            # 反向传播更新频域参数
+            # 反向传播更新 P
             if self._optimizer is None:
                 raise RuntimeError("[UE] Optimizer not initialized.")
 
@@ -623,14 +517,10 @@ class NoiseCoherent:
             self._optimizer.step()
 
         # 存储最终 noise 到 backend
+        self._spectral_module.eval()
         with torch.no_grad():
-            final_delta = self._spectral_module(x)  # [B, C, D, H, W]
-
-            # 应用 ROI gate
-            if roi_mask is not None:
-                final_delta = final_delta * roi_mask
-
-            # Clip 到 epsilon
+            final_delta_raw = self._spectral_module(B)
+            final_delta = final_delta_raw * roi_mask
             final_delta = final_delta.clamp(-eps, eps)
 
         nb.commit_batch(keys_list, final_delta.detach().cpu())
