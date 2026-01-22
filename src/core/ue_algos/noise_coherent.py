@@ -207,9 +207,15 @@ class SpectralPerturbation(nn.Module):
         # P 初始化：自适应缩放确保初始 delta 在合理范围
         init_scale = float(get_config(p_init_config, "init_scale", 10.0))
 
-        # 方法 1：频域随机初始化（当前方法）
-        # 方法 2：空域随机初始化然后 FFT（用户建议）
-        use_spatial_init = bool(get_config(p_init_config, "use_spatial_init", True))
+        # 初始化方法选择
+        # - "spatial": 空域随机初始化然后 FFT（用户建议）
+        # - "spectral": 频域随机初始化然后 IFFT
+        # - "spectral_masked": 频域 mask 内随机初始化（推荐，能量集中在有效频率）
+        init_method = str(get_config(p_init_config, "init_method", "spectral_masked"))
+
+        # 向后兼容：如果设置了 use_spatial_init，覆盖 init_method
+        if "use_spatial_init" in p_init_config:
+            init_method = "spatial" if bool(p_init_config.use_spatial_init) else "spectral"
 
         # 固定频域 mask（需要先构建）
         mask = SpectralMaskGenerator.build_mask(
@@ -217,18 +223,54 @@ class SpectralPerturbation(nn.Module):
         )
         self.register_buffer("spectral_mask", mask)
 
-        if use_spatial_init:
+        if init_method == "spatial":
             # 方法 2：空域初始化 → FFT → P（推荐）
             # 直接在空域生成随机扰动，范围在 [-epsilon, epsilon]
             delta_init = torch.randn(self.C, self.D, self.H, self.W, device=device)
-            delta_init = torch.tanh(delta_init) * self.epsilon * 0.3  # 初始幅度为 epsilon 的 30%
+            delta_init = torch.tanh(delta_init) * self.epsilon * 0.5  # 初始幅度为 epsilon 的 50%
 
             # FFT 到频域
             P_complex_init = torch.fft.fftn(delta_init, dim=(-3, -2, -1))
+
+            # 关键：应用 spectral_mask，然后 IFFT 回去检查实际幅度
+            P_masked = P_complex_init * mask
+            delta_check = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real
+            delta_check = torch.tanh(delta_check) * self.epsilon
+
+            # 检查 mask 后的 delta 幅度，自适应放大 P
+            delta_max = delta_check.abs().max().item()
+            target_delta = self.epsilon * 0.5  # 目标幅度
+            if delta_max < target_delta * 0.1:  # 如果 delta 太小（< 目标的 10%）
+                # 需要放大 P 来补偿 mask 的衰减
+                scale_factor = target_delta / max(delta_max, 1e-8)
+                P_complex_init = P_complex_init * scale_factor
+
             P_real_init = P_complex_init.real
             P_imag_init = P_complex_init.imag
-        else:
-            # 方法 1：频域初始化 → IFFT → delta（原方法）
+        elif init_method == "spectral_masked":
+            # 方法 3：频域 mask 内随机初始化（推荐）
+            # 只在 mask 允许的频率上生成随机值，能量集中，避免浪费
+            P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
+            P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
+
+            # 直接应用 mask（mask 外的频率为 0）
+            P_real_init = P_real_init * mask
+            P_imag_init = P_imag_init * mask
+
+            # 检查 delta 范围并自适应调整
+            P_complex_init = torch.complex(P_real_init, P_imag_init)
+            delta_init = torch.fft.ifftn(P_complex_init, dim=(-3, -2, -1)).real
+            delta_init = torch.tanh(delta_init) * self.epsilon
+
+            # 自适应放大 P 确保 delta 有合理幅度
+            delta_max = delta_init.abs().max().item()
+            target_delta = self.epsilon * 0.5  # 目标：epsilon 的 50%
+            if delta_max < target_delta * 0.1:  # 如果太小
+                scale_factor = target_delta / max(delta_max, 1e-8)
+                P_real_init = P_real_init * scale_factor
+                P_imag_init = P_imag_init * scale_factor
+        else:  # "spectral"
+            # 方法 2：频域初始化 → IFFT → delta（原方法）
             P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
             P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
 
@@ -240,9 +282,9 @@ class SpectralPerturbation(nn.Module):
 
             # 检查初始 delta 的幅度
             delta_max = delta_init.abs().max().item()
-            if delta_max < 1e-6:
+            target_delta = self.epsilon * 0.5
+            if delta_max < target_delta * 0.1:
                 # delta 太小，需要放大 P
-                target_delta = self.epsilon * 0.3  # 目标：epsilon 的 30%
                 scale_factor = target_delta / max(delta_max, 1e-8)
                 P_real_init = P_real_init * scale_factor
                 P_imag_init = P_imag_init * scale_factor

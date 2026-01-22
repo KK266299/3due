@@ -61,8 +61,8 @@ ue:
 
       # === P 参数初始化 ===
       p_init:
-        use_spatial_init: true  # true: 空域初始化→FFT; false: 频域初始化→IFFT
-        init_scale: 10.0        # 初始化尺度（仅当 use_spatial_init=false 时使用）
+        init_method: "spectral_masked"  # "spatial": 空域→FFT; "spectral": 频域→IFFT; "spectral_masked": 频域mask内初始化（推荐）
+        init_scale: 10.0                # 初始化尺度（用于 spectral 和 spectral_masked 方法）
 
       # === 频域 Mask 参数 ===
       spectral_mask:
