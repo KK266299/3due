@@ -204,19 +204,51 @@ class SpectralPerturbation(nn.Module):
         self.C, self.D, self.H, self.W = image_shape
         self.epsilon = epsilon
 
-        # P 初始化：使用较大的随机值，确保初始 delta 不为 0
+        # P 初始化：自适应缩放确保初始 delta 在合理范围
         init_scale = float(get_config(p_init_config, "init_scale", 10.0))
-        P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
-        P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
 
-        self.P_real = nn.Parameter(P_real_init)
-        self.P_imag = nn.Parameter(P_imag_init)
+        # 方法 1：频域随机初始化（当前方法）
+        # 方法 2：空域随机初始化然后 FFT（用户建议）
+        use_spatial_init = bool(get_config(p_init_config, "use_spatial_init", True))
 
-        # 固定频域 mask
+        # 固定频域 mask（需要先构建）
         mask = SpectralMaskGenerator.build_mask(
             self.D, self.H, self.W, spectral_mask_config, device, torch.float32
         )
         self.register_buffer("spectral_mask", mask)
+
+        if use_spatial_init:
+            # 方法 2：空域初始化 → FFT → P（推荐）
+            # 直接在空域生成随机扰动，范围在 [-epsilon, epsilon]
+            delta_init = torch.randn(self.C, self.D, self.H, self.W, device=device)
+            delta_init = torch.tanh(delta_init) * self.epsilon * 0.3  # 初始幅度为 epsilon 的 30%
+
+            # FFT 到频域
+            P_complex_init = torch.fft.fftn(delta_init, dim=(-3, -2, -1))
+            P_real_init = P_complex_init.real
+            P_imag_init = P_complex_init.imag
+        else:
+            # 方法 1：频域初始化 → IFFT → delta（原方法）
+            P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
+            P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
+
+            # 应用 mask 并检查 delta 范围，自适应调整尺度
+            P_complex_init = torch.complex(P_real_init, P_imag_init)
+            P_masked = P_complex_init * mask
+            delta_init = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real
+            delta_init = torch.tanh(delta_init) * self.epsilon
+
+            # 检查初始 delta 的幅度
+            delta_max = delta_init.abs().max().item()
+            if delta_max < 1e-6:
+                # delta 太小，需要放大 P
+                target_delta = self.epsilon * 0.3  # 目标：epsilon 的 30%
+                scale_factor = target_delta / max(delta_max, 1e-8)
+                P_real_init = P_real_init * scale_factor
+                P_imag_init = P_imag_init * scale_factor
+
+        self.P_real = nn.Parameter(P_real_init)
+        self.P_imag = nn.Parameter(P_imag_init)
 
     def forward(self, batch_size: int) -> torch.Tensor:
         """
