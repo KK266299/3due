@@ -417,7 +417,12 @@ class NoiseCoherent:
 
         这是与 unet_roi_noise 的核心区别：
         - unet_roi_noise: delta = tanh(UNet(x)) * epsilon
-        - noise_coherent: delta = tanh(IFFT(P * M)) * epsilon, 其中 P = UNet(x)
+        - noise_coherent: delta = tanh(normalize(IFFT(P * M))) * epsilon
+
+        关键修复：IFFT 后需要归一化
+        - 频域 mask 过滤掉大部分频率分量，导致 IFFT 后能量很小
+        - 如果不归一化，tanh(很小的值) ≈ 很小的值，导致 delta 远小于 epsilon
+        - 解决方案：对 delta_raw 进行 per-sample 归一化，使其能充分利用 tanh 的范围
 
         Args:
             x: 输入图像 [B, C, D, H, W]
@@ -440,10 +445,20 @@ class NoiseCoherent:
         # Step 4: IFFT 到空域
         delta_raw = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real  # [B, C, D, H, W]
 
-        # Step 5: tanh + epsilon（与 unet_roi_noise 中的 NoiseUNetWrapper 类似）
+        # Step 5: Per-sample 归一化
+        # 由于频域 mask 过滤掉大部分分量，IFFT 后能量很小
+        # 归一化使 delta_raw 的最大绝对值为 tanh_scale（如 3.0）
+        # 这样 tanh(3.0) ≈ 0.995，能充分利用 [-epsilon, epsilon] 范围
+        B = delta_raw.shape[0]
+        tanh_scale = 3.0  # tanh(3.0) ≈ 0.995
+        for i in range(B):
+            sample_max = delta_raw[i].abs().max().clamp_min(1e-8)
+            delta_raw[i] = delta_raw[i] / sample_max * tanh_scale
+
+        # Step 6: tanh + epsilon
         delta = torch.tanh(delta_raw) * self._epsilon  # [B, C, D, H, W]
 
-        # Step 6: clamp
+        # Step 7: clamp（tanh 输出已在 [-1,1]，乘 epsilon 后在 [-eps, eps]，但仍 clamp 以确保）
         delta = delta.clamp(-self._epsilon, self._epsilon)
 
         return delta
