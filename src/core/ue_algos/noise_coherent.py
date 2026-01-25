@@ -1,16 +1,16 @@
 # file: src/core/ue_algos/noise_coherent.py
 """
-Noise Coherent: Learnable P (Complex Spectral Parameters) for 3D Segmentation UE
+Noise Coherent: Sample-wise Learnable P (Complex Spectral Parameters) for 3D Segmentation UE
 
 核心思想:
-  - 维护可学习的 P 参数（频域，实部和虚部）
+  - 每个 sample (case_id) 维护独立的 P 参数（实部和虚部）
   - 应用固定的频域 mask，然后 IFFT 到空域
   - tanh + epsilon 限制扰动范围
   - 可选的 ROI 软边缘 mask（可开关）
   - 最小化 surrogate 在扰动图像上的分割损失（min-min）
 
 流程:
-  1. 初始化可学习的 P_real 和 P_imag
+  1. 每个 case_id 初始化独立的 P_real 和 P_imag
   2. 构建复数 P = P_real + i * P_imag
   3. 应用频域 mask: P_masked = P * M
   4. IFFT 到空域: delta_raw = IFFT(P_masked).real
@@ -19,7 +19,7 @@ Noise Coherent: Learnable P (Complex Spectral Parameters) for 3D Segmentation UE
   7. 生成扰动图像: x_perturbed = clip(x + delta, 0, 1)
   8. 前向冻结的 surrogate: logits = surrogate(x_perturbed)
   9. 最小化分割损失: loss = DiceCELoss(logits, label)
-  10. 反向传播更新 P
+  10. 反向传播更新对应 sample 的 P
 
 软边缘梯度回传:
   - 当 roi_gate.enabled=true 时，ROI_mask 通过高斯平滑生成，值在 [0, 1]
@@ -181,163 +181,24 @@ class ROISpatialGate(nn.Module):
         return mask
 
 
-class SpectralPerturbation(nn.Module):
-    """
-    频域扰动模块：维护可学习的 P（实部和虚部），应用频域 mask，IFFT 到空域。
-
-    流程:
-      1. P = P_real + i * P_imag  [C, D, H, W]
-      2. 应用频域 mask: P_masked = P * M
-      3. IFFT 到空域: delta_raw = IFFT(P_masked).real
-      4. tanh + epsilon: delta = tanh(delta_raw) * epsilon
-    """
-
-    def __init__(
-        self,
-        p_init_config: DictConfig,
-        spectral_mask_config: DictConfig,
-        image_shape: tuple,  # (C, D, H, W)
-        epsilon: float,
-        device: torch.device,
-    ):
-        super().__init__()
-        self.C, self.D, self.H, self.W = image_shape
-        self.epsilon = epsilon
-
-        # P 初始化：自适应缩放确保初始 delta 在合理范围
-        init_scale = float(get_config(p_init_config, "init_scale", 10.0))
-
-        # 初始化方法选择
-        # - "spatial": 空域随机初始化然后 FFT（用户建议）
-        # - "spectral": 频域随机初始化然后 IFFT
-        # - "spectral_masked": 频域 mask 内随机初始化（推荐，能量集中在有效频率）
-        init_method = str(get_config(p_init_config, "init_method", "spectral_masked"))
-
-        # 向后兼容：如果设置了 use_spatial_init，覆盖 init_method
-        if "use_spatial_init" in p_init_config:
-            init_method = "spatial" if bool(p_init_config.use_spatial_init) else "spectral"
-
-        # 固定频域 mask（需要先构建）
-        mask = SpectralMaskGenerator.build_mask(
-            self.D, self.H, self.W, spectral_mask_config, device, torch.float32
-        )
-        self.register_buffer("spectral_mask", mask)
-
-        if init_method == "spatial":
-            # 方法 2：空域初始化 → FFT → P（推荐）
-            # 直接在空域生成随机扰动，范围在 [-epsilon, epsilon]
-            delta_init = torch.randn(self.C, self.D, self.H, self.W, device=device)
-            delta_init = torch.tanh(delta_init) * self.epsilon * 0.5  # 初始幅度为 epsilon 的 50%
-
-            # FFT 到频域
-            P_complex_init = torch.fft.fftn(delta_init, dim=(-3, -2, -1))
-
-            # 关键：应用 spectral_mask，然后 IFFT 回去检查实际幅度
-            P_masked = P_complex_init * mask
-            delta_check = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real
-            delta_check = torch.tanh(delta_check) * self.epsilon
-
-            # 检查 mask 后的 delta 幅度，自适应放大 P
-            delta_max = delta_check.abs().max().item()
-            target_delta = self.epsilon * 0.5  # 目标幅度
-            if delta_max < target_delta * 0.1:  # 如果 delta 太小（< 目标的 10%）
-                # 需要放大 P 来补偿 mask 的衰减
-                scale_factor = target_delta / max(delta_max, 1e-8)
-                P_complex_init = P_complex_init * scale_factor
-
-            P_real_init = P_complex_init.real
-            P_imag_init = P_complex_init.imag
-        elif init_method == "spectral_masked":
-            # 方法 3：频域 mask 内随机初始化（推荐）
-            # 只在 mask 允许的频率上生成随机值，能量集中，避免浪费
-            P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
-            P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
-
-            # 直接应用 mask（mask 外的频率为 0）
-            P_real_init = P_real_init * mask
-            P_imag_init = P_imag_init * mask
-
-            # 检查 delta 范围并自适应调整
-            P_complex_init = torch.complex(P_real_init, P_imag_init)
-            delta_init = torch.fft.ifftn(P_complex_init, dim=(-3, -2, -1)).real
-            delta_init = torch.tanh(delta_init) * self.epsilon
-
-            # 自适应放大 P 确保 delta 有合理幅度
-            delta_max = delta_init.abs().max().item()
-            target_delta = self.epsilon * 0.5  # 目标：epsilon 的 50%
-            if delta_max < target_delta * 0.1:  # 如果太小
-                scale_factor = target_delta / max(delta_max, 1e-8)
-                P_real_init = P_real_init * scale_factor
-                P_imag_init = P_imag_init * scale_factor
-        else:  # "spectral"
-            # 方法 2：频域初始化 → IFFT → delta（原方法）
-            P_real_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
-            P_imag_init = torch.randn(self.C, self.D, self.H, self.W, device=device) * init_scale
-
-            # 应用 mask 并检查 delta 范围，自适应调整尺度
-            P_complex_init = torch.complex(P_real_init, P_imag_init)
-            P_masked = P_complex_init * mask
-            delta_init = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real
-            delta_init = torch.tanh(delta_init) * self.epsilon
-
-            # 检查初始 delta 的幅度
-            delta_max = delta_init.abs().max().item()
-            target_delta = self.epsilon * 0.5
-            if delta_max < target_delta * 0.1:
-                # delta 太小，需要放大 P
-                scale_factor = target_delta / max(delta_max, 1e-8)
-                P_real_init = P_real_init * scale_factor
-                P_imag_init = P_imag_init * scale_factor
-
-        self.P_real = nn.Parameter(P_real_init)
-        self.P_imag = nn.Parameter(P_imag_init)
-
-    def forward(self, batch_size: int) -> torch.Tensor:
-        """
-        生成空域扰动。
-
-        Args:
-            batch_size: batch size
-
-        Returns:
-            delta: [B, C, D, H, W] 扰动，范围 [-epsilon, epsilon]
-        """
-        # 1. 构建复数 P
-        P_complex = torch.complex(self.P_real, self.P_imag)  # [C, D, H, W]
-
-        # 2. 应用频域 mask
-        P_masked = P_complex * self.spectral_mask  # [C, D, H, W] * [1, D, H, W]
-
-        # 3. IFFT 到空域
-        delta_raw = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real  # [C, D, H, W]
-
-        # 4. tanh + epsilon
-        delta = torch.tanh(delta_raw) * self.epsilon  # [C, D, H, W]
-
-        # 5. 扩展到 batch
-        delta = delta.unsqueeze(0).expand(batch_size, -1, -1, -1, -1)  # [B, C, D, H, W]
-
-        return delta
-
-
 @register_plugin("noise_coherent")
 class NoiseCoherent:
     """
-    Noise Coherent: Learnable P (Complex Spectral Parameters) for 3D Segmentation UE
+    Noise Coherent: Sample-wise Learnable P (Complex Spectral Parameters) for 3D Segmentation UE
 
     核心流程:
-      1. 维护可学习的 P_real 和 P_imag
+      1. 每个 case_id 维护独立的 P_real 和 P_imag
       2. 应用频域 mask，IFFT 到空域
       3. tanh + epsilon 限制扰动
       4. 可选 ROI gate（软边缘或硬边缘）
       5. 生成扰动图像
       6. 最小化 surrogate 的分割损失
-      7. 反向传播更新 P
+      7. 反向传播更新对应 sample 的 P
 
     Loss 计算:
       - 使用 DiceCELoss（Dice + CrossEntropy）
       - 目标: 最小化 surrogate 在扰动图像上的分割损失
-      - 梯度回传到 P_real 和 P_imag
+      - 梯度回传到对应 sample 的 P_real 和 P_imag
 
     软边缘梯度回传:
       - roi_gate.enabled=true: 软边缘，梯度平滑衰减
@@ -346,10 +207,21 @@ class NoiseCoherent:
 
     def __init__(self):
         self._seg_loss: DiceCELoss | None = None
-        self._spectral_module: SpectralPerturbation | None = None
         self._roi_gate: ROISpatialGate | None = None
         self._optimizer: torch.optim.Optimizer | None = None
         self._initialized: bool = False
+
+        # Sample-wise P 参数字典
+        self._P_dict: Dict[int, nn.ParameterDict] = {}  # {case_id: {"P_real": ..., "P_imag": ...}}
+
+        # 配置缓存
+        self._image_shape: tuple | None = None
+        self._p_init_config: DictConfig | None = None
+        self._spectral_mask_config: DictConfig | None = None
+        self._spectral_mask: torch.Tensor | None = None
+        self._epsilon: float = 0.0
+        self._device: torch.device | None = None
+
         self.logger = get_logger()
 
     @staticmethod
@@ -374,38 +246,170 @@ class NoiseCoherent:
         device = trainer.device
         C, D, H, W = image_shape
 
+        self._image_shape = image_shape
+        self._device = device
+
         # 获取配置
         algo = require_config(cfg, "ue.algorithm")
         params = require_config(algo, "params")
-        eps = float(get_config(params, "epsilon", 8 / 255.0))
-        p_init_cfg = get_config(params, "p_init", DictConfig({}))
-        spectral_cfg = get_config(params, "spectral_mask", DictConfig({}))
+        self._epsilon = float(get_config(params, "epsilon", 8 / 255.0))
+        self._p_init_config = get_config(params, "p_init", DictConfig({}))
+        self._spectral_mask_config = get_config(params, "spectral_mask", DictConfig({}))
         roi_cfg = get_config(params, "roi_gate", DictConfig({}))
 
-        # 初始化频域扰动模块
-        self._spectral_module = SpectralPerturbation(
-            p_init_cfg, spectral_cfg, image_shape, eps, device
+        # 初始化频域 mask（固定，所有 sample 共享）
+        self._spectral_mask = SpectralMaskGenerator.build_mask(
+            D, H, W, self._spectral_mask_config, device, torch.float32
         )
 
         # 初始化 ROI gate
         self._roi_gate = ROISpatialGate(roi_cfg).to(device)
 
-        # 初始化优化器
+        # 初始化优化器（参数会动态添加）
         opt_cfg = get_config(params, "optimizer", DictConfig({}))
-        lr = float(get_config(opt_cfg, "lr", 1e-3))
-        weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
-        betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
+        self._lr = float(get_config(opt_cfg, "lr", 1e-3))
+        self._weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
+        self._betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
 
-        self._optimizer = torch.optim.Adam(
-            self._spectral_module.parameters(), lr=lr, weight_decay=weight_decay, betas=betas
-        )
+        # 创建空优化器（参数列表为空）
+        self._optimizer = torch.optim.Adam([], lr=self._lr, weight_decay=self._weight_decay, betas=self._betas)
 
         self._initialized = True
         roi_enabled = bool(get_config(roi_cfg, "enabled", False))
         self.logger.info(
             f"[NoiseCoherent] Initialized: image_shape={image_shape}, "
-            f"epsilon={eps:.6f}, roi_soft_edge={roi_enabled}, lr={lr}"
+            f"epsilon={self._epsilon:.6f}, roi_soft_edge={roi_enabled}, lr={self._lr}"
         )
+
+    def _init_sample_P(self, case_id: int) -> None:
+        """
+        为新的 case_id 初始化 P 参数。
+
+        Args:
+            case_id: 样本 ID
+        """
+        if case_id in self._P_dict:
+            return
+
+        C, D, H, W = self._image_shape
+        device = self._device
+        mask = self._spectral_mask
+        epsilon = self._epsilon
+
+        init_scale = float(get_config(self._p_init_config, "init_scale", 10.0))
+        init_method = str(get_config(self._p_init_config, "init_method", "spectral_masked"))
+
+        # 向后兼容
+        if "use_spatial_init" in self._p_init_config:
+            init_method = "spatial" if bool(self._p_init_config.use_spatial_init) else "spectral"
+
+        if init_method == "spatial":
+            # 空域初始化 → FFT
+            delta_init = torch.randn(C, D, H, W, device=device)
+            delta_init = torch.tanh(delta_init) * epsilon * 0.5
+
+            P_complex_init = torch.fft.fftn(delta_init, dim=(-3, -2, -1))
+            P_masked = P_complex_init * mask
+            delta_check = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real
+            delta_check = torch.tanh(delta_check) * epsilon
+
+            delta_max = delta_check.abs().max().item()
+            target_delta = epsilon * 0.5
+            if delta_max < target_delta * 0.1:
+                scale_factor = target_delta / max(delta_max, 1e-8)
+                P_complex_init = P_complex_init * scale_factor
+
+            P_real_init = P_complex_init.real
+            P_imag_init = P_complex_init.imag
+
+        elif init_method == "spectral_masked":
+            # 频域 mask 内初始化（推荐）
+            P_real_init = torch.randn(C, D, H, W, device=device) * init_scale
+            P_imag_init = torch.randn(C, D, H, W, device=device) * init_scale
+
+            P_real_init = P_real_init * mask
+            P_imag_init = P_imag_init * mask
+
+            P_complex_init = torch.complex(P_real_init, P_imag_init)
+            delta_init = torch.fft.ifftn(P_complex_init, dim=(-3, -2, -1)).real
+            delta_init = torch.tanh(delta_init) * epsilon
+
+            delta_max = delta_init.abs().max().item()
+            target_delta = epsilon * 0.5
+            if delta_max < target_delta * 0.1:
+                scale_factor = target_delta / max(delta_max, 1e-8)
+                P_real_init = P_real_init * scale_factor
+                P_imag_init = P_imag_init * scale_factor
+
+        else:  # "spectral"
+            # 频域初始化 → IFFT
+            P_real_init = torch.randn(C, D, H, W, device=device) * init_scale
+            P_imag_init = torch.randn(C, D, H, W, device=device) * init_scale
+
+            P_complex_init = torch.complex(P_real_init, P_imag_init)
+            P_masked = P_complex_init * mask
+            delta_init = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real
+            delta_init = torch.tanh(delta_init) * epsilon
+
+            delta_max = delta_init.abs().max().item()
+            target_delta = epsilon * 0.5
+            if delta_max < target_delta * 0.1:
+                scale_factor = target_delta / max(delta_max, 1e-8)
+                P_real_init = P_real_init * scale_factor
+                P_imag_init = P_imag_init * scale_factor
+
+        # 创建可学习参数
+        P_real = nn.Parameter(P_real_init)
+        P_imag = nn.Parameter(P_imag_init)
+
+        # 存储到字典
+        self._P_dict[case_id] = nn.ParameterDict({
+            "P_real": P_real,
+            "P_imag": P_imag,
+        })
+
+        # 添加到优化器
+        self._optimizer.add_param_group({"params": [P_real, P_imag]})
+
+        self.logger.info(f"[NoiseCoherent] Initialized P for case_id={case_id}, delta_max={delta_max:.6f}")
+
+    def _generate_delta_for_keys(self, keys: List[int]) -> torch.Tensor:
+        """
+        为给定的 keys 生成扰动。
+
+        Args:
+            keys: List of case_ids
+
+        Returns:
+            delta: [B, C, D, H, W] 扰动
+        """
+        deltas = []
+        for key in keys:
+            # 确保 P 已初始化
+            if key not in self._P_dict:
+                self._init_sample_P(key)
+
+            # 获取对应的 P
+            P_real = self._P_dict[key]["P_real"]
+            P_imag = self._P_dict[key]["P_imag"]
+
+            # 构建复数 P
+            P_complex = torch.complex(P_real, P_imag)  # [C, D, H, W]
+
+            # 应用频域 mask
+            P_masked = P_complex * self._spectral_mask  # [C, D, H, W] * [1, D, H, W]
+
+            # IFFT 到空域
+            delta_raw = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real  # [C, D, H, W]
+
+            # tanh + epsilon
+            delta = torch.tanh(delta_raw) * self._epsilon  # [C, D, H, W]
+
+            deltas.append(delta)
+
+        # Stack 到 batch
+        delta_batch = torch.stack(deltas, dim=0)  # [B, C, D, H, W]
+        return delta_batch
 
     def _get_seg_loss(self, trainer) -> DiceCELoss:
         """构建与 SegTrainer 一致的 DiceCELoss。"""
@@ -503,12 +507,12 @@ class NoiseCoherent:
         更新 P 参数以最小化 surrogate 损失。
 
         流程:
-          1. 生成扰动: delta = tanh(IFFT(P * M)) * epsilon
+          1. 为 batch 中的每个 key 生成扰动: delta = tanh(IFFT(P * M)) * epsilon
           2. 应用 ROI gate: delta = delta * ROI_mask
           3. 生成扰动图像: x_perturbed = clip(x + delta, 0, 1)
           4. 前向冻结的 surrogate: logits = surrogate(x_perturbed)
           5. 计算损失: loss = DiceCELoss(logits, label)
-          6. 反向传播更新 P
+          6. 反向传播更新对应 sample 的 P
           7. 将最终 noise 存储到 backend
 
         软边缘梯度回传:
@@ -559,12 +563,11 @@ class NoiseCoherent:
         roi_mask = roi_mask.expand(-1, C_in, -1, -1, -1)  # [B, C, D, H, W]
 
         # 训练 P
-        self._spectral_module.train()
         last_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
-            # 生成扰动
-            delta_raw = self._spectral_module(B)  # [B, C, D, H, W]
+            # 生成扰动（sample-wise）
+            delta_raw = self._generate_delta_for_keys(keys_list)  # [B, C, D, H, W]
 
             # 应用 ROI gate
             delta = delta_raw * roi_mask
@@ -591,9 +594,8 @@ class NoiseCoherent:
             self._optimizer.step()
 
         # 存储最终 noise 到 backend
-        self._spectral_module.eval()
         with torch.no_grad():
-            final_delta_raw = self._spectral_module(B)
+            final_delta_raw = self._generate_delta_for_keys(keys_list)
             final_delta = final_delta_raw * roi_mask
             final_delta = final_delta.clamp(-eps, eps)
 
