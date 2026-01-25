@@ -1,8 +1,8 @@
 # @package _global_
-# Noise Coherent: Learnable P (Complex Spectral Parameters) with UNet Update
+# Noise Coherent: Sample-wise Learnable P (Complex Spectral Parameters)
 #
 # 核心思想:
-#   - 维护可学习的 P 参数（频域，实部和虚部）
+#   - 每个 sample (case_id) 维护独立的可学习 P 参数（频域，实部和虚部）
 #   - 应用频域 mask，IFFT 到空域
 #   - tanh + epsilon 限制扰动范围
 #   - 可选的 ROI 软边缘 mask
