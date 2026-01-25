@@ -1,12 +1,23 @@
 # @package _global_
-# Noise Coherent: UNet-based Complex P Optimization for 3D Segmentation UE
+# Noise Coherent: UNet-based Samplewise Complex P Optimization for 3D Segmentation UE
 #
-# 核心思想:
-#   - 使用 P-UNet 直接生成频域参数 P（复数的实部和虚部）
-#   - 应用频域 mask，IFFT 到空域
-#   - tanh + epsilon 限制扰动范围，再 clamp
-#   - 可选的 ROI 软边缘 mask（可开关）
-#   - 最小化 surrogate 在扰动图像上的分割损失（min-min）
+# 本方法与 unet_roi_noise.py 流程一致，核心区别:
+#   - unet_roi_noise: delta = tanh(UNet(x)) * ε（直接输出空域噪声）
+#   - noise_coherent: delta = tanh(IFFT(P * M)) * ε，其中 P = UNet(x)（输出频域参数）
+#
+# Samplewise 特性:
+#   - 每个样本有自己的 P: P = UNet(x)
+#   - 不同的 x 产生不同的 P，因此 P 是 samplewise 的
+#
+# P 的初始化:
+#   - P 由 UNet 直接从输入图像 x 生成: P = UNet(x)
+#   - UNet 权重使用 MONAI 默认初始化（Kaiming）
+#   - 初始时 P 接近零（因为 UNet 输出层偏置初始化为 0）
+#   - 训练过程中，通过更新 UNet 权重来更新每个样本的 P
+#
+# 软边缘梯度回传:
+#   - soft_edge=false: 硬边缘(0/1)，与 unet_roi_noise 一致
+#   - soft_edge=true: 软边缘(高斯平滑)，边缘区域梯度平滑衰减
 #
 # 使用方法:
 #   python ue_generate.py \
@@ -67,8 +78,8 @@ ue:
       # === ROI 配置 ===
       roi_aware: true          # 是否启用 ROI mask
       soft_edge: false         # 软边缘开关: false=硬边缘(0/1), true=软边缘(高斯平滑)
-      dilate_kernel_size: 3    # ROI 膨胀卷积核
-      gaussian_sigma: 2.0      # 高斯平滑 sigma（仅 soft_edge=true 时生效）
+      dilate_kernel_size: 3    # ROI 膨胀卷积核（仅 soft_edge=true）
+      gaussian_sigma: 2.0      # 高斯平滑 sigma（仅 soft_edge=true）
 
       # === 频域 Mask 参数 ===
       spectral_mask:
@@ -77,7 +88,9 @@ ue:
         xy_max: 0.3            # XY 平面（层内）带通上限
 
   # === P-UNet 配置 ===
-  # P-UNet 接收图像，输出 P 的实部和虚部 [B, 2*C, D, H, W]
+  # P-UNet 接收图像 x，输出 P 的实部和虚部 [B, 2*C, D, H, W]
+  # 每个样本通过 UNet(x) 得到自己独特的 P（samplewise）
+  # P 初始化: UNet 权重使用 Kaiming 初始化，初始 P 接近零
   p_unet:
     channels: [16, 32, 64, 128]
     strides: [2, 2, 2]

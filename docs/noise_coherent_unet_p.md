@@ -1,15 +1,89 @@
-# UNet-based Complex P Optimization for 3D Segmentation UE
+# UNet-based Samplewise Complex P Optimization for 3D Segmentation UE
 
 ## 概述
 
-本方法通过 UNet 直接生成频域参数 P（复数的实部和虚部），然后通过 IFFT 转换到空域生成扰动噪声。目标是**最小化 surrogate 在扰动图像上的分割损失（min-min 过程）**。
+本方法与 `unet_roi_noise.py` 的流程完全一致，核心区别在于噪声生成方式：
 
-## 核心思想
+| 方法 | 噪声生成 |
+|------|----------|
+| `unet_roi_noise` | `delta = tanh(UNet(x)) * ε`（直接输出空域噪声）|
+| `noise_coherent` | `delta = tanh(IFFT(P * M)) * ε`，其中 `P = UNet(x)`（输出频域参数，IFFT 到空域）|
 
-1. **UNet 直接输出 P**：UNet 接收原始图像，输出 P 的实部和虚部（直接更新，非增量）
-2. **频域约束**：通过频域 mask 约束噪声的频率特性
-3. **tanh 限制**：在 IFFT 后对 delta 进行 tanh 限制，再 clamp 到 [-ε, ε]
-4. **软边缘开关**：可配置开启/关闭软边缘 ROI mask
+## Samplewise 特性
+
+本方法是 **samplewise** 的：
+
+```
+每个样本有自己的 P: P = UNet(x)
+不同的输入图像 x 产生不同的 P
+```
+
+这与 `unet_roi_noise.py` 中每个样本有自己的 `delta = UNet(x)` 完全一致。
+
+## P 的初始化
+
+P 的初始化方式与 `unet_roi_noise.py` 中 delta 的初始化方式完全一致：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    P 的初始化说明                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. P 由 UNet 直接从输入图像 x 生成:                             │
+│     P = UNet(x)                                                  │
+│                                                                  │
+│  2. UNet 权重使用 MONAI 默认初始化（Kaiming initialization）     │
+│                                                                  │
+│  3. 初始时 P 接近零:                                             │
+│     - UNet 输出层权重随机初始化                                  │
+│     - 输出层偏置初始化为 0                                       │
+│     - 因此初始 P 接近零                                          │
+│                                                                  │
+│  4. 训练过程:                                                    │
+│     - 通过最小化 surrogate 损失来更新 UNet 权重                  │
+│     - UNet 权重更新 → 每个样本的 P 更新                          │
+│     - 这与 unet_roi_noise.py 中 delta = UNet(x) 完全一致         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 与 unet_roi_noise.py 的对比
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│           unet_roi_noise.py          noise_coherent.py          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  输入: x (图像)                      输入: x (图像)              │
+│       │                                   │                      │
+│       ▼                                   ▼                      │
+│  ┌─────────┐                        ┌─────────┐                  │
+│  │  UNet   │                        │ P-UNet  │                  │
+│  └────┬────┘                        └────┬────┘                  │
+│       │                                   │                      │
+│       ▼                                   ▼                      │
+│  raw_noise                          P_real, P_imag               │
+│       │                                   │                      │
+│       │                                   ▼                      │
+│       │                            P = P_real + i*P_imag         │
+│       │                                   │                      │
+│       │                                   ▼                      │
+│       │                              P_masked = P * M            │
+│       │                                   │                      │
+│       │                                   ▼                      │
+│       │                            delta_raw = IFFT(P_masked)    │
+│       │                                   │                      │
+│       ▼                                   ▼                      │
+│  delta = tanh(raw_noise) * ε       delta = tanh(delta_raw) * ε  │
+│       │                                   │                      │
+│       ▼                                   ▼                      │
+│  delta = delta * ROI_mask           delta = delta * ROI_mask     │
+│       │                                   │                      │
+│       ▼                                   ▼                      │
+│  存储 delta (samplewise)            存储 delta (samplewise)      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## 数据流
 
@@ -18,13 +92,16 @@
 │                         数据流图                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│   Input Image x                                                  │
+│   Input Image x [B, C, D, H, W]                                  │
 │       │                                                          │
 │       ▼                                                          │
 │   ┌───────────┐                                                  │
 │   │  P-UNet   │  输入: [B, C, D, H, W]                           │
 │   │           │  输出: [B, 2*C, D, H, W] (P_real, P_imag)        │
 │   └─────┬─────┘                                                  │
+│         │                                                        │
+│         │  每个样本通过 UNet(x) 得到自己独特的 P                  │
+│         │  这就是 samplewise 的含义                              │
 │         │                                                        │
 │         ▼                                                        │
 │   ┌─────────────────┐                                            │
@@ -41,9 +118,9 @@
 │           ▼                                                      │
 │   ┌─────────────────┐                                            │
 │   │ Spectral Mask   │  P_masked = P * M                          │
-│   │ (frequency      │  M: 固定频域 mask                          │
-│   │  constraint)    │  - Z轴: 低频约束                            │
-│   └───────┬─────────┘  - XY平面: 带通约束                         │
+│   │ (frequency      │  M: 固定频域 mask（不参与训练）            │
+│   │  constraint)    │  - Z轴: 低频约束 (|f_z| <= z_max)          │
+│   └───────┬─────────┘  - XY平面: 带通约束                        │
 │           │                                                      │
 │           ▼                                                      │
 │   ┌─────────────────┐                                            │
@@ -54,7 +131,7 @@
 │           ▼                                                      │
 │   ┌─────────────────┐                                            │
 │   │ tanh + epsilon  │  delta = tanh(delta_raw) * epsilon         │
-│   │                 │                                            │
+│   │                 │  (与 unet_roi_noise 中的处理一致)          │
 │   └───────┬─────────┘                                            │
 │           │                                                      │
 │           ▼                                                      │
@@ -67,7 +144,7 @@
 │   ┌─────────────────┐    soft_edge=true: 高斯平滑边缘            │
 │   │ ROI Gate        │    soft_edge=false: 硬边缘 (0/1)           │
 │   │ (optional)      │    delta = delta * ROI_mask                │
-│   └───────┬─────────┘                                            │
+│   └───────┬─────────┘    (与 unet_roi_noise 一致)                │
 │           │                                                      │
 │           ▼                                                      │
 │   ┌─────────────────┐                                            │
@@ -84,13 +161,19 @@
 │           ▼                                                      │
 │   ┌─────────────────┐                                            │
 │   │  DiceCE Loss    │  loss = DiceCELoss(logits, label)          │
-│   │  (minimize)     │                                            │
-│   └───────┬─────────┘                                            │
+│   │  (minimize)     │  目标: 最小化 surrogate 分割损失            │
+│   └───────┬─────────┘  (min-min 过程)                            │
 │           │                                                      │
 │           ▼                                                      │
 │   ┌─────────────────┐                                            │
 │   │   Backprop      │  更新 P-UNet 参数                          │
-│   │                 │                                            │
+│   │                 │  (与 unet_roi_noise 更新方式一致)          │
+│   └───────┬─────────┘                                            │
+│           │                                                      │
+│           ▼                                                      │
+│   ┌─────────────────┐                                            │
+│   │  Store delta    │  nb.commit_batch(keys, delta)              │
+│   │  to backend     │  (与 noise_slice_frequence 一致)           │
 │   └─────────────────┘                                            │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -98,7 +181,7 @@
 
 ## Loss 计算方法
 
-### 目标函数
+### 目标函数（Min-Min 过程）
 
 ```
 min_{θ_UNet} L_seg(surrogate(x + δ), y)
@@ -106,8 +189,9 @@ min_{θ_UNet} L_seg(surrogate(x + δ), y)
 
 其中：
 - `θ_UNet`: P-UNet 的参数
-- `δ = tanh(IFFT(P * M).real) * ε`，`P = UNet(x)`
-- `L_seg`: DiceCE Loss（Dice Loss + Cross-Entropy Loss）
+- `δ = tanh(IFFT(P * M).real) * ε`
+- `P = UNet(x)`（samplewise）
+- `L_seg`: DiceCE Loss
 
 ### Loss 组成
 
@@ -119,19 +203,21 @@ L_seg = λ_dice * L_dice + λ_ce * L_ce
 - **Cross-Entropy Loss**: 逐像素分类损失
 - **λ_dice, λ_ce**: 权重系数（默认均为 1.0）
 
-### Min-Min 过程
-
-1. **N-step（噪声更新）**：冻结 surrogate，更新 P-UNet 以最小化 surrogate 的分割损失
-2. **S-step（surrogate 更新）**：冻结噪声，更新 surrogate 以最小化在扰动图像上的分割损失
-
 ## 软边缘梯度回传
 
 ### 软边缘机制
 
-当 `soft_edge=true` 时：
-1. **二值化**：ROI_mask = (label > 0)
-2. **膨胀**：通过 max_pool3d 扩展 ROI 区域
-3. **高斯模糊**：平滑边缘，使 ROI_mask 值在 [0, 1] 连续
+```
+soft_edge=false (默认):
+  ROI_mask = (label > 0).float()  # 硬边缘，值为 0 或 1
+  与 unet_roi_noise.py 一致
+
+soft_edge=true:
+  1. ROI_mask = (label > 0).float()
+  2. ROI_mask = 膨胀(ROI_mask)
+  3. ROI_mask = 高斯模糊(ROI_mask)
+  结果: ROI_mask ∈ [0, 1]，边缘平滑过渡
+```
 
 ### 梯度回传分析
 
@@ -141,15 +227,17 @@ L_seg = λ_dice * L_dice + λ_ce * L_ce
 ∂L/∂δ = ∂L/∂δ_masked * ROI_mask
 ```
 
-**关键点**：
-- **soft_edge=true**：`ROI_mask ∈ [0, 1]`，边缘区域梯度平滑衰减
-  - ROI 中心：`ROI_mask ≈ 1`，梯度完全回传
-  - ROI 边缘：`0 < ROI_mask < 1`，梯度按比例衰减
-  - ROI 外部：`ROI_mask ≈ 0`，梯度趋近于 0
+**软边缘 (soft_edge=true)**:
+- `ROI_mask ∈ [0, 1]`
+- ROI 中心：`ROI_mask ≈ 1`，梯度完全回传
+- ROI 边缘：`0 < ROI_mask < 1`，梯度按比例衰减
+- ROI 外部：`ROI_mask ≈ 0`，梯度趋近于 0
+- **软边缘区域可以参与梯度更新**
 
-- **soft_edge=false**：`ROI_mask ∈ {0, 1}`，硬边缘
-  - ROI 内部：梯度完全回传
-  - ROI 外部：梯度为 0（截断）
+**硬边缘 (soft_edge=false)**:
+- `ROI_mask ∈ {0, 1}`
+- ROI 内部：梯度完全回传
+- ROI 外部：梯度为 0（截断）
 
 ### 梯度流图
 
@@ -192,12 +280,13 @@ L_seg = λ_dice * L_dice + λ_ce * L_ce
 与 `noise_slice_frequence` 方法一致：
 
 ```python
-# 存储最终噪声到 backend
+# 存储最终空域噪声 delta 到 backend
 nb.commit_batch(keys_list, final_delta.detach().cpu())
 ```
 
 噪声存储格式：
-- 每个 sample 独立存储
+- 存储的是 **delta（空域噪声）**，不是 P（频域参数）
+- 每个 sample 独立存储（samplewise）
 - 通过 `noise_backend` 统一管理
 - 支持 `int8` 量化存储以节省空间
 
@@ -207,7 +296,7 @@ nb.commit_batch(keys_list, final_delta.detach().cpu())
 python ue_generate.py \
     dataset=flare21 \
     task=flare21_ue \
-    task.run_name=noise_coherent_unet_p \
+    task.run_name=noise_coherent_4_255_hard \
     method=noise_coherent \
     training.epochs=100 \
     training.batch_size=8 \
@@ -218,6 +307,7 @@ python ue_generate.py \
     ue.algorithm.params.epsilon=0.0156863 \
     ue.algorithm.params.noise_step=1 \
     ue.algorithm.params.surrogate_step=10 \
+    ue.algorithm.params.roi_aware=true \
     ue.algorithm.params.soft_edge=false \
     ue.io.save_from_epoch=50 \
     ue.io.save_every=10 \
@@ -232,9 +322,10 @@ python ue_generate.py \
 | `epsilon` | 8/255 | 扰动范围 L∞ bound |
 | `noise_step` | 1 | 每 batch 更新 P-UNet 的迭代次数 |
 | `surrogate_step` | 10 | 每 epoch 更新 surrogate 的 batch 数 |
-| `soft_edge` | false | 是否启用软边缘 ROI mask |
-| `dilate_kernel_size` | 3 | ROI 膨胀卷积核大小 |
-| `gaussian_sigma` | 2.0 | 高斯模糊 sigma |
+| `roi_aware` | true | 是否启用 ROI mask |
+| `soft_edge` | false | 软边缘开关: false=硬边缘(0/1), true=软边缘 |
+| `dilate_kernel_size` | 3 | ROI 膨胀卷积核大小（仅 soft_edge=true） |
+| `gaussian_sigma` | 2.0 | 高斯模糊 sigma（仅 soft_edge=true） |
 
 ### 频域 Mask 参数
 
@@ -255,9 +346,9 @@ p_unet:
   norm: INSTANCE
   dropout: 0.0
   optimizer:
-    lr: 1.0e-4
-    weight_decay: 1.0e-5
-    betas: [0.9, 0.999]
+    lr: 1.0e-4             # P-UNet 学习率
+    weight_decay: 1.0e-5   # 权重衰减
+    betas: [0.9, 0.999]    # Adam betas
 ```
 
 输入：原始图像 `[B, C, D, H, W]`
@@ -265,10 +356,11 @@ p_unet:
 
 ## 与其他方法的对比
 
-| 特性 | noise_coherent (原) | noise_coherent (UNet-P) | noise_slice_frequence |
-|------|---------------------|-------------------------|----------------------|
-| P 更新方式 | 直接优化 P 参数 | UNet 生成 P | UNet 生成空域噪声 |
-| 频域约束 | 有 | 有 | 有 |
-| 软边缘开关 | 有 | 有 | 有 |
-| Sample-wise | 是 | 否（共享 UNet） | 否（共享 UNet） |
-| 参数量 | O(C×D×H×W×N_samples) | O(UNet) | O(UNet) |
+| 特性 | unet_roi_noise | noise_coherent | noise_slice_frequence |
+|------|----------------|----------------|----------------------|
+| 噪声生成 | UNet(x) → delta | UNet(x) → P → IFFT → delta | UNet(x) → delta + 频域滤波 |
+| 频域约束 | 无 | 有（通过 P * M） | 有（后处理滤波） |
+| P 初始化 | N/A | UNet 权重初始化 | N/A |
+| Samplewise | 是 | 是 | 是 |
+| 软边缘开关 | 无 | 有 | 有 |
+| 存储格式 | delta | delta | delta |

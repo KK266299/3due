@@ -1,13 +1,22 @@
 # file: src/core/ue_algos/noise_coherent.py
 """
-Noise Coherent: UNet-based Complex P Optimization for 3D Segmentation UE
+Noise Coherent: UNet-based Samplewise Complex P Optimization for 3D Segmentation UE
 
 核心思想:
-  - 使用 P-UNet 直接生成频域参数 P（复数的实部和虚部）
-  - 应用固定的频域 mask，然后 IFFT 到空域
-  - tanh + epsilon 限制扰动范围，再 clamp
-  - 可选的 ROI 软边缘 mask（可开关）
-  - 最小化 surrogate 在扰动图像上的分割损失（min-min）
+  本方法与 unet_roi_noise.py 的流程完全一致，区别在于：
+  - unet_roi_noise: UNet(x) -> delta（空域噪声）
+  - noise_coherent: UNet(x) -> P（频域参数） -> IFFT -> delta（空域噪声）
+
+Samplewise 特性:
+  - 每个样本有自己的 P: P = UNet(x)
+  - 不同的 x 产生不同的 P，因此 P 是 samplewise 的
+  - 最终存储的是 delta（空域噪声），与 noise_slice_frequence 一致
+
+P 的初始化:
+  - P 由 UNet 直接从输入图像 x 生成: P = UNet(x)
+  - UNet 权重初始化决定了初始 P 的分布
+  - 训练过程中，通过更新 UNet 权重来更新每个样本的 P
+  - 这与 unet_roi_noise.py 中 delta = UNet(x) 的方式完全一致
 
 流程:
   1. P-UNet 接收输入图像 x，输出 P_real 和 P_imag
@@ -21,12 +30,26 @@ Noise Coherent: UNet-based Complex P Optimization for 3D Segmentation UE
   9. 前向冻结的 surrogate: logits = surrogate(x_perturbed)
   10. 最小化分割损失: loss = DiceCELoss(logits, label)
   11. 反向传播更新 P-UNet 参数
+  12. 存储 delta 到 noise_backend（与 noise_slice_frequence 一致）
 
 软边缘梯度回传:
   - 当 soft_edge=true 时，ROI_mask 通过高斯平滑生成，值在 [0, 1]
   - 软边缘区域 (0 < ROI_mask < 1) 的扰动会被缩放
   - 梯度回传时，软边缘区域的梯度会乘以 ROI_mask，梯度平滑衰减
   - 当 soft_edge=false 时，使用硬边缘（ROI_mask 为 0 或 1）
+
+与 unet_roi_noise.py 的对比:
+  ┌─────────────────────────────────────────────────────────────────┐
+  │           unet_roi_noise              noise_coherent            │
+  ├─────────────────────────────────────────────────────────────────┤
+  │  UNet(x) ──────────────────► delta    UNet(x) ──► P ──IFFT──► delta │
+  │  (直接输出空域噪声)                    (输出频域参数，IFFT 到空域)    │
+  │                                                                  │
+  │  delta = tanh(UNet(x)) * ε           delta = tanh(IFFT(P*M)) * ε │
+  │                                                                  │
+  │  存储: delta                          存储: delta                 │
+  │  (samplewise)                         (samplewise)                │
+  └─────────────────────────────────────────────────────────────────┘
 """
 from __future__ import annotations
 from typing import Dict, List
@@ -46,6 +69,9 @@ from ...utils.logger import get_logger
 def _build_p_unet(cfg: DictConfig, in_channels: int, spatial_dims: int = 3) -> nn.Module:
     """
     Build P-UNet for generating complex P (real and imaginary parts).
+
+    与 unet_roi_noise.py 中的 _build_noise_unet 完全一致，
+    只是输出通道数是 2*C（P_real 和 P_imag）。
 
     Input: original image [B, C, D, H, W]
     Output: P_real and P_imag concatenated [B, 2*C, D, H, W]
@@ -76,6 +102,15 @@ class PUNetWrapper(nn.Module):
     """
     Wrapper for P-UNet that outputs complex P components.
 
+    类似于 unet_roi_noise.py 中的 NoiseUNetWrapper，
+    但输出的是频域参数 P 的实部和虚部。
+
+    P 的初始化:
+      - P 完全由 UNet 从输入图像 x 生成
+      - UNet 权重使用 MONAI 默认初始化（Kaiming）
+      - 初始时 P 接近零（因为 UNet 输出层偏置初始化为 0）
+      - 训练过程中，UNet 权重更新，从而更新每个样本的 P
+
     The UNet outputs [B, 2*C, D, H, W], which is split into:
     - P_real: [B, C, D, H, W]
     - P_imag: [B, C, D, H, W]
@@ -87,11 +122,16 @@ class PUNetWrapper(nn.Module):
 
     def forward(self, x: torch.Tensor):
         """
+        从输入图像生成 samplewise 的 P。
+
+        每个样本通过 UNet(x) 得到自己独特的 P，
+        这就是 samplewise 的含义。
+
         Args:
             x: Input image [B, C, D, H, W] in [0, 1]
         Returns:
-            P_real: [B, C, D, H, W]
-            P_imag: [B, C, D, H, W]
+            P_real: [B, C, D, H, W] - P 的实部
+            P_imag: [B, C, D, H, W] - P 的虚部
         """
         out = self.unet(x)  # [B, 2*C, D, H, W]
         P_real = out[:, :self.in_channels]  # [B, C, D, H, W]
@@ -149,11 +189,13 @@ class SoftROIMask(nn.Module):
     """
     ROI 空域门控，支持硬边缘和软边缘（高斯平滑）。
 
-    - soft_edge=false: 硬边缘（ROI_mask 为 0 或 1）
+    与 unet_roi_noise.py 中的 _create_roi_mask 类似，但增加了软边缘选项。
+
+    - soft_edge=false: 硬边缘（ROI_mask 为 0 或 1），与 unet_roi_noise 一致
     - soft_edge=true: 软边缘（高斯平滑，ROI_mask 在 [0, 1]）
 
     梯度回传:
-      - 硬边缘: 梯度在 ROI 边界截断
+      - 硬边缘: 梯度在 ROI 边界截断（ROI 外梯度为 0）
       - 软边缘: 梯度在边缘区域平滑衰减，完全可微
     """
 
@@ -213,12 +255,12 @@ class SoftROIMask(nn.Module):
         if label.dim() == 5:
             label = label.squeeze(1)
 
-        # 创建二值 mask: ROI = label > 0
+        # 创建二值 mask: ROI = label > 0（与 unet_roi_noise 一致）
         mask = (label > 0).float()  # [B, D, H, W]
         mask = mask.unsqueeze(1)  # [B, 1, D, H, W]
 
         # soft_edge=true: 膨胀 + 高斯模糊
-        # soft_edge=false: 只使用二值化硬边缘
+        # soft_edge=false: 只使用二值化硬边缘（与 unet_roi_noise 一致）
         if self.soft_edge:
             # 形态学膨胀
             if self.dilate_kernel_size > 0:
@@ -249,25 +291,32 @@ class SoftROIMask(nn.Module):
 @register_plugin("noise_coherent")
 class NoiseCoherent:
     """
-    Noise Coherent: UNet-based Complex P Optimization for 3D Segmentation UE
+    Noise Coherent: UNet-based Samplewise Complex P Optimization for 3D Segmentation UE
 
-    核心流程:
-      1. P-UNet 接收输入图像，输出 P_real 和 P_imag
-      2. 应用频域 mask，IFFT 到空域
-      3. tanh + epsilon 限制扰动，再 clamp
-      4. 可选 ROI gate（软边缘或硬边缘）
-      5. 生成扰动图像
-      6. 最小化 surrogate 的分割损失
-      7. 反向传播更新 P-UNet 参数
+    本方法与 unet_roi_noise.py 的流程完全一致，核心区别在于：
+    - unet_roi_noise: UNet(x) -> delta（直接输出空域噪声）
+    - noise_coherent: UNet(x) -> P -> IFFT -> delta（输出频域参数，IFFT 到空域）
+
+    Samplewise 特性:
+      - 每个样本有自己的 P: P = UNet(x)
+      - 不同的输入图像 x 产生不同的 P
+      - 最终存储的是 delta（空域噪声），与 noise_slice_frequence 一致
+
+    P 的初始化:
+      - P 由 UNet 直接从输入图像 x 生成: P = UNet(x)
+      - UNet 使用 MONAI 默认权重初始化（Kaiming initialization）
+      - 初始时 P 接近零（因为 UNet 输出层偏置初始化为 0）
+      - 训练过程中，通过更新 UNet 权重来更新每个样本的 P
+      - 这与 unet_roi_noise.py 中 delta = UNet(x) 的方式完全一致
 
     Loss 计算:
       - 使用 DiceCELoss（Dice + CrossEntropy）
-      - 目标: 最小化 surrogate 在扰动图像上的分割损失
+      - 目标: 最小化 surrogate 在扰动图像上的分割损失（min-min 过程）
       - 梯度回传到 P-UNet 参数
 
     软边缘梯度回传:
-      - soft_edge=true: 软边缘，梯度平滑衰减
-      - soft_edge=false: 硬边缘，梯度在边界截断
+      - soft_edge=true: 软边缘，ROI_mask ∈ [0, 1]，梯度平滑衰减
+      - soft_edge=false: 硬边缘，ROI_mask ∈ {0, 1}，梯度在边界截断
     """
 
     def __init__(self):
@@ -288,7 +337,7 @@ class NoiseCoherent:
 
     @staticmethod
     def _norm_inplace(x: torch.Tensor, mean, std):
-        """原地归一化（按通道）。"""
+        """原地归一化（按通道），与 unet_roi_noise 一致。"""
         for c, (m, s) in enumerate(zip(mean, std)):
             x[:, c].sub_(float(m)).div_(float(s))
         return x
@@ -296,6 +345,8 @@ class NoiseCoherent:
     def _init_components(self, trainer, in_channels: int, image_shape: tuple):
         """
         初始化组件（延迟初始化，仅一次）。
+
+        与 unet_roi_noise.py 中的 _init_noise_unet 类似。
 
         Args:
             trainer: UETrainer 实例
@@ -317,18 +368,18 @@ class NoiseCoherent:
         self._epsilon = float(get_config(params, "epsilon", 8 / 255.0))
         self._spectral_mask_config = get_config(params, "spectral_mask", DictConfig({}))
 
-        # 初始化频域 mask（固定）
+        # 初始化频域 mask（固定，不参与训练）
         self._spectral_mask = SpectralMaskGenerator.build_mask(
             D, H, W, self._spectral_mask_config, device, torch.float32
         )
 
-        # 初始化 P-UNet
+        # 初始化 P-UNet（与 unet_roi_noise 中初始化 noise_unet 类似）
         p_unet_cfg = get_config(cfg, "ue.p_unet", DictConfig({}))
         base_unet = _build_p_unet(p_unet_cfg, in_channels, spatial_dims=3)
         self._p_unet = PUNetWrapper(base_unet, in_channels)
         self._p_unet = self._p_unet.to(device)
 
-        # 初始化 P-UNet 优化器
+        # 初始化 P-UNet 优化器（与 unet_roi_noise 类似）
         opt_cfg = get_config(p_unet_cfg, "optimizer", DictConfig({}))
         lr = float(get_config(opt_cfg, "lr", 1e-4))
         weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
@@ -355,13 +406,18 @@ class NoiseCoherent:
 
         self._initialized = True
         self.logger.info(
-            f"[NoiseCoherent] Initialized: in_channels={in_channels}, image_shape={image_shape}, "
-            f"epsilon={self._epsilon:.6f}, roi_aware={self._roi_aware}, soft_edge={soft_edge}, lr={lr}"
+            f"[NoiseCoherent] Initialized P-UNet: in_channels={in_channels}, "
+            f"image_shape={image_shape}, epsilon={self._epsilon:.6f}, "
+            f"roi_aware={self._roi_aware}, soft_edge={soft_edge}, lr={lr}"
         )
 
-    def _generate_delta(self, x: torch.Tensor) -> torch.Tensor:
+    def _generate_delta_from_p(self, x: torch.Tensor) -> torch.Tensor:
         """
-        使用 P-UNet 生成扰动。
+        使用 P-UNet 生成 samplewise 的 P，然后通过 IFFT 转换为 delta。
+
+        这是与 unet_roi_noise 的核心区别：
+        - unet_roi_noise: delta = tanh(UNet(x)) * epsilon
+        - noise_coherent: delta = tanh(IFFT(P * M)) * epsilon, 其中 P = UNet(x)
 
         Args:
             x: 输入图像 [B, C, D, H, W]
@@ -369,30 +425,31 @@ class NoiseCoherent:
         Returns:
             delta: [B, C, D, H, W] 扰动（未应用 ROI mask）
         """
-        # P-UNet 生成 P_real 和 P_imag
+        # Step 1: P-UNet 生成 samplewise 的 P_real 和 P_imag
+        # 每个样本通过 UNet(x) 得到自己独特的 P
         P_real, P_imag = self._p_unet(x)  # [B, C, D, H, W] each
 
-        # 构建复数 P
+        # Step 2: 构建复数 P
         P_complex = torch.complex(P_real, P_imag)  # [B, C, D, H, W]
 
-        # 应用频域 mask
+        # Step 3: 应用频域 mask
         # spectral_mask: [1, D, H, W] -> expand to [1, 1, D, H, W]
         mask = self._spectral_mask.unsqueeze(0)  # [1, 1, D, H, W]
         P_masked = P_complex * mask  # [B, C, D, H, W]
 
-        # IFFT 到空域
+        # Step 4: IFFT 到空域
         delta_raw = torch.fft.ifftn(P_masked, dim=(-3, -2, -1)).real  # [B, C, D, H, W]
 
-        # tanh + epsilon
+        # Step 5: tanh + epsilon（与 unet_roi_noise 中的 NoiseUNetWrapper 类似）
         delta = torch.tanh(delta_raw) * self._epsilon  # [B, C, D, H, W]
 
-        # clamp
+        # Step 6: clamp
         delta = delta.clamp(-self._epsilon, self._epsilon)
 
         return delta
 
     def _get_seg_loss(self, trainer) -> DiceCELoss:
-        """构建与 SegTrainer 一致的 DiceCELoss。"""
+        """构建与 SegTrainer 一致的 DiceCELoss（与 unet_roi_noise 一致）。"""
         if self._seg_loss is not None:
             return self._seg_loss
 
@@ -416,11 +473,11 @@ class NoiseCoherent:
         )
         return self._seg_loss
 
-    # ---------------- Surrogate-step: 更新 surrogate ---------------- #
+    # ---------------- Surrogate-step: 更新 surrogate（与 unet_roi_noise 一致） ---------------- #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
         仅更新 surrogate 参数，不更新 P-UNet。
-        使用来自 backend 的 noise。
+        使用来自 backend 的 noise（与 unet_roi_noise 完全一致）。
         """
         cfg = trainer.config
         device = trainer.device
@@ -481,27 +538,30 @@ class NoiseCoherent:
             "loss": loss_val,
         }
 
-    # ---------------- N-step: 更新 P-UNet ---------------- #
+    # ---------------- N-step: 更新 P-UNet（与 unet_roi_noise 流程一致） ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
         更新 P-UNet 参数以最小化 surrogate 损失。
 
+        与 unet_roi_noise.py 的 noise_step_batch 流程完全一致，
+        唯一区别是噪声生成方式：
+        - unet_roi_noise: delta = tanh(UNet(x)) * epsilon
+        - noise_coherent: delta = tanh(IFFT(P * M)) * epsilon, 其中 P = UNet(x)
+
         流程:
-          1. P-UNet 生成 P_real 和 P_imag
+          1. P-UNet 从 x 生成 samplewise 的 P_real 和 P_imag
           2. 构建复数 P，应用频域 mask
           3. IFFT 到空域，tanh + epsilon，clamp
-          4. 应用 ROI gate: delta = delta * ROI_mask
+          4. 应用 ROI gate: delta = delta * ROI_mask（与 unet_roi_noise 一致）
           5. 生成扰动图像: x_perturbed = clip(x + delta, 0, 1)
           6. 前向冻结的 surrogate: logits = surrogate(x_perturbed)
           7. 计算损失: loss = DiceCELoss(logits, label)
           8. 反向传播更新 P-UNet 参数
-          9. 将最终 noise 存储到 backend
+          9. 将最终 delta 存储到 backend（与 noise_slice_frequence 一致）
 
         软边缘梯度回传:
-          - soft_edge=true: ROI_mask 通过高斯平滑生成，值在 [0, 1]
-            梯度: dL/d(delta) = dL/d(delta_masked) * ROI_mask（平滑衰减）
-          - soft_edge=false: ROI_mask 为 0 或 1（硬边缘）
-            梯度: ROI 外部梯度为 0，内部梯度不变
+          - soft_edge=true: ROI_mask ∈ [0, 1]，梯度平滑衰减
+          - soft_edge=false: ROI_mask ∈ {0, 1}，梯度在边界截断
         """
         cfg = trainer.config
         device = trainer.device
@@ -532,7 +592,7 @@ class NoiseCoherent:
 
         seg_loss_fn = self._get_seg_loss(trainer)
 
-        # 冻结 surrogate
+        # 冻结 surrogate（与 unet_roi_noise 一致）
         if not trainer.surrogates:
             raise RuntimeError("[UE] No surrogate bound.")
         _, s_model = next(iter(trainer.surrogates.items()))
@@ -540,48 +600,48 @@ class NoiseCoherent:
         for p in s_model.parameters():
             p.requires_grad = False
 
-        # 获取 ROI mask（如果启用）
+        # 获取 ROI mask（与 unet_roi_noise 类似，但支持软边缘）
         if self._roi_aware:
             roi_mask = self._roi_mask_builder(y, C_in).to(device)  # [B, C, D, H, W]
         else:
             roi_mask = None
 
-        # 训练 P-UNet
+        # 训练 P-UNet（与 unet_roi_noise 训练 noise_unet 类似）
         self._p_unet.train()
         last_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
-            # 生成扰动
-            delta_raw = self._generate_delta(x)  # [B, C, D, H, W]
+            # 生成 samplewise 的 P，然后 IFFT 到空域得到 delta
+            delta_raw = self._generate_delta_from_p(x)  # [B, C, D, H, W]
 
-            # 应用 ROI mask（如果启用）
+            # 应用 ROI mask（与 unet_roi_noise 一致）
             if roi_mask is not None:
                 delta = delta_raw * roi_mask
             else:
                 delta = delta_raw
 
-            # 创建扰动图像
+            # 创建扰动图像（与 unet_roi_noise 一致）
             perturb_img = (x + delta).clamp(0.0, 1.0)
             xn = perturb_img.clone()
             self._norm_inplace(xn, mean, std)
 
-            # 前向 surrogate
+            # 前向 surrogate（与 unet_roi_noise 一致）
             out = s_model(xn)
             logits = out[0] if isinstance(out, (tuple, list)) else out
 
-            # 计算损失（最小化）
+            # 计算损失（最小化，与 unet_roi_noise 一致）
             loss = seg_loss_fn(logits, y.unsqueeze(1))
             last_loss = loss.detach()
 
-            # 反向传播更新 P-UNet
+            # 反向传播更新 P-UNet（与 unet_roi_noise 更新 noise_unet 一致）
             self._opt_p_unet.zero_grad(set_to_none=True)
             loss.backward()
             self._opt_p_unet.step()
 
-        # 存储最终 noise 到 backend（与 noise_slice_frequence 一致）
+        # 存储最终 delta 到 backend（与 noise_slice_frequence 一致）
         self._p_unet.eval()
         with torch.no_grad():
-            final_delta_raw = self._generate_delta(x)
+            final_delta_raw = self._generate_delta_from_p(x)
             if roi_mask is not None:
                 final_delta = final_delta_raw * roi_mask
             else:
