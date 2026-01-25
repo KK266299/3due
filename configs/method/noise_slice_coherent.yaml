@@ -1,0 +1,113 @@
+# @package _global_
+# Coherent Spectral UE with Per-Key Learnable Spectral Parameters
+#
+# Core Design:
+#   - Each key has independent learnable spectral tensor P (real + imag)
+#   - Fixed spectral mask M controls frequency support (structure prior)
+#   - delta = IFFT(M * P) × ROI_gate
+#   - Soft ROI mask: 二值化 → 膨胀 → 高斯模糊
+#
+# Formula:
+#   P decides "how much energy at which frequencies, what phase"
+#   M decides "which frequencies are allowed (structure prior)"
+#     - Z-axis LOW-PASS: ensures inter-slice coherence
+#     - XY-plane BAND-PASS: structured but not too obvious
+#
+# Usage:
+#   python ue_generate.py \
+#     dataset=flare21 \
+#     task=flare21_ue \
+#     method=noise_slice_coherent \
+#     task.run_name=coherent_roi_soft \
+#     training.epochs=100
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: coherent_spectral_ue
+    params:
+      # === Perturbation Bound ===
+      epsilon: 0.0313725        # 8/255 L_inf bound
+
+      # === Training ===
+      noise_step: 10            # Gradient steps per batch (多次迭代优化谱参数P)
+      surrogate_step: 10        # S-step: batches per epoch
+
+      # === Spectral Mask M (Structure Prior) ===
+      # M decides "which frequencies are allowed"
+      spectral_mask:
+        # Z-axis: LOW-PASS (ensures inter-slice coherence)
+        z_max: 0.125            # Z-axis lowpass cutoff (only allow z-freq <= 0.125)
+
+        # XY-plane: BAND-PASS (structured but not too obvious)
+        xy_min: 0.05            # XY bandpass lower bound (exclude DC)
+        xy_max: 0.3             # XY bandpass upper bound (exclude high freq)
+
+        # P initialization
+        init_scale: 0.01        # Initial scale for P_real, P_imag
+
+      # === ROI Mask Settings ===
+      roi_gate:
+        enabled: true           # 是否使用ROI mask (false=全图噪声)
+        dilate_kernel_size: 3   # 膨胀核大小 (0=不膨胀)
+        gaussian_sigma: 2.0     # 高斯模糊sigma (软边缘)
+
+      # === Optimizer (for spectral parameters P) ===
+      optimizer:
+        lr: 1e-3                # Learning rate for P
+        weight_decay: 1e-5      # Weight decay
+        betas: [0.9, 0.999]     # Adam betas
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10
