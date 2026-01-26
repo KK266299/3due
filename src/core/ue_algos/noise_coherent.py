@@ -143,9 +143,14 @@ class SpectralMaskGenerator:
     """
     生成固定的频域 mask。
 
-    约束:
-      - Z 轴（层间方向）: 低频 (|f_z| <= z_max)
-      - XY 平面（层内）: 带通 (xy_min <= |f_xy| <= xy_max)
+    支持两种模式：
+      1. z_lowpass=True (默认): Z轴低通 + XY带通
+         - Z轴低频：层间一致
+         - XY带通：层内中频
+
+      2. z_lowpass=False: Z轴高通 + XY带通
+         - Z轴高频：层间差异大（更强攻击）
+         - XY带通：层内平滑
     """
 
     @staticmethod
@@ -159,8 +164,15 @@ class SpectralMaskGenerator:
     ) -> torch.Tensor:
         """
         构建 3D 频域 mask [1, D, H, W]。
+
+        配置参数：
+          z_lowpass: bool, 是否 Z 轴低通（False=高通）
+          z_cutoff: float, Z 轴截止频率
+          xy_min: float, XY 带通下限
+          xy_max: float, XY 带通上限
         """
-        z_max = float(get_config(cfg, "z_max", 0.125))
+        z_lowpass = bool(get_config(cfg, "z_lowpass", True))
+        z_cutoff = float(get_config(cfg, "z_cutoff", 0.125))
         xy_min = float(get_config(cfg, "xy_min", 0.05))
         xy_max = float(get_config(cfg, "xy_max", 0.3))
 
@@ -172,8 +184,13 @@ class SpectralMaskGenerator:
         # 创建 3D meshgrid
         zz, yy, xx = torch.meshgrid(fz, fy, fx, indexing="ij")  # [D, H, W]
 
-        # Z 轴约束: 低频
-        mask_z = (zz <= z_max)
+        # Z 轴约束
+        if z_lowpass:
+            # 低通：|f_z| <= z_cutoff（层间一致）
+            mask_z = (zz <= z_cutoff)
+        else:
+            # 高通：|f_z| >= z_cutoff（层间差异大）
+            mask_z = (zz >= z_cutoff)
 
         # XY 平面约束: 带通（径向频率）
         fxy = torch.sqrt(yy**2 + xx**2)

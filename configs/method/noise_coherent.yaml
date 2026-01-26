@@ -83,7 +83,8 @@ ue:
 
       # === 频域 Mask 参数 ===
       spectral_mask:
-        z_max: 0.125           # Z 轴（层间）低频截止
+        z_lowpass: true        # true=Z轴低通(层间一致), false=Z轴高通(层间差异大)
+        z_cutoff: 0.125        # Z 轴截止频率
         xy_min: 0.05           # XY 平面（层内）带通下限
         xy_max: 0.3            # XY 平面（层内）带通上限
 
