@@ -449,11 +449,14 @@ class NoiseCoherent:
         # 由于频域 mask 过滤掉大部分分量，IFFT 后能量很小
         # 归一化使 delta_raw 的最大绝对值为 tanh_scale（如 3.0）
         # 这样 tanh(3.0) ≈ 0.995，能充分利用 [-epsilon, epsilon] 范围
-        B = delta_raw.shape[0]
         tanh_scale = 3.0  # tanh(3.0) ≈ 0.995
-        for i in range(B):
-            sample_max = delta_raw[i].abs().max().clamp_min(1e-8)
-            delta_raw[i] = delta_raw[i] / sample_max * tanh_scale
+
+        # 非 inplace 操作：计算每个 sample 的最大绝对值，然后统一缩放
+        # delta_raw: [B, C, D, H, W]
+        # 对每个 sample 计算 max，保持维度用于广播
+        sample_max = delta_raw.abs().flatten(1).max(dim=1, keepdim=True)[0]  # [B, 1]
+        sample_max = sample_max.view(-1, 1, 1, 1, 1).clamp_min(1e-8)  # [B, 1, 1, 1, 1]
+        delta_raw = delta_raw / sample_max * tanh_scale  # 非 inplace
 
         # Step 6: tanh + epsilon
         delta = torch.tanh(delta_raw) * self._epsilon  # [B, C, D, H, W]
