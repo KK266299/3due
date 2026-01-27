@@ -1,27 +1,78 @@
-# file: src/ue_algos/min_min.py
+# file: src/core/ue_algos/pue.py
+"""
+PUE (Provably Unlearnable Examples) for 3D Medical Image Segmentation.
+
+Based on: "Provably Unlearnable Data Examples" (NeurIPS 2022)
+Paper: https://arxiv.org/abs/2206.10278
+
+Algorithm:
+  核心思想：通过在训练和噪声优化过程中对模型权重添加随机高斯噪声（Random Weight Perturbation, RWP），
+  使得生成的噪声对模型权重扰动具有鲁棒性，从而产生"可证明不可学习"的样本。
+
+  1. Surrogate Step (S-step):
+     - 对代理模型权重添加临时高斯噪声 N(0, σ²)
+     - 进行多次采样（U_train次），累积梯度后更新
+     - 训练后立即移除噪声，保持原始权重
+
+  2. Noise Step (N-step):
+     - 冻结代理模型
+     - 对权重添加随机噪声，进行U_noise次采样
+     - 对每次采样的梯度取平均，再进行PGD更新
+     - 使用min-min策略最小化分割损失
+
+Key: RWP (Random Weight Perturbation) 使噪声对模型初始化更加鲁棒，
+     提供理论上的不可学习性保证。
+"""
 from __future__ import annotations
 from typing import Dict, Iterable, List
+
 import torch
-import torch.nn.functional as F
+from omegaconf import DictConfig
+from monai.losses import DiceCELoss
 
 from ...registry import register_plugin
 from ...utils.config import get_config, require_config
 
 
-from ...utils.losses import TripletLoss
-
-
 @register_plugin("pue")
 class PUE:
+    """
+    PUE (Provably Unlearnable Examples) for 3D segmentation (e.g., BraTS19).
+
+    假设：
+      - Batch:
+          batch["image"]: FloatTensor [B, C, ...]      (3D: [B,C,D,H,W])
+          batch["label"]: LongTensor  [B,   ...]       (3D: [B,D,H,W])
+          batch["key"]:   sample-wise key（每个样本一个 key）
+      - Surrogate:
+          s_model(x) -> logits: [B, C_seg, ...]
+      - Noise backend:
+          noise_backend.batch_noise(keys) -> [N, C_in, ...]
+            * 只支持 sample-wise，不考虑 class-wise
+            * 通道数必须与输入一致：C_noise == C_in
+    """
+
+    def __init__(self):
+        # segmentation 用的 DiceCE loss（lazy 构建）
+        self._seg_loss: DiceCELoss | None = None
+
     @staticmethod
     def _norm_inplace(x: torch.Tensor, mean, std):
+        """
+        In-place per-channel normalize for ND volume.
+        x: [B, C, ...]
+        """
         for c, (m, s) in enumerate(zip(mean, std)):
             x[:, c].sub_(float(m)).div_(float(s))
         return x
 
-    # === NEW: 临时加/减 权重噪声（不污染参数与优化器状态） ===
+    # === RWP: 临时加/减 权重噪声（不污染参数与优化器状态） ===
     @staticmethod
     def _add_weight_noise_(model: torch.nn.Module, sigma: float):
+        """
+        对模型所有可训练参数添加临时高斯噪声 N(0, σ²)。
+        返回噪声列表，用于之后恢复原始权重。
+        """
         if sigma <= 0:
             return None  # fast path
         noises = []
@@ -34,6 +85,9 @@ class PUE:
 
     @staticmethod
     def _remove_weight_noise_(model: torch.nn.Module, noises):
+        """
+        移除之前添加的权重噪声，恢复原始参数。
+        """
         if noises is None:
             return
         with torch.no_grad():
@@ -41,227 +95,251 @@ class PUE:
                 if eps is not None:
                     p.sub_(eps)
 
-    # ---------------- Surrogate-step：Update surrogate ---------------- #
+    def _get_seg_loss(self, trainer) -> DiceCELoss:
+        """
+        构建与 SegTrainer 一致配置的 DiceCELoss，用于 surrogate / noise step。
+        """
+        if self._seg_loss is not None:
+            return self._seg_loss
+
+        cfg = trainer.config
+        crit_cfg = get_config(cfg, "training.criterion", DictConfig({}))
+        include_background = bool(get_config(crit_cfg, "include_background", False))
+        squared_pred = bool(get_config(crit_cfg, "squared_pred", False))
+        jaccard = bool(get_config(crit_cfg, "jaccard", False))
+        lambda_dice = float(get_config(crit_cfg, "lambda_dice", 1.0))
+        lambda_ce = float(get_config(crit_cfg, "lambda_ce", 1.0))
+
+        self._seg_loss = DiceCELoss(
+            include_background=include_background,
+            to_onehot_y=True,   # 标签是 index [B,...]
+            softmax=True,       # 多类别 segmentation
+            squared_pred=squared_pred,
+            jaccard=jaccard,
+            lambda_dice=lambda_dice,
+            lambda_ce=lambda_ce,
+            reduction="mean",
+        )
+        return self._seg_loss
+
+    # ---------------- Surrogate-step：Update surrogate with RWP ---------------- #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
+        """
+        使用 RWP 更新 surrogate 参数。
+
+        论文一致：训练端启用 RWP (U_train 次抽样)，对每次采样的loss求平均后反传。
+        Loss: segmentation DiceCE
+        """
         cfg = trainer.config
         device = trainer.device
         nb = trainer.noise_backend
         if nb is None:
-            raise RuntimeError("[UE] noise_backend is required.")
+            raise RuntimeError("[UE][PUE] noise_backend is required.")
 
         # --- RWP 配置读取 ---
         rwp_cfg = get_config(cfg, "ue.rwp", {})
         rwp_enabled = bool(get_config(rwp_cfg, "enabled", True))
-        rwp_sigma   = float(get_config(rwp_cfg, "sigma", 0.05))
-        U_train     = int(get_config(rwp_cfg, "U_train", 4))
+        rwp_sigma = float(get_config(rwp_cfg, "sigma", 0.05))
+        U_train = int(get_config(rwp_cfg, "U_train", 4))
         if (not rwp_enabled) or (rwp_sigma <= 0) or (U_train <= 1):
-            rwp_enabled = False  # 自动退化
+            rwp_enabled = False  # 自动退化为普通训练
 
-        x = batch["image"].to(device).float()  # [N,C,H,W], not Normalized yet
-        y = batch["targets"]["reid"]
-        y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(y, device=device, dtype=torch.long)
+        # data
+        x = batch["image"].to(device).float()  # [B,C,...]
+        y = batch["label"]
+        y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(
+            y, device=device, dtype=torch.long
+        )
         keys: Iterable[int] = batch["key"]
 
-        mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.485, 0.456, 0.406)))
-        std = tuple(get_config(cfg, "training.data.transforms.std", (0.229, 0.224, 0.225)))
-        margin = float(get_config(cfg, "ue.reid_margin", 0.2))
+        B, C_in = x.shape[:2]
 
-        # 全图噪声（backend只取放，不做任何PGD逻辑）
-        delta = nb.batch_noise(keys).to(device)                   # [N,C_table,H,W]
-        delta = delta.repeat(1, x.size(1), 1, 1) if delta.size(1) == 1 and x.size(1) > 1 else delta
+        # normalization config（默认 no-op: mean=0, std=1）
+        mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
+        std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
-        # surrogate 模型与优化器
+        # noise: sample-wise，通道数必须与输入一致
+        delta = nb.batch_noise(list(keys)).to(device).float()  # [B,C_in,...]
+        if delta.shape[:2] != x.shape[:2]:
+            raise RuntimeError(
+                f"[UE][PUE] noise shape mismatch: noise {tuple(delta.shape)} vs input {tuple(x.shape)}"
+            )
+
+        # select surrogate and optimizer
         if not trainer.surrogates:
-            raise RuntimeError("[UE] No surrogate bound.")
+            raise RuntimeError("[UE][PUE] No surrogate bound.")
         name, s_model = next(iter(trainer.surrogates.items()))
         opt = trainer.opt_surrogates.get(name, None)
         if opt is None:
-            raise RuntimeError(f"[UE] No optimizer for surrogate '{name}'.")
+            raise RuntimeError(f"[UE][PUE] No optimizer for surrogate '{name}'.")
+
+        seg_loss_fn = self._get_seg_loss(trainer)
 
         s_model.train()
         for p in s_model.parameters():
             p.requires_grad = True
 
-        # ========= 与论文一致：训练端启用 RWP (U_train 次抽样) =========
+        # ========= RWP: 训练端启用 (U_train 次抽样) =========
         opt.zero_grad(set_to_none=True)
         loss_scalar = 0.0
 
         if rwp_enabled:
             for _ in range(U_train):
                 noises = self._add_weight_noise_(s_model, rwp_sigma)  # 临时加噪
+
+                # forward with noisy input and noisy weights
                 noisy = (x + delta).clamp(0.0, 1.0)
                 xn = noisy.clone()
                 self._norm_inplace(xn, mean, std)
 
                 out = s_model(xn)
-                emb = out[1] if isinstance(out, (tuple, list)) else out
-                triplet_loss = TripletLoss(margin=margin)
-                loss = triplet_loss(emb, y) / float(U_train)  # 均值聚合
+                logits = out[0] if isinstance(out, (tuple, list)) else out
+
+                loss = seg_loss_fn(logits, y.unsqueeze(1)) / float(U_train)  # 均值聚合
                 loss.backward()  # 累计梯度
-                loss_scalar += float(loss.detach().cpu())     # 仅记录
-                self._remove_weight_noise_(s_model, noises)   # 立刻减回噪声
+                loss_scalar += float(loss.detach().cpu())
+
+                self._remove_weight_noise_(s_model, noises)  # 立刻减回噪声
         else:
+            # 普通训练（无RWP）
             noisy = (x + delta).clamp(0.0, 1.0)
             xn = noisy.clone()
             self._norm_inplace(xn, mean, std)
+
             out = s_model(xn)
-            emb = out[1] if isinstance(out, (tuple, list)) else out
-            triplet_loss = TripletLoss(margin=margin)
-            loss = triplet_loss(emb, y)
+            logits = out[0] if isinstance(out, (tuple, list)) else out
+
+            loss = seg_loss_fn(logits, y.unsqueeze(1))
             loss.backward()
             loss_scalar = float(loss.detach().cpu())
 
         opt.step()
-        return {"surrogate_loss": loss_scalar, "loss": loss_scalar}
 
-    # ---------------- N-step：Update noise (PGD with optional RWP) ---------------- #
+        return {
+            "surrogate_loss": loss_scalar,
+            "loss": loss_scalar,
+        }
+
+    # ---------------- N-step：Update noise (PGD with RWP) ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
+        """
+        使用 PGD + RWP 更新噪声。
+
+        论文一致：噪声优化端启用 RWP (U_noise 次抽样)，对每次采样的梯度求平均后进行PGD更新。
+        使用 min-min 策略：最小化分割损失。
+        """
         cfg = trainer.config
         device = trainer.device
         nb = trainer.noise_backend
         if nb is None:
-            raise RuntimeError("[UE] noise_backend is required.")
+            raise RuntimeError("[UE][PUE] noise_backend is required.")
 
         # --- RWP 配置读取 ---
         rwp_cfg = get_config(cfg, "ue.rwp", {})
         rwp_enabled = bool(get_config(rwp_cfg, "enabled", True))
-        rwp_sigma   = float(get_config(rwp_cfg, "sigma", 0.05))
-        U_noise     = int(get_config(rwp_cfg, "U_noise", 8))
+        rwp_sigma = float(get_config(rwp_cfg, "sigma", 0.05))
+        U_noise = int(get_config(rwp_cfg, "U_noise", 8))
         if (not rwp_enabled) or (rwp_sigma <= 0) or (U_noise <= 1):
             rwp_enabled = False  # 自动退化
 
-        x = batch["image"].to(device).float()  # [N,C_in,H,W]
-        y = batch["targets"]["reid"]
-        y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(y, device=device, dtype=torch.long)
+        # -------- data & config --------
+        x = batch["image"].to(device).float()  # [N, C_in, ...]
+        y = batch["label"]
+        y = y.to(device).long() if torch.is_tensor(y) else torch.as_tensor(
+            y, device=device, dtype=torch.long
+        )
         keys = batch["key"]
         keys_list: List[int] = list(keys)
 
-        # 配置
+        N, C_in = x.shape[:2]
+
         algo = require_config(cfg, "ue.algorithm")
         params = require_config(algo, "params")
-        eps = float(get_config(params, "epsilon", 8/255.0))
-        step_size = float(get_config(params, "step_size", 2/255.0))
+        eps = float(get_config(params, "epsilon", 8 / 255.0))
+        step_size = float(get_config(params, "step_size", 2 / 255.0))
         num_steps = int(get_config(params, "noise_step", 10))
-        margin = float(get_config(cfg, "ue.reid_margin", 0.2))
 
-        mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.485, 0.456, 0.406)))
-        std  = tuple(get_config(cfg, "training.data.transforms.std",  (0.229, 0.224, 0.225)))
+        # normalization config
+        mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
+        std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
-        # 冻结 surrogate
+        seg_loss_fn = self._get_seg_loss(trainer)
+
+        # -------- freeze surrogate --------
         if not trainer.surrogates:
-            raise RuntimeError("[UE] No surrogate bound.")
+            raise RuntimeError("[UE][PUE] No surrogate bound.")
         _, s_model = next(iter(trainer.surrogates.items()))
         s_model.eval()
         for p in s_model.parameters():
             p.requires_grad = False
 
-        # 取噪声表（class-wise 时同一 key 会在 batch 内重复）
-        delta_tbl = nb.batch_noise(keys_list).to(device)  # [N,C_table,H,W]
-        N, C_in, H, W = x.shape
-        C_table = delta_tbl.size(1)
+        # -------- init / clamp noise --------
+        delta_tbl = nb.batch_noise(keys_list).to(device).float()  # [N, C_in, ...]
+        if delta_tbl.shape[:2] != x.shape[:2]:
+            raise RuntimeError(
+                f"[UE][PUE] noise shape mismatch: noise {tuple(delta_tbl.shape)} vs input {tuple(x.shape)}"
+            )
 
-        # 1→C 通道处理策略：仅在表=1ch 且 输入多通道时 repeat 到 C_in
-        repeat_to_Cin = (C_table == 1 and C_in > 1)
-        if not repeat_to_Cin and C_table != C_in:
-            raise RuntimeError(f"[UE] channel mismatch: table C={C_table} vs input C={C_in}")
+        # 保险：把历史噪声先 clamp 一次，防止之前 epoch 的越界残留
+        delta_tbl = delta_tbl.clamp(-eps, eps)
 
-        # 构建 unique keys 与 分组（一次就够）
-        first_idx, unique_keys = {}, []
-        for i, k in enumerate(keys_list):
-            if k not in first_idx:
-                first_idx[k] = i
-                unique_keys.append(k)
-        group: Dict[int, List[int]] = {}
-        for i, k in enumerate(keys_list):
-            group.setdefault(k, []).append(i)
-
-        # 以 key 粒度维护 delta（形状与表一致：1ch 或 C_in）
-        key_delta: Dict[int, torch.Tensor] = {}
-        for k in unique_keys:
-            di = delta_tbl[first_idx[k]]  # [C_table, H, W]
-            key_delta[k] = di.clone()
-
-        triplet = TripletLoss(margin=margin)
         last_loss = torch.tensor(0.0, device=device)
 
+        # -------- PGD 内层循环 with RWP --------
         with torch.enable_grad():
             for _ in range(max(1, num_steps)):
-                # 展开到 per-sample 做前向
-                delta_forward = torch.stack([key_delta[k] for k in keys_list], dim=0)  # [N,C_table,H,W]
-                if repeat_to_Cin:
-                    delta_forward = delta_forward.repeat(1, C_in, 1, 1)                 # [N,C_in,H,W]
-
                 if rwp_enabled:
-                    grad_accum = torch.zeros_like(delta_forward)
+                    # RWP: 对 U_noise 次权重采样取平均梯度
+                    grad_accum = torch.zeros_like(delta_tbl)
+
                     for _u in range(U_noise):
                         noises = self._add_weight_noise_(s_model, rwp_sigma)
-                        perturb_img = (x + delta_forward).clamp(0.0, 1.0).detach().requires_grad_(True)
+
+                        # x + delta，保证输入 surrogate 的图像始终在 [0,1]
+                        perturb_img = (x + delta_tbl).clamp(0.0, 1.0).detach().requires_grad_(True)
                         xn = perturb_img.clone()
                         self._norm_inplace(xn, mean, std)
+
                         out = s_model(xn)
-                        emb = out[1] if isinstance(out, (tuple, list)) else out
-                        loss_u = triplet(emb, y)             # error-minimizing：最小化
-                        (g_u,) = torch.autograd.grad(loss_u, perturb_img, retain_graph=False, create_graph=False)
+                        logits = out[0] if isinstance(out, (tuple, list)) else out
+
+                        loss_u = seg_loss_fn(logits, y.unsqueeze(1))
+                        (g_u,) = torch.autograd.grad(
+                            loss_u, perturb_img, retain_graph=False, create_graph=False
+                        )
                         grad_accum.add_(g_u)
-                        last_loss = loss_u
+                        last_loss = loss_u.detach()
+
                         self._remove_weight_noise_(s_model, noises)
+
                     g = grad_accum / float(U_noise)
                 else:
-                    perturb_img = (x + delta_forward).clamp(0.0, 1.0).detach().requires_grad_(True)
+                    # 普通 PGD（无RWP）
+                    perturb_img = (x + delta_tbl).clamp(0.0, 1.0).detach().requires_grad_(True)
                     xn = perturb_img.clone()
                     self._norm_inplace(xn, mean, std)
+
                     out = s_model(xn)
-                    emb = out[1] if isinstance(out, (tuple, list)) else out
-                    loss = triplet(emb, y)
-                    (g,) = torch.autograd.grad(loss, perturb_img, retain_graph=False, create_graph=False)
-                    last_loss = loss
+                    logits = out[0] if isinstance(out, (tuple, list)) else out
 
-                # 表=1ch 才折回 1ch；否则保持逐通道
-                g_fold = g.mean(dim=1, keepdim=True) if repeat_to_Cin else g  # [N,1,H,W] or [N,C_in,H,W]
+                    loss = seg_loss_fn(logits, y.unsqueeze(1))
+                    last_loss = loss.detach()
 
-                # —— 按 key 聚合梯度 + 计算该 key 的像素盒界（对本批所有该 key 样本安全）——
-                key_grad: Dict[int, torch.Tensor] = {}
-                key_lower: Dict[int, torch.Tensor] = {}
-                key_upper: Dict[int, torch.Tensor] = {}
+                    (g,) = torch.autograd.grad(
+                        loss, perturb_img, retain_graph=False, create_graph=False
+                    )
 
-                for k, idxs in group.items():
-                    gk = g_fold[idxs]                           # [m, C_tbl_or_fold, H, W]
-                    gk_mean = gk.mean(dim=0, keepdim=False)     # [C_tbl_or_fold, H, W]
-                    key_grad[k] = gk_mean
+                # PGD 梯度下降（min-min）
+                delta_tbl = delta_tbl - step_size * g.sign()
 
-                    xi = x[idxs]                                # [m, C_in, H, W]
-                    if repeat_to_Cin:
-                        lower_i = (-xi).amax(dim=1, keepdim=True)   # [m,1,H,W]
-                        upper_i = (1 - xi).amin(dim=1, keepdim=True)
-                        lower_k = lower_i.max(dim=0).values         # [1,H,W]
-                        upper_k = upper_i.min(dim=0).values
-                        lb = torch.maximum(torch.full_like(key_delta[k], -eps), lower_k)
-                        ub = torch.minimum(torch.full_like(key_delta[k],  eps), upper_k)
-                    else:
-                        lower_i = (-xi)                              # [m,C_in,H,W]
-                        upper_i = (1 - xi)
-                        lower_k = lower_i.max(dim=0).values          # [C_in,H,W]
-                        upper_k = upper_i.min(dim=0).values
-                        lb = torch.maximum(torch.full_like(key_delta[k], -eps), lower_k)
-                        ub = torch.minimum(torch.full_like(key_delta[k],  eps), upper_k)
+                # **唯一且强制的 L_inf 投影**
+                delta_tbl = delta_tbl.clamp(-eps, eps)
 
-                    key_lower[k] = lb
-                    key_upper[k] = ub
+        # -------- 写回 noise backend --------
+        nb.commit_batch(keys_list, delta_tbl.detach().cpu())
 
-                # —— 梯度“下降”更新（error-minimizing），再投影 ——
-                for k in unique_keys:
-                    dk = key_delta[k]
-                    gk = key_grad[k].sign()
-                    dk = dk - step_size * gk                         # ← 下降（保留你原来的方向）
-                    dk = dk.clamp(-eps, +eps)                        # L_inf 投影
-                    dk = dk.clamp(key_lower[k], key_upper[k]).detach()  # 像素盒一致性
-                    key_delta[k] = dk
-
-        # 一次性写回（展开为 per-sample 视图，兼容现有 backend）
-        delta_commit = torch.stack([key_delta[k] for k in keys_list], dim=0)  # [N, C_table, H, W]
-        nb.commit_batch(keys_list, delta_commit.detach().cpu())
-
+        delta_linf = float(delta_tbl.detach().abs().max().cpu())
         return {
-            "noise_loss": float(last_loss.detach().cpu()),
-            "delta_linf": float(delta_commit.detach().abs().max().cpu())
+            "noise_loss": float(last_loss.cpu()),
+            "delta_linf": delta_linf,
         }
