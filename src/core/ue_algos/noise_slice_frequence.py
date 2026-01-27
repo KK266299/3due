@@ -302,7 +302,7 @@ class NoiseSliceFrequenceUE:
          - Z-axis HIGH-PASS: maximize inter-slice diversity
          - XY-plane LOW/MID-PASS: ensure intra-slice smoothness
       3. Soft ROI mask: 二值化 → 膨胀 → 高斯模糊
-      4. Optional Z-axis frequency regularization: minimize z-axis energy
+      4. Optional Z-axis frequency regularization: penalize z-axis LOW-frequency energy
 
     Configuration (ue.algorithm.params):
       epsilon: L_inf bound (default: 8/255)
@@ -639,33 +639,49 @@ class NoiseSliceFrequenceUE:
 
     def _compute_z_freq_energy_loss(self, delta: torch.Tensor) -> torch.Tensor:
         """
-        Compute z-axis frequency energy as regularization loss.
+        Compute z-axis LOW-frequency energy as regularization loss.
 
-        This loss encourages the noise to have low energy in the z-axis frequency domain,
-        meaning the noise varies slowly along the z-axis (inter-slice direction).
+        This loss penalizes low-frequency components in the z-axis,
+        encouraging the noise to vary FAST along the z-axis (high inter-slice diversity).
+
+        Only penalizes frequencies below z_cutoff_low (default 0.1), consistent with
+        the high-pass filter design.
 
         Args:
             delta: [B, C, D, H, W] noise tensor
 
         Returns:
-            z_freq_energy_loss: Scalar tensor representing z-axis frequency energy
+            z_low_freq_energy_loss: Scalar tensor representing z-axis low-frequency energy
         """
+        B, C, D, H, W = delta.shape
+        device = delta.device
+
         # FFT along z-axis only
         delta_fft_z = torch.fft.fft(delta, dim=2)  # [B, C, D, H, W] complex
 
         # Compute power spectrum along z-axis
         power_z = (delta_fft_z.abs() ** 2)  # [B, C, D, H, W]
 
-        # Average over batch, channel, H, W to get z-frequency distribution
-        power_z_avg = power_z.mean(dim=(0, 1, 3, 4))  # [D]
+        # Get z-axis frequency grid (normalized to [-0.5, 0.5))
+        freq_z = torch.fft.fftfreq(D, device=device)  # [D]
+        abs_freq_z = freq_z.abs()  # [D]
 
-        # Total energy (excluding DC component at index 0)
-        total_energy = power_z_avg[1:].sum()
+        # Create low-frequency mask: frequencies below cutoff (excluding DC at index 0)
+        # Use the same cutoff as the high-pass filter
+        z_cutoff = getattr(self._freq_constraint, 'z_cutoff_low', 0.1)
+        low_freq_mask = (abs_freq_z < z_cutoff) & (abs_freq_z > 0)  # [D], exclude DC
 
-        # Normalize by the number of elements for stability
-        z_freq_energy_loss = total_energy / (power_z_avg.numel() - 1 + 1e-10)
+        # Extract low-frequency energy
+        # Reshape mask for broadcasting: [1, 1, D, 1, 1]
+        low_freq_mask = low_freq_mask.view(1, 1, D, 1, 1).expand_as(power_z)
+        low_freq_energy = power_z[low_freq_mask].sum()
 
-        return z_freq_energy_loss
+        # Normalize by the number of low-frequency bins and spatial size
+        num_low_freq_bins = (abs_freq_z < z_cutoff).sum() - 1  # exclude DC
+        num_low_freq_bins = max(num_low_freq_bins.item(), 1)
+        z_low_freq_energy_loss = low_freq_energy / (B * C * H * W * num_low_freq_bins + 1e-10)
+
+        return z_low_freq_energy_loss
 
     def _compute_freq_stats(self, delta: torch.Tensor) -> Tuple[float, float]:
         """

@@ -63,10 +63,11 @@ ue:
       xy_sigma: 0.1             # Soft transition sigma for xy-plane
 
       # === Z-axis Frequency Regularization ===
-      # When enabled, adds a loss term to minimize z-axis frequency energy
-      # This encourages the noise to vary slowly along the z-axis (inter-slice)
-      z_freq_regularize: false  # Enable z-axis frequency regularization (default: false)
-      z_freq_reg_weight: 0.1    # Weight for z-axis frequency regularization loss
+      # When enabled, adds a loss term to penalize z-axis LOW-frequency energy
+      # This encourages the noise to vary FAST along the z-axis (high inter-slice diversity)
+      # Works together with the z-axis high-pass filter to suppress slow variations
+      z_freq_regularize: false  # Enable z-axis low-frequency regularization (default: false)
+      z_freq_reg_weight: 0.1    # Weight for z-axis low-frequency regularization loss
 
       # === ROI Mask Settings ===
       roi_aware: true           # 是否使用ROI mask (false=全图噪声)
