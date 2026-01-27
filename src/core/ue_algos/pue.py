@@ -2,12 +2,18 @@
 """
 PUE (Provably Unlearnable Examples) for 3D Medical Image Segmentation.
 
-Based on: "Provably Unlearnable Data Examples" (NeurIPS 2022)
-Paper: https://arxiv.org/abs/2206.10278
+Based on: "Provably Unlearnable Data Examples" (NDSS 2025)
+Authors: Derui Wang, Minhui Xue, Bo Li, Seyit Camtepe, Liming Zhu
+Paper: https://www.ndss-symposium.org/ndss-paper/provably-unlearnable-data-examples/
+PDF: https://www.ndss-symposium.org/wp-content/uploads/2025-886-paper.pdf
+Code: https://github.com/NeuralSec/certified-data-learnability
 
 Algorithm:
   核心思想：通过在训练和噪声优化过程中对模型权重添加随机高斯噪声（Random Weight Perturbation, RWP），
   使得生成的噪声对模型权重扰动具有鲁棒性，从而产生"可证明不可学习"的样本。
+
+  论文提出 (q, η)-Learnability 认证机制，通过参数平滑（parametric smoothing）来认证
+  不可学习数据集的有效性，提供测试准确率的理论上界保证。
 
   1. Surrogate Step (S-step):
      - 对代理模型权重添加临时高斯噪声 N(0, σ²)
@@ -21,7 +27,7 @@ Algorithm:
      - 使用min-min策略最小化分割损失
 
 Key: RWP (Random Weight Perturbation) 使噪声对模型初始化更加鲁棒，
-     提供理论上的不可学习性保证。
+     提供理论上的 (q, η)-Learnability 认证保证。
 """
 from __future__ import annotations
 from typing import Dict, Iterable, List

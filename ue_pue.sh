@@ -2,8 +2,10 @@
 # ============================================================================
 # PUE (Provably Unlearnable Examples) Noise Generator Training Script
 # ============================================================================
-#   Method: Provably Unlearnable Data Examples (NeurIPS 2022)
-#   Paper: https://arxiv.org/abs/2206.10278
+#   Method: Provably Unlearnable Data Examples (NDSS 2025)
+#   Authors: Derui Wang, Minhui Xue, Bo Li, Seyit Camtepe, Liming Zhu
+#   Paper: https://www.ndss-symposium.org/wp-content/uploads/2025-886-paper.pdf
+#   Code: https://github.com/NeuralSec/certified-data-learnability
 #
 #   噪声输出: ${task.save_dir}/${task.run_name}/<TIMESTAMP>/noise/
 #   manifest: epoch_XXXX/manifest.json

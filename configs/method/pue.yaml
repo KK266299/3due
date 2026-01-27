@@ -1,13 +1,16 @@
 # @package _global_
 # PUE (Provably Unlearnable Examples) for BraTS19 3D Segmentation
-# Based on: "Provably Unlearnable Data Examples" (NeurIPS 2022)
-# Paper: https://arxiv.org/abs/2206.10278
+# Based on: "Provably Unlearnable Data Examples" (NDSS 2025)
+# Authors: Derui Wang, Minhui Xue, Bo Li, Seyit Camtepe, Liming Zhu
+# Paper: https://www.ndss-symposium.org/ndss-paper/provably-unlearnable-data-examples/
+# PDF: https://www.ndss-symposium.org/wp-content/uploads/2025-886-paper.pdf
+# Code: https://github.com/NeuralSec/certified-data-learnability
 #
 # Key differences from min_min:
 #   - Uses Random Weight Perturbation (RWP) for robust noise generation
 #   - Surrogate training with weight noise sampling (U_train times)
 #   - Noise optimization with weight noise sampling (U_noise times)
-#   - Provides theoretical guarantees on unlearnability
+#   - Provides (q, η)-Learnability certification guarantees
 
 training:
   model_save_start: 9999 # no need to save for PUE

@@ -2,9 +2,15 @@
 
 ## 概述
 
-本文档描述了基于 **Provably Unlearnable Data Examples** (NeurIPS 2022) 方法的噪声生成实现，该实现适配于 BraTS19 3D 医学图像分割任务。
+本文档描述了基于 **Provably Unlearnable Data Examples** (NDSS 2025) 方法的噪声生成实现，该实现适配于 BraTS19 3D 医学图像分割任务。
 
-**论文参考**: [Provably Unlearnable Data Examples](https://arxiv.org/abs/2206.10278)
+**论文信息**:
+- **标题**: Provably Unlearnable Data Examples
+- **会议**: NDSS 2025 (Network and Distributed System Security Symposium)
+- **作者**: Derui Wang, Minhui Xue, Bo Li, Seyit Camtepe, Liming Zhu
+- **论文页面**: [NDSS Paper](https://www.ndss-symposium.org/ndss-paper/provably-unlearnable-data-examples/)
+- **PDF**: [Download](https://www.ndss-symposium.org/wp-content/uploads/2025-886-paper.pdf)
+- **arXiv**: [2405.03316](https://arxiv.org/abs/2405.03316)
 
 **参考代码库**: [NeuralSec/certified-data-learnability](https://github.com/NeuralSec/certified-data-learnability)
 
