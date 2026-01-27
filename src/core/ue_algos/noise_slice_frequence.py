@@ -302,6 +302,7 @@ class NoiseSliceFrequenceUE:
          - Z-axis HIGH-PASS: maximize inter-slice diversity
          - XY-plane LOW/MID-PASS: ensure intra-slice smoothness
       3. Soft ROI mask: 二值化 → 膨胀 → 高斯模糊
+      4. Optional Z-axis frequency regularization: minimize z-axis energy
 
     Configuration (ue.algorithm.params):
       epsilon: L_inf bound (default: 8/255)
@@ -312,6 +313,10 @@ class NoiseSliceFrequenceUE:
       z_sigma: Z-axis soft transition sigma (default: 0.05)
       xy_cutoff_high: XY low-pass cutoff (default: 0.3)
       xy_sigma: XY soft transition sigma (default: 0.1)
+
+      # Z-axis frequency regularization (optional)
+      z_freq_regularize: Enable z-axis frequency regularization (default: false)
+      z_freq_reg_weight: Weight for z-axis frequency regularization loss (default: 0.1)
 
       # ROI mask
       dilate_iterations: Number of dilation iterations (default: 2)
@@ -326,6 +331,9 @@ class NoiseSliceFrequenceUE:
         self._freq_constraint: FrequencyDomainConstraint | None = None
         self._roi_mask_builder: SoftROIMask | None = None
         self._initialized: bool = False
+        # Z-axis frequency regularization settings
+        self._z_freq_regularize: bool = False
+        self._z_freq_reg_weight: float = 0.1
         self.logger = get_logger()
 
     @staticmethod
@@ -418,11 +426,16 @@ class NoiseSliceFrequenceUE:
             gaussian_sigma=gaussian_sigma,
         )
 
+        # Z-axis frequency regularization settings
+        self._z_freq_regularize = bool(get_config(params, "z_freq_regularize", False))
+        self._z_freq_reg_weight = float(get_config(params, "z_freq_reg_weight", 0.1))
+
         self._initialized = True
         self.logger.info(
             f"[NoiseSliceFrequence] Initialized: in_channels={in_channels}, "
             f"eps={eps:.6f}, z_cutoff_low={z_cutoff_low}, xy_cutoff_high={xy_cutoff_high}, "
-            f"roi_aware={self._roi_aware}, soft_edge={soft_edge}, gaussian_sigma={gaussian_sigma}"
+            f"roi_aware={self._roi_aware}, soft_edge={soft_edge}, gaussian_sigma={gaussian_sigma}, "
+            f"z_freq_regularize={self._z_freq_regularize}, z_freq_reg_weight={self._z_freq_reg_weight}"
         )
 
     # ---------------- Surrogate-step: Update surrogate ---------------- #
@@ -547,6 +560,7 @@ class NoiseSliceFrequenceUE:
         # Train noise UNet
         self._noise_unet.train()
         last_loss = torch.tensor(0.0, device=device)
+        last_z_freq_reg_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
             # Step 1: Generate base noise from UNet
@@ -574,7 +588,16 @@ class NoiseSliceFrequenceUE:
             logits = out[0] if isinstance(out, (tuple, list)) else out
 
             # Step 7: Compute loss
-            loss = seg_loss_fn(logits, y.unsqueeze(1))
+            seg_loss = seg_loss_fn(logits, y.unsqueeze(1))
+
+            # Step 7b: Compute z-axis frequency regularization loss (if enabled)
+            if self._z_freq_regularize:
+                z_freq_reg_loss = self._compute_z_freq_energy_loss(delta)
+                loss = seg_loss + self._z_freq_reg_weight * z_freq_reg_loss
+                last_z_freq_reg_loss = z_freq_reg_loss.detach()
+            else:
+                loss = seg_loss
+
             last_loss = loss.detach()
 
             # Step 8: Backprop to update noise UNet
@@ -601,12 +624,48 @@ class NoiseSliceFrequenceUE:
         with torch.no_grad():
             z_energy, xy_energy = self._compute_freq_stats(final_delta)
 
-        return {
+        result = {
             "noise_loss": float(last_loss.cpu()),
             "delta_linf": delta_linf,
             "z_high_freq_energy": z_energy,
             "xy_low_freq_energy": xy_energy,
         }
+
+        # Add z-axis frequency regularization loss to result (if enabled)
+        if self._z_freq_regularize:
+            result["z_freq_reg_loss"] = float(last_z_freq_reg_loss.cpu())
+
+        return result
+
+    def _compute_z_freq_energy_loss(self, delta: torch.Tensor) -> torch.Tensor:
+        """
+        Compute z-axis frequency energy as regularization loss.
+
+        This loss encourages the noise to have low energy in the z-axis frequency domain,
+        meaning the noise varies slowly along the z-axis (inter-slice direction).
+
+        Args:
+            delta: [B, C, D, H, W] noise tensor
+
+        Returns:
+            z_freq_energy_loss: Scalar tensor representing z-axis frequency energy
+        """
+        # FFT along z-axis only
+        delta_fft_z = torch.fft.fft(delta, dim=2)  # [B, C, D, H, W] complex
+
+        # Compute power spectrum along z-axis
+        power_z = (delta_fft_z.abs() ** 2)  # [B, C, D, H, W]
+
+        # Average over batch, channel, H, W to get z-frequency distribution
+        power_z_avg = power_z.mean(dim=(0, 1, 3, 4))  # [D]
+
+        # Total energy (excluding DC component at index 0)
+        total_energy = power_z_avg[1:].sum()
+
+        # Normalize by the number of elements for stability
+        z_freq_energy_loss = total_energy / (power_z_avg.numel() - 1 + 1e-10)
+
+        return z_freq_energy_loss
 
     def _compute_freq_stats(self, delta: torch.Tensor) -> Tuple[float, float]:
         """
