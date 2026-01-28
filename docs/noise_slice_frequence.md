@@ -1,19 +1,20 @@
-# Noise Slice Frequence Z-Up Logits
+# Noise Slice Frequence (with Logits Divergence Loss)
 
 ## 概述
 
-`noise_slice_frequence_z_up_logits` 是 `noise_slice_frequence` 的扩展版本，在原有频域约束噪声生成的基础上，添加了 **Logits Divergence Loss（预测散度损失）**，用于最大化加噪声图像与干净图像之间的预测差异。
+`noise_slice_frequence` 是一个频域约束噪声生成算法，现已集成 **Logits Divergence Loss（预测散度损失）**，用于最大化加噪声图像与干净图像之间的预测差异。
 
 ## 核心设计
 
-### 1. 基础架构（继承自 noise_slice_frequence）
+### 1. 基础架构
 - **UNet噪声生成器**: 使用小型 U-Net 网络生成基础噪声
 - **频域约束**:
   - Z轴高通滤波：最大化层间多样性
   - XY平面低通滤波：确保层内平滑
 - **软边缘ROI掩码**: 二值化 → 膨胀 → 高斯模糊
+- **Logits Divergence Loss**: 最大化干净与加噪声图像的预测差异
 
-### 2. 新增：Logits Divergence Loss
+### 2. Logits Divergence Loss
 
 #### 设计目标
 最大化加噪声数据集与干净数据集在代理模型上的预测差异，使噪声能更有效地影响模型预测。
@@ -53,14 +54,15 @@ L_total = L_seg(f(x + δ), y) + λ * L_div(f(x), f(x + δ))
 ```yaml
 ue:
   algorithm:
-    name: noise_slice_frequence_z_up_logits
+    name: noise_slice_frequence
     params:
-      # === Logits Divergence Loss (新增) ===
+      # === Logits Divergence Loss ===
+      logits_div_enabled: true    # 启用/禁用散度损失
       logits_div_mode: fft_l1     # 散度计算模式
       logits_div_weight: 1.0      # 散度损失权重
       logits_div_temperature: 1.0 # KL散度温度参数（仅kl_div模式）
 
-      # === 其他参数（继承自 noise_slice_frequence）===
+      # === 其他参数 ===
       epsilon: 0.0313725          # L_inf 扰动界限 (8/255)
       noise_step: 1               # UNet训练迭代次数
       surrogate_step: 10          # 代理模型训练步数
@@ -83,6 +85,7 @@ ue:
 
 | 参数 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
+| `logits_div_enabled` | bool | `true` | 是否启用散度损失 |
 | `logits_div_mode` | str | `fft_l1` | 散度计算模式 |
 | `logits_div_weight` | float | `1.0` | 散度损失权重 |
 | `logits_div_temperature` | float | `1.0` | KL散度温度（仅kl_div模式） |
@@ -95,7 +98,7 @@ ue:
 python ue_generate.py \
     dataset=brats19 \
     task=brats19_ue \
-    method=noise_slice_frequence_z_up_logits \
+    method=noise_slice_frequence \
     task.run_name=freq_slice_logits \
     training.epochs=100
 ```
@@ -105,12 +108,12 @@ python ue_generate.py \
 ```bash
 # 使用直接L1范数
 python ue_generate.py \
-    method=noise_slice_frequence_z_up_logits \
+    method=noise_slice_frequence \
     ue.algorithm.params.logits_div_mode=l1
 
 # 使用KL散度
 python ue_generate.py \
-    method=noise_slice_frequence_z_up_logits \
+    method=noise_slice_frequence \
     ue.algorithm.params.logits_div_mode=kl_div \
     ue.algorithm.params.logits_div_temperature=2.0
 ```
@@ -120,8 +123,17 @@ python ue_generate.py \
 ```bash
 # 增加散度损失权重
 python ue_generate.py \
-    method=noise_slice_frequence_z_up_logits \
+    method=noise_slice_frequence \
     ue.algorithm.params.logits_div_weight=2.0
+```
+
+### 禁用散度损失
+
+```bash
+# 禁用logits divergence loss（回退到原始版本行为）
+python ue_generate.py \
+    method=noise_slice_frequence \
+    ue.algorithm.params.logits_div_enabled=false
 ```
 
 ## 输出指标
@@ -172,10 +184,10 @@ class LogitsDivergenceLoss(nn.Module):
 6. **计算损失**: `L_total = L_seg + L_div`
 7. **反向传播**: 更新噪声 UNet 参数
 
-## 与 noise_slice_frequence 的对比
+## 与原始版本的对比
 
-| 特性 | noise_slice_frequence | noise_slice_frequence_z_up_logits |
-|------|----------------------|----------------------------------|
+| 特性 | 原始版本 (logits_div_enabled=false) | 新版本 (logits_div_enabled=true) |
+|------|--------------------------------------|----------------------------------|
 | 频域约束 | ✓ | ✓ |
 | ROI掩码 | ✓ | ✓ |
 | 分割损失 | ✓ | ✓ |
@@ -186,12 +198,10 @@ class LogitsDivergenceLoss(nn.Module):
 
 ```
 src/core/ue_algos/
-├── noise_slice_frequence.py              # 原始版本
-└── noise_slice_frequence_z_up_logits.py  # 新增logits散度损失
+└── noise_slice_frequence.py              # 包含logits散度损失
 
 configs/method/
-├── noise_slice_frequence.yaml            # 原始配置
-└── noise_slice_frequence_z_up_logits.yaml # 新配置
+└── noise_slice_frequence.yaml            # 配置文件
 
 docs/
 └── noise_slice_frequence_z_up_logits.md  # 本文档
