@@ -1,0 +1,139 @@
+# @package _global_
+# Frequency-Domain Constrained Noise with Logits Divergence Loss
+#
+# Extension of noise_slice_frequence that adds a logits divergence loss to
+# maximize the difference between predictions on clean vs noisy images.
+#
+# Core Design:
+#   - UNet-based noise generation
+#   - Frequency domain constraints:
+#     * Z-axis HIGH-PASS: maximize inter-slice diversity
+#     * XY-plane LOW/MID-PASS: ensure intra-slice smoothness
+#   - Soft ROI mask: 二值化 → 膨胀 → 高斯模糊
+#   - NEW: Logits divergence loss (maximize prediction difference)
+#
+# Logits Divergence Modes:
+#   - 'l1': Direct L1 norm of logits difference
+#   - 'l2': Direct L2 norm of logits difference
+#   - 'fft_l1': FFT of logits difference, then L1 norm (default, recommended)
+#   - 'fft_l2': FFT of logits difference, then L2 norm
+#   - 'kl_div': KL divergence between softmax distributions
+#
+# Usage:
+#   python ue_generate.py \
+#     dataset=brats19 \
+#     task=brats19_ue \
+#     method=noise_slice_frequence_z_up_logits \
+#     task.run_name=freq_slice_logits \
+#     training.epochs=100
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: noise_slice_frequence_z_up_logits
+    params:
+      # === Perturbation Bound ===
+      epsilon: 0.0313725        # 8/255 L_inf bound
+
+      # === Training ===
+      noise_step: 1             # UNet training iterations per batch
+      surrogate_step: 10        # S-step: batches per epoch
+
+      # === Frequency Domain Constraints ===
+      # Z-axis: HIGH-PASS (maximize inter-slice diversity)
+      z_cutoff_low: 0.1         # Remove z-frequencies below this (normalized 0-0.5)
+      z_sigma: 0.05             # Soft transition sigma for z-axis
+
+      # XY-plane: LOW/MID-PASS (ensure intra-slice smoothness)
+      xy_cutoff_high: 0.3       # Remove xy-frequencies above this
+      xy_sigma: 0.1             # Soft transition sigma for xy-plane
+
+      # === ROI Mask Settings ===
+      roi_aware: true           # 是否使用ROI mask (false=全图噪声)
+      soft_edge: true           # 是否使用软边缘 (膨胀+高斯模糊)
+                                # true: 二值化 → 膨胀 → 高斯模糊
+                                # false: 仅二值化 (硬边缘)
+
+      # 软边缘参数 (仅当soft_edge=true时生效)
+      dilate_iterations: 2      # 膨胀迭代次数
+      dilate_kernel_size: 3     # 膨胀核大小
+      gaussian_sigma: 2.0       # 高斯模糊sigma
+
+      # === Logits Divergence Loss (NEW) ===
+      # Maximize the difference between clean and noisy image predictions
+      logits_div_mode: fft_l1   # Divergence mode: l1, l2, fft_l1, fft_l2, kl_div
+                                # fft_l1: FFT then L1 norm (recommended)
+                                # fft_l2: FFT then L2 norm
+                                # l1: Direct L1 norm
+                                # l2: Direct L2 norm
+                                # kl_div: KL divergence between softmax distributions
+      logits_div_weight: 1.0    # Weight for the divergence loss
+      logits_div_temperature: 1.0  # Temperature for KL divergence (only used in kl_div mode)
+
+  # Noise UNet configuration
+  noise_unet:
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 0
+    save_every: 10
