@@ -7,12 +7,20 @@
 #     * Z-axis HIGH-PASS: maximize inter-slice diversity
 #     * XY-plane LOW/MID-PASS: ensure intra-slice smoothness
 #   - Soft ROI mask: 二值化 → 膨胀 → 高斯模糊
+#   - Logits Divergence Loss: maximize prediction difference between clean and noisy
+#
+# Logits Divergence Modes:
+#   - 'l1': Direct L1 norm of logits difference
+#   - 'l2': Direct L2 norm of logits difference
+#   - 'fft_l1': FFT of logits difference, then L1 norm (recommended)
+#   - 'fft_l2': FFT of logits difference, then L2 norm
+#   - 'kl_div': KL divergence between softmax distributions
 #
 # Usage:
 #   python ue_generate.py \
 #     dataset=brats19 \
 #     task=brats19_ue \
-#     method=noise_slice_frequence \
+#     method=noise_slice_frequence_logits \
 #     task.run_name=freq_slice \
 #     training.epochs=100
 
@@ -44,7 +52,7 @@ ue:
 
   algorithm:
     kind: training_based
-    name: noise_slice_frequence
+    name: noise_slice_frequence_logits
     params:
       # === Perturbation Bound ===
       epsilon: 0.0313725        # 8/255 L_inf bound
@@ -72,6 +80,18 @@ ue:
       dilate_iterations: 2      # 膨胀迭代次数
       dilate_kernel_size: 3     # 膨胀核大小
       gaussian_sigma: 2.0       # 高斯模糊sigma
+
+      # === Logits Divergence Loss ===
+      # Maximize the difference between clean and noisy image predictions
+      logits_div_enabled: true  # Enable logits divergence loss
+      logits_div_mode: fft_l1   # Divergence mode: l1, l2, fft_l1, fft_l2, kl_div
+                                # fft_l1: FFT then L1 norm (recommended)
+                                # fft_l2: FFT then L2 norm
+                                # l1: Direct L1 norm
+                                # l2: Direct L2 norm
+                                # kl_div: KL divergence between softmax distributions
+      logits_div_weight: 1.0    # Weight for the divergence loss
+      logits_div_temperature: 1.0  # Temperature for KL divergence (only used in kl_div mode)
 
   # Noise UNet configuration
   noise_unet:

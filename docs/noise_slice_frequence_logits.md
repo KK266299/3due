@@ -2,7 +2,7 @@
 
 ## 概述
 
-`noise_slice_frequence` 是一个频域约束噪声生成算法，现已集成 **Logits Divergence Loss（预测散度损失）**，用于最大化加噪声图像与干净图像之间的预测差异。
+`noise_slice_frequence_logits` 是一个频域约束噪声生成算法，现已集成 **Logits Divergence Loss（预测散度损失）**，用于最大化加噪声图像与干净图像之间的预测差异。
 
 ## 核心设计
 
@@ -54,7 +54,7 @@ L_total = L_seg(f(x + δ), y) + λ * L_div(f(x), f(x + δ))
 ```yaml
 ue:
   algorithm:
-    name: noise_slice_frequence
+    name: noise_slice_frequence_logits
     params:
       # === Logits Divergence Loss ===
       logits_div_enabled: true    # 启用/禁用散度损失
@@ -98,7 +98,7 @@ ue:
 python ue_generate.py \
     dataset=brats19 \
     task=brats19_ue \
-    method=noise_slice_frequence \
+    method=noise_slice_frequence_logits \
     task.run_name=freq_slice_logits \
     training.epochs=100
 ```
@@ -108,12 +108,12 @@ python ue_generate.py \
 ```bash
 # 使用直接L1范数
 python ue_generate.py \
-    method=noise_slice_frequence \
+    method=noise_slice_frequence_logits \
     ue.algorithm.params.logits_div_mode=l1
 
 # 使用KL散度
 python ue_generate.py \
-    method=noise_slice_frequence \
+    method=noise_slice_frequence_logits \
     ue.algorithm.params.logits_div_mode=kl_div \
     ue.algorithm.params.logits_div_temperature=2.0
 ```
@@ -123,7 +123,7 @@ python ue_generate.py \
 ```bash
 # 增加散度损失权重
 python ue_generate.py \
-    method=noise_slice_frequence \
+    method=noise_slice_frequence_logits \
     ue.algorithm.params.logits_div_weight=2.0
 ```
 
@@ -132,7 +132,7 @@ python ue_generate.py \
 ```bash
 # 禁用logits divergence loss（回退到原始版本行为）
 python ue_generate.py \
-    method=noise_slice_frequence \
+    method=noise_slice_frequence_logits \
     ue.algorithm.params.logits_div_enabled=false
 ```
 
@@ -198,13 +198,13 @@ class LogitsDivergenceLoss(nn.Module):
 
 ```
 src/core/ue_algos/
-└── noise_slice_frequence.py              # 包含logits散度损失
+└── noise_slice_frequence_logits.py              # 包含logits散度损失
 
 configs/method/
-└── noise_slice_frequence.yaml            # 配置文件
+└── noise_slice_frequence_logits.yaml            # 配置文件
 
 docs/
-└── noise_slice_frequence_z_up_logits.md  # 本文档
+└── noise_slice_frequence_logits_z_up_logits.md  # 本文档
 ```
 
 ## 注意事项
