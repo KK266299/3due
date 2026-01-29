@@ -1,4 +1,4 @@
-# file: src/core/ue_algos/noise_slice_frequence.py
+# file: src/core/ue_algos/noise_slice_frequence_logits.py
 """
 Frequency-Domain Constrained Noise for 3D Medical Image Segmentation UE.
 
@@ -8,11 +8,20 @@ Core Design:
     * Z-axis (inter-slice): HIGH-PASS -> maximize z-direction frequency diversity
     * XY-plane (intra-slice): LOW/MID-PASS -> smooth within slices
   - ROI mask with soft edges: 二值化 → 膨胀 → 高斯模糊
+  - Logits Divergence Loss: maximize prediction difference between clean and noisy images
 
 This approach creates noise that:
   - Has high inter-slice diversity (z-axis high-frequency components)
   - Is smooth within each slice (xy low/mid-frequency)
   - Only affects ROI regions with smooth boundaries
+  - Maximizes logits divergence between clean and noisy predictions
+
+Logits Divergence Modes:
+  - 'l1': Direct L1 norm of logits difference
+  - 'l2': Direct L2 norm of logits difference
+  - 'fft_l1': FFT of logits difference, then L1 norm (recommended)
+  - 'fft_l2': FFT of logits difference, then L2 norm
+  - 'kl_div': KL divergence between softmax distributions
 """
 from __future__ import annotations
 from typing import Dict, Iterable, List, Tuple
@@ -291,8 +300,112 @@ class SoftROIMask(nn.Module):
         return mask
 
 
-@register_plugin("noise_slice_frequence")
-class NoiseSliceFrequenceUE:
+class LogitsDivergenceLoss(nn.Module):
+    """
+    Compute logits divergence loss between clean and noisy predictions.
+
+    Supports multiple divergence computation modes:
+      - 'l1': Direct L1 norm of logits difference
+      - 'l2': Direct L2 norm of logits difference
+      - 'fft_l1': FFT of logits difference, then L1 norm
+      - 'fft_l2': FFT of logits difference, then L2 norm
+      - 'kl_div': KL divergence between softmax distributions
+
+    The loss is negated to maximize divergence (since we minimize loss).
+    """
+
+    def __init__(
+        self,
+        mode: str = 'fft_l1',
+        weight: float = 1.0,
+        temperature: float = 1.0,
+        fft_dims: Tuple[int, ...] = (-3, -2, -1),
+    ):
+        """
+        Args:
+            mode: Divergence computation mode ('l1', 'l2', 'fft_l1', 'fft_l2', 'kl_div')
+            weight: Loss weight multiplier
+            temperature: Temperature for softmax in kl_div mode
+            fft_dims: Dimensions to apply FFT over (default: spatial dims D, H, W)
+        """
+        super().__init__()
+        self.mode = mode.lower()
+        self.weight = weight
+        self.temperature = temperature
+        self.fft_dims = fft_dims
+
+        valid_modes = {'l1', 'l2', 'fft_l1', 'fft_l2', 'kl_div'}
+        if self.mode not in valid_modes:
+            raise ValueError(f"Invalid mode '{mode}'. Must be one of {valid_modes}")
+
+    def forward(
+        self,
+        logits_clean: torch.Tensor,
+        logits_noisy: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute divergence loss.
+
+        Args:
+            logits_clean: [B, C, D, H, W] predictions on clean images
+            logits_noisy: [B, C, D, H, W] predictions on noisy images
+
+        Returns:
+            loss: Scalar tensor (negative divergence for maximization)
+        """
+        # Compute logits difference
+        diff = logits_noisy - logits_clean  # [B, C, D, H, W]
+
+        if self.mode == 'l1':
+            # Direct L1 norm
+            divergence = diff.abs().mean()
+
+        elif self.mode == 'l2':
+            # Direct L2 norm
+            divergence = (diff ** 2).mean().sqrt()
+
+        elif self.mode == 'fft_l1':
+            # FFT then L1 norm
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            # Use magnitude of complex FFT
+            diff_fft_mag = diff_fft.abs()
+            divergence = diff_fft_mag.mean()
+
+        elif self.mode == 'fft_l2':
+            # FFT then L2 norm
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            diff_fft_mag = diff_fft.abs()
+            divergence = (diff_fft_mag ** 2).mean().sqrt()
+
+        elif self.mode == 'kl_div':
+            # KL divergence between softmax distributions
+            # Apply temperature scaling
+            logits_clean_scaled = logits_clean / self.temperature
+            logits_noisy_scaled = logits_noisy / self.temperature
+
+            # Softmax over class dimension
+            prob_clean = F.softmax(logits_clean_scaled, dim=1)
+            log_prob_noisy = F.log_softmax(logits_noisy_scaled, dim=1)
+
+            # KL(clean || noisy) = sum(prob_clean * (log_prob_clean - log_prob_noisy))
+            kl_loss = F.kl_div(
+                log_prob_noisy,
+                prob_clean,
+                reduction='batchmean',
+                log_target=False
+            )
+            divergence = kl_loss
+
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
+        # Return negative divergence (to maximize divergence by minimizing loss)
+        # Higher divergence = more difference = better for our goal
+        return -self.weight * divergence
+
+
+@register_plugin("noise_slice_frequence_logits")
+class NoiseSliceFrequenceLogitsUE:
     """
     Frequency-Domain Constrained Noise for 3D Medical Image Segmentation.
 
@@ -302,7 +415,7 @@ class NoiseSliceFrequenceUE:
          - Z-axis HIGH-PASS: maximize inter-slice diversity
          - XY-plane LOW/MID-PASS: ensure intra-slice smoothness
       3. Soft ROI mask: 二值化 → 膨胀 → 高斯模糊
-      4. Optional Z-axis frequency regularization: minimize z-axis energy
+      4. Logits Divergence Loss: maximize prediction difference between clean and noisy
 
     Configuration (ue.algorithm.params):
       epsilon: L_inf bound (default: 8/255)
@@ -314,14 +427,16 @@ class NoiseSliceFrequenceUE:
       xy_cutoff_high: XY low-pass cutoff (default: 0.3)
       xy_sigma: XY soft transition sigma (default: 0.1)
 
-      # Z-axis frequency regularization (optional)
-      z_freq_regularize: Enable z-axis frequency regularization (default: false)
-      z_freq_reg_weight: Weight for z-axis frequency regularization loss (default: 0.1)
-
       # ROI mask
       dilate_iterations: Number of dilation iterations (default: 2)
       dilate_kernel_size: Dilation kernel size (default: 3)
       gaussian_sigma: Gaussian blur sigma (default: 2.0)
+
+      # Logits Divergence Loss
+      logits_div_enabled: Enable logits divergence loss (default: True)
+      logits_div_mode: Divergence mode - l1, l2, fft_l1, fft_l2, kl_div (default: fft_l1)
+      logits_div_weight: Weight for divergence loss (default: 1.0)
+      logits_div_temperature: Temperature for KL div mode (default: 1.0)
     """
 
     def __init__(self):
@@ -330,10 +445,9 @@ class NoiseSliceFrequenceUE:
         self._opt_noise_unet: torch.optim.Optimizer | None = None
         self._freq_constraint: FrequencyDomainConstraint | None = None
         self._roi_mask_builder: SoftROIMask | None = None
+        self._logits_div_loss: LogitsDivergenceLoss | None = None
+        self._logits_div_enabled: bool = True
         self._initialized: bool = False
-        # Z-axis frequency regularization settings
-        self._z_freq_regularize: bool = False
-        self._z_freq_reg_weight: float = 0.1
         self.logger = get_logger()
 
     @staticmethod
@@ -426,16 +540,30 @@ class NoiseSliceFrequenceUE:
             gaussian_sigma=gaussian_sigma,
         )
 
-        # Z-axis frequency regularization settings
-        self._z_freq_regularize = bool(get_config(params, "z_freq_regularize", False))
-        self._z_freq_reg_weight = float(get_config(params, "z_freq_reg_weight", 0.1))
+        # Build logits divergence loss
+        self._logits_div_enabled = bool(get_config(params, "logits_div_enabled", True))
+        if self._logits_div_enabled:
+            logits_div_mode = str(get_config(params, "logits_div_mode", "fft_l1"))
+            logits_div_weight = float(get_config(params, "logits_div_weight", 1.0))
+            logits_div_temperature = float(get_config(params, "logits_div_temperature", 1.0))
+
+            self._logits_div_loss = LogitsDivergenceLoss(
+                mode=logits_div_mode,
+                weight=logits_div_weight,
+                temperature=logits_div_temperature,
+            )
+        else:
+            self._logits_div_loss = None
+            logits_div_mode = "disabled"
+            logits_div_weight = 0.0
 
         self._initialized = True
         self.logger.info(
-            f"[NoiseSliceFrequence] Initialized: in_channels={in_channels}, "
+            f"[NoiseSliceFrequenceLogits] Initialized: in_channels={in_channels}, "
             f"eps={eps:.6f}, z_cutoff_low={z_cutoff_low}, xy_cutoff_high={xy_cutoff_high}, "
             f"roi_aware={self._roi_aware}, soft_edge={soft_edge}, gaussian_sigma={gaussian_sigma}, "
-            f"z_freq_regularize={self._z_freq_regularize}, z_freq_reg_weight={self._z_freq_reg_weight}"
+            f"logits_div_enabled={self._logits_div_enabled}, logits_div_mode={logits_div_mode}, "
+            f"logits_div_weight={logits_div_weight}"
         )
 
     # ---------------- Surrogate-step: Update surrogate ---------------- #
@@ -500,19 +628,20 @@ class NoiseSliceFrequenceUE:
             "loss": loss_val,
         }
 
-    # ---------------- N-step: Update noise via UNet + Frequency Filter ---------------- #
+    # ---------------- N-step: Update noise via UNet + Frequency Filter + Logits Divergence ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        Update noise using UNet + frequency domain constraints.
+        Update noise using UNet + frequency domain constraints + logits divergence.
 
         Process:
           1. Forward image through noise UNet to get base noise
           2. Apply frequency domain constraints (z-highpass, xy-lowpass)
           3. Create soft ROI mask (二值化 → 膨胀 → 高斯模糊)
           4. Apply ROI mask to filtered noise
-          5. Forward through frozen surrogate, compute loss
-          6. Backprop to update noise UNet
-          7. Store masked noise to backend
+          5. Forward both clean and noisy images through frozen surrogate
+          6. Compute combined loss: seg_loss + logits_divergence_loss
+          7. Backprop to update noise UNet
+          8. Store masked noise to backend
         """
         cfg = trainer.config
         device = trainer.device
@@ -557,10 +686,21 @@ class NoiseSliceFrequenceUE:
         else:
             roi_mask = None  # 全图噪声，不使用ROI mask
 
+        # Get clean image predictions (for logits divergence loss)
+        logits_clean = None
+        if self._logits_div_enabled and self._logits_div_loss is not None:
+            with torch.no_grad():
+                x_clean_norm = x.clone()
+                self._norm_inplace(x_clean_norm, mean, std)
+                out_clean = s_model(x_clean_norm)
+                logits_clean = out_clean[0] if isinstance(out_clean, (tuple, list)) else out_clean
+                logits_clean = logits_clean.detach()  # No grad needed for clean
+
         # Train noise UNet
         self._noise_unet.train()
         last_loss = torch.tensor(0.0, device=device)
-        last_z_freq_reg_loss = torch.tensor(0.0, device=device)
+        last_seg_loss = torch.tensor(0.0, device=device)
+        last_div_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
             # Step 1: Generate base noise from UNet
@@ -583,18 +723,20 @@ class NoiseSliceFrequenceUE:
             xn = perturb_img.clone()
             self._norm_inplace(xn, mean, std)
 
-            # Step 6: Forward through surrogate
+            # Step 6: Forward through surrogate (noisy)
             out = s_model(xn)
-            logits = out[0] if isinstance(out, (tuple, list)) else out
+            logits_noisy = out[0] if isinstance(out, (tuple, list)) else out
 
-            # Step 7: Compute loss
-            seg_loss = seg_loss_fn(logits, y.unsqueeze(1))
+            # Step 7: Compute combined loss
+            # Segmentation loss (on noisy image)
+            seg_loss = seg_loss_fn(logits_noisy, y.unsqueeze(1))
+            last_seg_loss = seg_loss.detach()
 
-            # Step 7b: Compute z-axis frequency regularization loss (if enabled)
-            if self._z_freq_regularize:
-                z_freq_reg_loss = self._compute_z_freq_energy_loss(delta)
-                loss = seg_loss - self._z_freq_reg_weight * z_freq_reg_loss
-                last_z_freq_reg_loss = z_freq_reg_loss.detach()
+            # Logits divergence loss (maximize difference between clean and noisy)
+            if self._logits_div_enabled and self._logits_div_loss is not None and logits_clean is not None:
+                div_loss = self._logits_div_loss(logits_clean, logits_noisy)
+                last_div_loss = div_loss.detach()
+                loss = seg_loss + div_loss
             else:
                 loss = seg_loss
 
@@ -620,52 +762,29 @@ class NoiseSliceFrequenceUE:
 
         delta_linf = float(final_delta.detach().abs().max().cpu())
 
-        # Compute frequency statistics for logging
+        # Compute frequency statistics and logits divergence for logging
         with torch.no_grad():
             z_energy, xy_energy = self._compute_freq_stats(final_delta)
 
-        result = {
+            # Compute final logits divergence for logging
+            logits_diff_l1 = 0.0
+            if logits_clean is not None:
+                perturb_final = (x + final_delta).clamp(0.0, 1.0)
+                xn_final = perturb_final.clone()
+                self._norm_inplace(xn_final, mean, std)
+                out_final = s_model(xn_final)
+                logits_final = out_final[0] if isinstance(out_final, (tuple, list)) else out_final
+                logits_diff_l1 = (logits_final - logits_clean).abs().mean().cpu().item()
+
+        return {
             "noise_loss": float(last_loss.cpu()),
+            "seg_loss": float(last_seg_loss.cpu()),
+            "div_loss": float(last_div_loss.cpu()),
+            "logits_diff_l1": logits_diff_l1,
             "delta_linf": delta_linf,
             "z_high_freq_energy": z_energy,
             "xy_low_freq_energy": xy_energy,
         }
-
-        # Add z-axis frequency regularization loss to result (if enabled)
-        if self._z_freq_regularize:
-            result["z_freq_reg_loss"] = float(last_z_freq_reg_loss.cpu())
-
-        return result
-
-    def _compute_z_freq_energy_loss(self, delta: torch.Tensor) -> torch.Tensor:
-        """
-        Compute z-axis frequency energy as regularization loss.
-
-        This loss encourages the noise to have low energy in the z-axis frequency domain,
-        meaning the noise varies slowly along the z-axis (inter-slice direction).
-
-        Args:
-            delta: [B, C, D, H, W] noise tensor
-
-        Returns:
-            z_freq_energy_loss: Scalar tensor representing z-axis frequency energy
-        """
-        # FFT along z-axis only
-        delta_fft_z = torch.fft.fft(delta, dim=2)  # [B, C, D, H, W] complex
-
-        # Compute power spectrum along z-axis
-        power_z = (delta_fft_z.abs() ** 2)  # [B, C, D, H, W]
-
-        # Average over batch, channel, H, W to get z-frequency distribution
-        power_z_avg = power_z.mean(dim=(0, 1, 3, 4))  # [D]
-
-        # Total energy (excluding DC component at index 0)
-        total_energy = power_z_avg[1:].sum()
-
-        # Normalize by the number of elements for stability
-        z_freq_energy_loss = total_energy / (power_z_avg.numel() - 1 + 1e-10)
-
-        return z_freq_energy_loss
 
     def _compute_freq_stats(self, delta: torch.Tensor) -> Tuple[float, float]:
         """
