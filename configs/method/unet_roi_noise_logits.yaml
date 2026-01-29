@@ -1,0 +1,96 @@
+# @package _global_
+# UNet ROI Noise Generator with Logits Divergence Loss
+#
+# Extension of unet_roi_noise that adds logits divergence loss to
+# maximize the difference between predictions on clean vs noisy images.
+#
+# Logits Divergence Modes:
+#   - 'l1': Direct L1 norm of logits difference
+#   - 'l2': Direct L2 norm of logits difference
+#   - 'fft_l1': FFT of logits difference, then L1 norm (recommended)
+#   - 'fft_l2': FFT of logits difference, then L2 norm
+#   - 'kl_div': KL divergence between softmax distributions
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: unet_roi_noise_logits
+    params:
+      epsilon: 0.0313725        # 8/255 L_inf bound
+      noise_step: 1             # UNet training iterations per batch
+      step_size: 5e-3           # (unused, kept for compatibility)
+      surrogate_step: 2         # S-step: batches per epoch
+
+      # === Logits Divergence Loss ===
+      logits_div_enabled: true  # Enable logits divergence loss
+      logits_div_mode: fft_l1   # Divergence mode: l1, l2, fft_l1, fft_l2, kl_div
+      logits_div_weight: 1.0    # Weight for the divergence loss
+      logits_div_temperature: 1.0  # Temperature for KL divergence (only kl_div mode)
+
+  # Noise UNet configuration
+  noise_unet:
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 0
+    save_every: 10

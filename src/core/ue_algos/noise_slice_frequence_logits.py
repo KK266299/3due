@@ -365,15 +365,15 @@ class LogitsDivergenceLoss(nn.Module):
             divergence = (diff ** 2).mean().sqrt()
 
         elif self.mode == 'fft_l1':
-            # FFT then L1 norm
-            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            # FFT then L1 norm (ortho normalization to avoid magnitude explosion)
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims, norm="ortho")
             # Use magnitude of complex FFT
             diff_fft_mag = diff_fft.abs()
             divergence = diff_fft_mag.mean()
 
         elif self.mode == 'fft_l2':
-            # FFT then L2 norm
-            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            # FFT then L2 norm (ortho normalization to avoid magnitude explosion)
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims, norm="ortho")
             diff_fft_mag = diff_fft.abs()
             divergence = (diff_fft_mag ** 2).mean().sqrt()
 
