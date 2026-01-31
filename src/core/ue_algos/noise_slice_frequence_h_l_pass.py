@@ -274,12 +274,20 @@ class FrequencyDomainConstraint(nn.Module):
             r_xy_5d = r_xy.view(1, 1, 1, H, W)                       # [1,1,1,H,W]
             M_xy = torch.sigmoid((xy_c - r_xy_5d) / self.xy_sigma)   # [B,1,1,H,W]
 
-            # Apply M_z and M_xy sequentially (never materialise [B,D,H,W])
-            noise_fft = noise_fft * M_z      # broadcast: [B,C,D,H,W] * [B,1,D,1,1]
-            noise_fft = noise_fft * M_xy     # broadcast: [B,C,D,H,W] * [B,1,1,H,W]
+            # Correct DC component: M_z[0]*M_xy[0] should be 0.1, not sigmoid(...)
+            # Build a DC correction factor applied to M_z at index 0 (out-of-place)
+            dc_mz = M_z[:, :, 0:1, :, :]   # [B,1,1,1,1]
+            dc_mxy = M_xy[:, :, :, 0:1, 0:1]  # [B,1,1,1,1]
+            dc_product = (dc_mz * dc_mxy).clamp_min(1e-6)
+            dc_correction = 0.1 / dc_product  # want final DC = 0.1
 
-            # DC component attenuation
-            noise_fft[:, :, 0, 0, 0] = noise_fft[:, :, 0, 0, 0] * (0.1 / (M_z[:, :, 0, 0, 0] * M_xy[:, :, 0, 0, 0]).clamp_min(1e-6))
+            # Apply correction to M_z at DC position (out-of-place)
+            M_z_corrected = M_z.clone()
+            M_z_corrected[:, :, 0:1, :, :] = M_z[:, :, 0:1, :, :] * dc_correction
+
+            # Apply M_z and M_xy sequentially (never materialise [B,D,H,W])
+            noise_fft = noise_fft * M_z_corrected  # broadcast: [B,C,D,H,W] * [B,1,D,1,1]
+            noise_fft = noise_fft * M_xy            # broadcast: [B,C,D,H,W] * [B,1,1,H,W]
         else:
             # ---------- Static cached path (original behaviour) ----------
             if self._cached_mask is None or self._cached_shape != (D, H, W):
