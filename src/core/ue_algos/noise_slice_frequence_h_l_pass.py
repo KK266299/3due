@@ -20,7 +20,6 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from omegaconf import DictConfig
 from monai.losses import DiceCELoss
 from monai.networks.nets import UNet as MonaiUNet
@@ -429,6 +428,7 @@ class NoiseSliceFrequenceUE:
         self._opt_noise_unet: torch.optim.Optimizer | None = None
         self._freq_constraint: FrequencyDomainConstraint | None = None
         self._cutoff_predictor: LearnableCutoffPredictor | None = None
+        self._opt_cutoff: torch.optim.Optimizer | None = None
         self._learnable_cutoff: bool = False
         self._roi_mask_builder: SoftROIMask | None = None
         self._initialized: bool = False
@@ -499,8 +499,6 @@ class NoiseSliceFrequenceUE:
 
         # Learnable cutoff predictor (optional)
         self._learnable_cutoff = bool(get_config(params, "learnable_cutoff", False))
-        optim_param_groups: List = list(self._noise_unet.parameters())
-
         if self._learnable_cutoff:
             cutoff_lr_scale = float(get_config(params, "cutoff_lr_scale", 1.0))
             self._cutoff_predictor = LearnableCutoffPredictor(
@@ -512,27 +510,24 @@ class NoiseSliceFrequenceUE:
                 f"[NoiseSliceFrequence] Learnable cutoff enabled, lr_scale={cutoff_lr_scale}"
             )
 
-        # Build optimizer (includes cutoff predictor params if enabled)
+        # Build optimizers
         opt_cfg = get_config(noise_unet_cfg, "optimizer", DictConfig({}))
         lr = float(get_config(opt_cfg, "lr", 1e-4))
         weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
         betas = tuple(get_config(opt_cfg, "betas", (0.9, 0.999)))
 
+        self._opt_noise_unet = torch.optim.Adam(
+            self._noise_unet.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
+
         if self._learnable_cutoff:
             cutoff_lr_scale = float(get_config(params, "cutoff_lr_scale", 1.0))
-            self._opt_noise_unet = torch.optim.Adam(
-                [
-                    {"params": self._noise_unet.parameters()},
-                    {"params": self._cutoff_predictor.parameters(), "lr": lr * cutoff_lr_scale},
-                ],
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=betas,
-            )
-        else:
-            self._opt_noise_unet = torch.optim.Adam(
-                self._noise_unet.parameters(),
-                lr=lr,
+            self._opt_cutoff = torch.optim.Adam(
+                self._cutoff_predictor.parameters(),
+                lr=lr * cutoff_lr_scale,
                 weight_decay=weight_decay,
                 betas=betas,
             )
@@ -693,11 +688,9 @@ class NoiseSliceFrequenceUE:
             # Step 2: Apply frequency domain constraints
             if self._learnable_cutoff:
                 z_cutoff, xy_cutoff = self._cutoff_predictor(x)  # [B], [B]
-                # gradient checkpoint: recompute FFT in backward instead of
-                # caching full [B,C,D,H,W] complex tensors → saves ~2x peak memory
-                delta_filtered = grad_checkpoint(
-                    self._freq_constraint, delta_raw, z_cutoff, xy_cutoff,
-                    use_reentrant=False,
+                # Phase 1: detach cutoffs → filter whole batch (same memory as static)
+                delta_filtered = self._freq_constraint(
+                    delta_raw, z_cutoff.detach(), xy_cutoff.detach()
                 )
                 last_z_cutoff = z_cutoff.detach()
                 last_xy_cutoff = xy_cutoff.detach()
@@ -726,10 +719,44 @@ class NoiseSliceFrequenceUE:
             loss = seg_loss_fn(logits, y.unsqueeze(1))
             last_loss = loss.detach()
 
-            # Step 8: Backprop to update noise UNet (+ cutoff predictor)
+            # Step 8: Backprop to update noise UNet only
             self._opt_noise_unet.zero_grad(set_to_none=True)
             loss.backward()
             self._opt_noise_unet.step()
+
+        # Phase 2: update cutoff predictor on a single random sample
+        # Only 1 sample goes through FFT with gradients → memory = 1/B
+        if self._learnable_cutoff:
+            self._noise_unet.eval()
+            idx = torch.randint(B, (1,)).item()
+            x_1 = x[idx : idx + 1]                    # [1, C, D, H, W]
+            y_1 = y[idx : idx + 1]                     # [1, ...]
+
+            with torch.no_grad():
+                delta_raw_1 = self._noise_unet(x_1)    # [1, C, D, H, W]
+
+            z_c_1, xy_c_1 = self._cutoff_predictor(x_1)  # [1], [1] — with grad
+            delta_filt_1 = self._freq_constraint(delta_raw_1.detach(), z_c_1, xy_c_1)
+
+            if roi_mask is not None:
+                delta_1 = delta_filt_1 * roi_mask[idx : idx + 1]
+            else:
+                delta_1 = delta_filt_1
+            delta_1 = delta_1.clamp(-eps, eps)
+
+            perturb_1 = (x_1 + delta_1).clamp(0.0, 1.0)
+            xn_1 = perturb_1.clone()
+            self._norm_inplace(xn_1, mean, std)
+
+            out_1 = s_model(xn_1)
+            logits_1 = out_1[0] if isinstance(out_1, (tuple, list)) else out_1
+            loss_cutoff = seg_loss_fn(logits_1, y_1.unsqueeze(1))
+
+            self._opt_cutoff.zero_grad(set_to_none=True)
+            loss_cutoff.backward()
+            self._opt_cutoff.step()
+
+            self._noise_unet.train()
 
         # Store final noise to backend
         self._noise_unet.eval()
