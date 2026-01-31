@@ -236,14 +236,16 @@ class FrequencyDomainConstraint(nn.Module):
         M = M_z * M_xy
 
         # DC attenuation: want M[0,0,0] = 0.1
-        # Current M[0,0,0] = sigmoid(-z_cutoff/z_sigma) * sigmoid(xy_cutoff/xy_sigma)
-        # Build adjustment factor using non-inplace operations
+        # Use multiplicative adjustment: factor = 1 + (dc_scale - 1) * indicator
+        # where indicator is 1.0 at DC, 0.0 elsewhere
         dc_val = M[0, 0, 0].clamp_min(1e-6)
         dc_scale = 0.1 / dc_val  # scalar tensor
-        # Create DC indicator: 1 at (0,0,0), 0 elsewhere
-        dc_indicator = (abs_k_z == 0) & (r_xy == 0)  # [D, H, W] bool
-        # adjustment = dc_scale at DC, 1.0 elsewhere
-        dc_adjustment = torch.where(dc_indicator, dc_scale, torch.ones_like(M))
+        # Create DC indicator as float: 1.0 at (0,0,0), 0.0 elsewhere
+        dc_indicator = ((abs_k_z == 0) & (r_xy == 0)).to(dtype=M.dtype)  # [D, H, W] float
+        # adjustment = 1 + (dc_scale - 1) * indicator
+        # At DC: 1 + (dc_scale - 1) * 1 = dc_scale
+        # Elsewhere: 1 + (dc_scale - 1) * 0 = 1
+        dc_adjustment = 1.0 + (dc_scale - 1.0) * dc_indicator
         M = M * dc_adjustment
 
         return M.unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
