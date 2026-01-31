@@ -724,38 +724,41 @@ class NoiseSliceFrequenceUE:
             loss.backward()
             self._opt_noise_unet.step()
 
-        # Phase 2: update cutoff predictor on a single random sample
-        # Only 1 sample goes through FFT with gradients → memory = 1/B
+        # Phase 2: update cutoff predictor — gradient accumulation over
+        # all B samples, one sample at a time to cap peak memory.
+        # Each sample: forward FFT with grad → backward → free graph,
+        # so peak memory = 1 sample's FFT complex tensor, not B.
         if self._learnable_cutoff:
             self._noise_unet.eval()
-            idx = torch.randint(B, (1,)).item()
-            x_1 = x[idx : idx + 1]                    # [1, C, D, H, W]
-            y_1 = y[idx : idx + 1]                     # [1, ...]
-
-            with torch.no_grad():
-                delta_raw_1 = self._noise_unet(x_1)    # [1, C, D, H, W]
-
-            z_c_1, xy_c_1 = self._cutoff_predictor(x_1)  # [1], [1] — with grad
-            delta_filt_1 = self._freq_constraint(delta_raw_1.detach(), z_c_1, xy_c_1)
-
-            if roi_mask is not None:
-                delta_1 = delta_filt_1 * roi_mask[idx : idx + 1]
-            else:
-                delta_1 = delta_filt_1
-            delta_1 = delta_1.clamp(-eps, eps)
-
-            perturb_1 = (x_1 + delta_1).clamp(0.0, 1.0)
-            xn_1 = perturb_1.clone()
-            self._norm_inplace(xn_1, mean, std)
-
-            out_1 = s_model(xn_1)
-            logits_1 = out_1[0] if isinstance(out_1, (tuple, list)) else out_1
-            loss_cutoff = seg_loss_fn(logits_1, y_1.unsqueeze(1))
-
             self._opt_cutoff.zero_grad(set_to_none=True)
-            loss_cutoff.backward()
-            self._opt_cutoff.step()
 
+            for i in range(B):
+                x_i = x[i : i + 1]
+                y_i = y[i : i + 1]
+
+                with torch.no_grad():
+                    delta_raw_i = self._noise_unet(x_i)
+
+                z_c_i, xy_c_i = self._cutoff_predictor(x_i)
+                delta_filt_i = self._freq_constraint(delta_raw_i.detach(), z_c_i, xy_c_i)
+
+                if roi_mask is not None:
+                    delta_i = delta_filt_i * roi_mask[i : i + 1]
+                else:
+                    delta_i = delta_filt_i
+                delta_i = delta_i.clamp(-eps, eps)
+
+                perturb_i = (x_i + delta_i).clamp(0.0, 1.0)
+                xn_i = perturb_i.clone()
+                self._norm_inplace(xn_i, mean, std)
+
+                out_i = s_model(xn_i)
+                logits_i = out_i[0] if isinstance(out_i, (tuple, list)) else out_i
+                # Scale loss by 1/B so accumulated gradient = mean over batch
+                loss_i = seg_loss_fn(logits_i, y_i.unsqueeze(1)) / B
+                loss_i.backward()  # gradients accumulate in predictor params
+
+            self._opt_cutoff.step()
             self._noise_unet.train()
 
         # Store final noise to backend
