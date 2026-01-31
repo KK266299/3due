@@ -687,13 +687,15 @@ class NoiseSliceFrequenceUE:
 
             # Step 2: Apply frequency domain constraints
             if self._learnable_cutoff:
-                z_cutoff, xy_cutoff = self._cutoff_predictor(x)  # [B], [B]
-                # Phase 1: detach cutoffs → filter whole batch (same memory as static)
+                # Phase 1: predict cutoffs without building computation graph
+                # (predictor will be updated separately in Phase 2)
+                with torch.no_grad():
+                    z_cutoff, xy_cutoff = self._cutoff_predictor(x)
                 delta_filtered = self._freq_constraint(
-                    delta_raw, z_cutoff.detach(), xy_cutoff.detach()
+                    delta_raw, z_cutoff, xy_cutoff
                 )
-                last_z_cutoff = z_cutoff.detach()
-                last_xy_cutoff = xy_cutoff.detach()
+                last_z_cutoff = z_cutoff
+                last_xy_cutoff = xy_cutoff
             else:
                 delta_filtered = self._freq_constraint(delta_raw)
 
