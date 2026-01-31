@@ -20,6 +20,7 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from omegaconf import DictConfig
 from monai.losses import DiceCELoss
 from monai.networks.nets import UNet as MonaiUNet
@@ -692,7 +693,12 @@ class NoiseSliceFrequenceUE:
             # Step 2: Apply frequency domain constraints
             if self._learnable_cutoff:
                 z_cutoff, xy_cutoff = self._cutoff_predictor(x)  # [B], [B]
-                delta_filtered = self._freq_constraint(delta_raw, z_cutoff, xy_cutoff)
+                # gradient checkpoint: recompute FFT in backward instead of
+                # caching full [B,C,D,H,W] complex tensors → saves ~2x peak memory
+                delta_filtered = grad_checkpoint(
+                    self._freq_constraint, delta_raw, z_cutoff, xy_cutoff,
+                    use_reentrant=False,
+                )
                 last_z_cutoff = z_cutoff.detach()
                 last_xy_cutoff = xy_cutoff.detach()
             else:
