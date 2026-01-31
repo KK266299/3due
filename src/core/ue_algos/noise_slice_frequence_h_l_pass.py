@@ -291,8 +291,18 @@ class FrequencyDomainConstraint(nn.Module):
             noise_fft = noise_fft * M_z      # broadcast: [B,C,D,H,W] * [B,1,D,1,1]
             noise_fft = noise_fft * M_xy     # broadcast: [B,C,D,H,W] * [B,1,1,H,W]
 
-            # DC component attenuation
-            noise_fft[:, :, 0, 0, 0] = noise_fft[:, :, 0, 0, 0] * (0.1 / (M_z[:, :, 0, 0, 0] * M_xy[:, :, 0, 0, 0]).clamp_min(1e-6))
+            # DC component attenuation (fully non-inplace to preserve gradient computation)
+            # We want DC to be attenuated by 0.1, but M_z*M_xy already applied some factor.
+            # Compute extra scale needed: 0.1 / (M_z[DC] * M_xy[DC])
+            dc_mask_value = M_z[:, :, 0, 0, 0] * M_xy[:, :, 0, 0, 0]  # [B, 1]
+            dc_extra_scale = 0.1 / dc_mask_value.clamp_min(1e-6)      # [B, 1]
+            # Build adjustment factor: dc_extra_scale at DC position, 1.0 elsewhere
+            # Using pure multiplication (no inplace ops): factor = 1 + (scale-1)*indicator
+            # where indicator is 1 at DC, 0 elsewhere
+            dc_indicator = (abs_freq_z == 0).float().view(1, 1, D, 1, 1) * \
+                           (r_xy == 0).float().view(1, 1, 1, H, W)  # [1,1,D,H,W] broadcast to DC
+            dc_adjustment = 1.0 + (dc_extra_scale.view(B, 1, 1, 1, 1) - 1.0) * dc_indicator
+            noise_fft = noise_fft * dc_adjustment
         else:
             # ---------- Static cached path (original behaviour) ----------
             if self._cached_mask is None or self._cached_shape != (D, H, W):
