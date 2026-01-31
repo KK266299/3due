@@ -291,8 +291,14 @@ class FrequencyDomainConstraint(nn.Module):
             noise_fft = noise_fft * M_z      # broadcast: [B,C,D,H,W] * [B,1,D,1,1]
             noise_fft = noise_fft * M_xy     # broadcast: [B,C,D,H,W] * [B,1,1,H,W]
 
-            # DC component attenuation
-            noise_fft[:, :, 0, 0, 0] = noise_fft[:, :, 0, 0, 0] * (0.1 / (M_z[:, :, 0, 0, 0] * M_xy[:, :, 0, 0, 0]).clamp_min(1e-6))
+            # DC component attenuation (avoid in-place op for autograd)
+            dc_factor = (0.1 / (M_z[:, :, 0, 0, 0] * M_xy[:, :, 0, 0, 0]).clamp_min(1e-6))
+            dc_factor = dc_factor.view(B, 1, 1, 1, 1)
+            front = noise_fft[:, :, :1, :, :]
+            front_mask = torch.zeros((1, 1, 1, H, W), device=device, dtype=torch.bool)
+            front_mask[..., 0, 0] = True
+            front = torch.where(front_mask, front * dc_factor, front)
+            noise_fft = torch.cat([front, noise_fft[:, :, 1:, :, :]], dim=2)
         else:
             # ---------- Static cached path (original behaviour) ----------
             if self._cached_mask is None or self._cached_shape != (D, H, W):
