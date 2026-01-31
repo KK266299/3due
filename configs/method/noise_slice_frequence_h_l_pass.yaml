@@ -63,7 +63,8 @@ ue:
       xy_sigma: 0.1             # Soft transition sigma for xy-plane
 
       # === Learnable Cutoff ===
-      learnable_cutoff: false    # true: UNet outputs C+2 channels, last 2 → per-sample cutoffs
+      learnable_cutoff: false    # true: CutoffPredictor predicts per-sample cutoffs
+      cutoff_lr_scale: 1.0       # CutoffPredictor learning rate = noise_unet.lr × this
 
       # === ROI Mask Settings ===
       roi_aware: true           # 是否使用ROI mask (false=全图噪声)
