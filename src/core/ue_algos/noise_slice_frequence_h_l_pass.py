@@ -701,60 +701,60 @@ class NoiseSliceFrequenceUE:
                 loss.backward()
                 self._opt_unet.step()
             else:
-                # ---- Learnable cutoff path: per-sample gradient accumulation ----
-                # Process 1 sample at a time so the FFT computation graph only
-                # holds 1 sample (avoids OOM). Gradients accumulate across all B
-                # samples, then both optimizers step once.
-                #
-                # Data flow per sample:
-                #   x_i → NoiseUNet → noise_i
-                #   x_i → CutoffPredictor → (z_c_i, xy_c_i)
-                #   noise_i + cutoffs → FreqConstraint → filtered_i
-                #   filtered_i → ... → DiceCE / B → backward
-                #   (graph freed, memory reclaimed)
+                # ---- Learnable cutoff: two-phase update ----
+                # Phase 1: fix cutoff, update NoiseUNet
+                #   Image → NoiseUNet → δ → FreqConstraint(fixed cutoff) → Loss → update UNet
+                with torch.no_grad():
+                    z_c, xy_c = self._cutoff_predictor(x)  # [B], [B]
+
+                delta_raw = self._noise_unet(x)
+                delta_filtered = self._freq_constraint(delta_raw, z_c, xy_c)
+
+                if roi_mask is not None:
+                    delta = delta_filtered * roi_mask
+                else:
+                    delta = delta_filtered
+                delta = delta.clamp(-eps, eps)
+
+                perturb_img = (x + delta).clamp(0.0, 1.0)
+                xn = perturb_img.clone()
+                self._norm_inplace(xn, mean, std)
+
+                out = s_model(xn)
+                logits = out[0] if isinstance(out, (tuple, list)) else out
+                loss_p1 = seg_loss_fn(logits, y.unsqueeze(1))
+
                 self._opt_unet.zero_grad(set_to_none=True)
-                self._opt_cutoff.zero_grad(set_to_none=True)
-                last_z_cutoff = []
-                last_xy_cutoff = []
-
-                for i in range(B):
-                    x_i = x[i : i + 1]
-                    y_i = y[i : i + 1]
-
-                    # NoiseUNet forward (with grad)
-                    noise_i = self._noise_unet(x_i)          # [1,C,D,H,W]
-                    # CutoffPredictor forward (with grad)
-                    z_c_i, xy_c_i = self._cutoff_predictor(x_i)  # [1], [1]
-
-                    # FreqConstraint: FFT → mask(z_c_i, xy_c_i) → IFFT
-                    delta_filt_i = self._freq_constraint(noise_i, z_c_i, xy_c_i)
-
-                    if roi_mask is not None:
-                        delta_i = delta_filt_i * roi_mask[i : i + 1]
-                    else:
-                        delta_i = delta_filt_i
-                    delta_i = delta_i.clamp(-eps, eps)
-
-                    perturb_i = (x_i + delta_i).clamp(0.0, 1.0)
-                    xn_i = perturb_i.clone()
-                    self._norm_inplace(xn_i, mean, std)
-
-                    out_i = s_model(xn_i)
-                    logits_i = out_i[0] if isinstance(out_i, (tuple, list)) else out_i
-                    loss_i = seg_loss_fn(logits_i, y_i.unsqueeze(1)) / B
-                    loss_i.backward()
-                    # ↑ graph freed here; gradients accumulate in both networks
-
-                    last_loss = loss_i.detach() * B
-                    last_z_cutoff.append(z_c_i.detach())
-                    last_xy_cutoff.append(xy_c_i.detach())
-
-                # One step for each optimizer using accumulated gradients
+                loss_p1.backward()
                 self._opt_unet.step()
+
+                # Phase 2: fix noise, update CutoffPredictor
+                #   Image → CutoffPredictor → (z_c, xy_c) → FreqConstraint(δ.detach()) → Loss → update Cutoff
+                delta_raw_det = delta_raw.detach()
+                z_c2, xy_c2 = self._cutoff_predictor(x)
+                delta_filtered2 = self._freq_constraint(delta_raw_det, z_c2, xy_c2)
+
+                if roi_mask is not None:
+                    delta2 = delta_filtered2 * roi_mask
+                else:
+                    delta2 = delta_filtered2
+                delta2 = delta2.clamp(-eps, eps)
+
+                perturb_img2 = (x + delta2).clamp(0.0, 1.0)
+                xn2 = perturb_img2.clone()
+                self._norm_inplace(xn2, mean, std)
+
+                out2 = s_model(xn2)
+                logits2 = out2[0] if isinstance(out2, (tuple, list)) else out2
+                loss_p2 = seg_loss_fn(logits2, y.unsqueeze(1))
+
+                self._opt_cutoff.zero_grad(set_to_none=True)
+                loss_p2.backward()
                 self._opt_cutoff.step()
 
-                last_z_cutoff = torch.cat(last_z_cutoff)
-                last_xy_cutoff = torch.cat(last_xy_cutoff)
+                last_loss = loss_p2.detach()
+                last_z_cutoff = z_c2.detach()
+                last_xy_cutoff = xy_c2.detach()
 
         # Store final noise to backend
         self._noise_unet.eval()
