@@ -64,6 +64,8 @@ ue:
 
       # === Learnable Cutoff ===
       learnable_cutoff: false    # true: UNet outputs C+2 channels, last 2 → per-sample cutoffs
+      z_cutoff_range: [0.01, 0.45] # Learnable z cutoff range (normalized 0-0.5)
+      xy_cutoff_range: [0.05, 0.45] # Learnable xy cutoff range (normalized 0-0.5)
 
       # === ROI Mask Settings ===
       roi_aware: true           # 是否使用ROI mask (false=全图噪声)

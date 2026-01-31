@@ -492,6 +492,10 @@ class NoiseSliceFrequenceUE:
         xy_sigma = float(get_config(params, "xy_sigma", 0.1))
 
         self._learnable_cutoff = bool(get_config(params, "learnable_cutoff", False))
+        z_range_cfg = get_config(params, "z_cutoff_range", (0.01, 0.45))
+        xy_range_cfg = get_config(params, "xy_cutoff_range", (0.05, 0.45))
+        z_range = tuple(float(v) for v in z_range_cfg)
+        xy_range = tuple(float(v) for v in xy_range_cfg)
 
         # Build noise UNet (C+2 output channels when learnable_cutoff)
         noise_unet_cfg = get_config(cfg, "ue.noise_unet", DictConfig({}))
@@ -503,6 +507,8 @@ class NoiseSliceFrequenceUE:
             learnable_cutoff=self._learnable_cutoff,
             z_cutoff_init=z_cutoff_low,
             xy_cutoff_init=xy_cutoff_high,
+            z_range=z_range,
+            xy_range=xy_range,
         ).to(device)
 
         # Build frequency constraint module
@@ -545,7 +551,8 @@ class NoiseSliceFrequenceUE:
             f"[NoiseSliceFrequence] Initialized: in_channels={in_channels}, "
             f"eps={eps:.6f}, z_cutoff_low={z_cutoff_low}, xy_cutoff_high={xy_cutoff_high}, "
             f"learnable_cutoff={self._learnable_cutoff} (UNet out_ch={in_channels + extra_ch}), "
-            f"roi_aware={self._roi_aware}, soft_edge={soft_edge}, gaussian_sigma={gaussian_sigma}"
+            f"cutoff_ranges=({z_range}, {xy_range}), roi_aware={self._roi_aware}, "
+            f"soft_edge={soft_edge}, gaussian_sigma={gaussian_sigma}"
         )
 
     # ---------------- Surrogate-step: Update surrogate ---------------- #
@@ -759,7 +766,11 @@ class NoiseSliceFrequenceUE:
 
         # Compute frequency statistics for logging
         with torch.no_grad():
-            z_energy, xy_energy = self._compute_freq_stats(final_delta)
+            z_energy, xy_energy = self._compute_freq_stats(
+                final_delta,
+                z_cutoff=last_z_cutoff if self._learnable_cutoff else None,
+                xy_cutoff=last_xy_cutoff if self._learnable_cutoff else None,
+            )
 
         result = {
             "noise_loss": float(last_loss.cpu()),
@@ -774,7 +785,12 @@ class NoiseSliceFrequenceUE:
 
         return result
 
-    def _compute_freq_stats(self, delta: torch.Tensor) -> Tuple[float, float]:
+    def _compute_freq_stats(
+        self,
+        delta: torch.Tensor,
+        z_cutoff: torch.Tensor | None = None,
+        xy_cutoff: torch.Tensor | None = None,
+    ) -> Tuple[float, float]:
         """
         Compute frequency statistics for monitoring.
 
@@ -791,8 +807,11 @@ class NoiseSliceFrequenceUE:
         # Z-axis frequency grid
         freq_z = torch.fft.fftfreq(D, device=delta.device).abs()
 
+        z_cutoff_value = float(z_cutoff.mean().detach().cpu()) if z_cutoff is not None else 0.1
+        xy_cutoff_value = float(xy_cutoff.mean().detach().cpu()) if xy_cutoff is not None else 0.3
+
         # Z high-frequency energy ratio
-        z_high_mask = freq_z >= 0.1
+        z_high_mask = freq_z >= z_cutoff_value
         z_high_energy = power[z_high_mask].sum() / power.sum().clamp_min(1e-10)
 
         # XY low-frequency energy ratio
@@ -800,7 +819,7 @@ class NoiseSliceFrequenceUE:
         freq_x = torch.fft.fftfreq(W, device=delta.device).abs()
         _, yy, xx = torch.meshgrid(freq_z, freq_y, freq_x, indexing='ij')
         r_xy = torch.sqrt(yy ** 2 + xx ** 2)
-        xy_low_mask = r_xy <= 0.3
+        xy_low_mask = r_xy <= xy_cutoff_value
         xy_low_energy = power[xy_low_mask].sum() / power.sum().clamp_min(1e-10)
 
         return float(z_high_energy.cpu()), float(xy_low_energy.cpu())
