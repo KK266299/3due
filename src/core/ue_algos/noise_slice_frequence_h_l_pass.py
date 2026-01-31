@@ -13,6 +13,13 @@ This approach creates noise that:
   - Has high inter-slice diversity (z-axis high-frequency components)
   - Is smooth within each slice (xy low/mid-frequency)
   - Only affects ROI regions with smooth boundaries
+
+2-Stage Learnable Cutoff Design:
+  When learnable_cutoff=True, the cutoff frequencies are learned as separate
+  nn.Parameter tensors (not UNet outputs). This avoids gradient flow issues
+  through FFT operations.
+  - Stage 1: Update UNet using detached (frozen) cutoff values
+  - Stage 2: Update cutoff parameters using differentiable sigmoid masks
 """
 from __future__ import annotations
 from typing import Dict, Iterable, List, Tuple
@@ -31,12 +38,11 @@ from ...utils.logger import get_logger
 
 def _build_noise_unet(
     cfg: DictConfig, in_channels: int, spatial_dims: int = 3,
-    extra_out_channels: int = 0,
 ) -> nn.Module:
     """
     Build a small U-Net for noise generation.
     Input: original image [B, C, D, H, W]
-    Output: [B, C + extra_out_channels, D, H, W]
+    Output: [B, C, D, H, W]
     """
     channels = list(get_config(cfg, "channels", [16, 32, 64, 128]))
     strides = list(get_config(cfg, "strides", [2, 2, 2]))
@@ -48,7 +54,7 @@ def _build_noise_unet(
     unet = MonaiUNet(
         spatial_dims=spatial_dims,
         in_channels=in_channels,
-        out_channels=in_channels + extra_out_channels,
+        out_channels=in_channels,
         channels=channels,
         strides=strides,
         num_res_units=num_res_units,
@@ -62,84 +68,70 @@ def _build_noise_unet(
 class NoiseUNetWrapper(nn.Module):
     """
     Wrapper for noise U-Net that applies tanh and scales output to [-eps, eps].
-
-    When learnable_cutoff=True, the UNet outputs C+2 channels.
-    The last 2 channels are pooled to produce per-sample cutoff values
-    via global average pooling → sigmoid → range mapping.
     """
     def __init__(
         self,
         unet: nn.Module,
         epsilon: float = 8/255,
-        learnable_cutoff: bool = False,
-        z_cutoff_init: float = 0.1,
-        xy_cutoff_init: float = 0.3,
-        z_range: Tuple[float, float] = (0.01, 0.45),
-        xy_range: Tuple[float, float] = (0.05, 0.45),
     ):
         super().__init__()
         self.unet = unet
         self.epsilon = epsilon
-        self.learnable_cutoff = learnable_cutoff
-        self.z_range = z_range
-        self.xy_range = xy_range
 
-        # Initialize the last 2 output channels' bias so that
-        # global_avg_pool → sigmoid maps to default cutoff values
-        if learnable_cutoff:
-            self._init_cutoff_bias(z_cutoff_init, xy_cutoff_init)
-
-    def _init_cutoff_bias(self, z_init: float, xy_init: float):
-        """Nudge the last conv layer so cutoff channels start at default values."""
-        # Find the final conv layer in MonaiUNet
-        last_conv = None
-        for m in self.unet.modules():
-            if isinstance(m, (nn.Conv3d, nn.Conv2d, nn.Conv1d)):
-                last_conv = m
-        if last_conv is None:
-            return
-        with torch.no_grad():
-            # Zero out weights for cutoff channels so initial output ≈ bias
-            last_conv.weight[-2:].zero_()
-            # Set bias so sigmoid(bias) maps to desired initial cutoff
-            z_target = (z_init - self.z_range[0]) / (self.z_range[1] - self.z_range[0])
-            xy_target = (xy_init - self.xy_range[0]) / (self.xy_range[1] - self.xy_range[0])
-            last_conv.bias[-2] = torch.logit(torch.tensor(z_target).clamp(0.01, 0.99))
-            last_conv.bias[-1] = torch.logit(torch.tensor(xy_target).clamp(0.01, 0.99))
-
-    def forward(
-        self, x: torch.Tensor,
-    ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: Input image [B, C, D, H, W] in [0, 1]
         Returns:
-            If learnable_cutoff=False:
-                noise [B, C, D, H, W] in [-eps, eps]
-            If learnable_cutoff=True:
-                (noise [B, C, D, H, W],
-                 z_cutoff [B],
-                 xy_cutoff [B])
+            noise [B, C, D, H, W] in [-eps, eps]
         """
-        raw = self.unet(x)  # [B, C(+2), D, H, W]
+        raw = self.unet(x)  # [B, C, D, H, W]
+        return torch.tanh(raw) * self.epsilon
 
-        if not self.learnable_cutoff:
-            return torch.tanh(raw) * self.epsilon
 
-        # Split: first C channels = noise, last 2 = cutoff feature maps
-        noise_raw = raw[:, :-2]      # [B, C, D, H, W]
-        cutoff_raw = raw[:, -2:]     # [B, 2, D, H, W]
+class LearnableCutoff(nn.Module):
+    """
+    Learnable cutoff frequencies as nn.Parameter.
 
-        noise = torch.tanh(noise_raw) * self.epsilon
+    Uses logit-space parameterization:
+      cutoff = sigmoid(raw_param) * (range_max - range_min) + range_min
 
-        # Global average pool → sigmoid → scale to valid range
-        cutoff_scalar = cutoff_raw.mean(dim=(-3, -2, -1))  # [B, 2]
-        cutoff_01 = torch.sigmoid(cutoff_scalar)            # [B, 2] in (0,1)
+    This ensures cutoff stays within valid range and provides smooth gradients.
+    """
+    def __init__(
+        self,
+        z_init: float = 0.1,
+        xy_init: float = 0.3,
+        z_range: Tuple[float, float] = (0.01, 0.45),
+        xy_range: Tuple[float, float] = (0.05, 0.45),
+    ):
+        super().__init__()
+        self.z_range = z_range
+        self.xy_range = xy_range
 
-        z_cutoff = cutoff_01[:, 0] * (self.z_range[1] - self.z_range[0]) + self.z_range[0]
-        xy_cutoff = cutoff_01[:, 1] * (self.xy_range[1] - self.xy_range[0]) + self.xy_range[0]
+        # Initialize in logit space so sigmoid(raw) = target_01
+        z_target_01 = (z_init - z_range[0]) / (z_range[1] - z_range[0])
+        xy_target_01 = (xy_init - xy_range[0]) / (xy_range[1] - xy_range[0])
 
-        return noise, z_cutoff, xy_cutoff
+        z_logit = torch.logit(torch.tensor(z_target_01).clamp(0.01, 0.99))
+        xy_logit = torch.logit(torch.tensor(xy_target_01).clamp(0.01, 0.99))
+
+        self.z_raw = nn.Parameter(z_logit.clone())
+        self.xy_raw = nn.Parameter(xy_logit.clone())
+
+    def forward(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            z_cutoff: scalar tensor
+            xy_cutoff: scalar tensor
+        """
+        z_01 = torch.sigmoid(self.z_raw)
+        xy_01 = torch.sigmoid(self.xy_raw)
+
+        z_cutoff = z_01 * (self.z_range[1] - self.z_range[0]) + self.z_range[0]
+        xy_cutoff = xy_01 * (self.xy_range[1] - self.xy_range[0]) + self.xy_range[0]
+
+        return z_cutoff, xy_cutoff
 
 
 class FrequencyDomainConstraint(nn.Module):
@@ -152,7 +144,7 @@ class FrequencyDomainConstraint(nn.Module):
 
     The spectral mask M is constructed as: M = M_z_highpass * M_xy_lowpass
 
-    Supports per-sample learnable cutoffs when called with cutoff tensors.
+    Supports learnable cutoffs via differentiable sigmoid masks.
     """
 
     def __init__(
@@ -172,29 +164,19 @@ class FrequencyDomainConstraint(nn.Module):
         self._cached_mask = None
         self._cached_shape = None
 
-        # Cache for frequency grids (reusable across calls)
-        self._cached_freq_grids = None
-        self._cached_grid_shape = None
-
     def _get_freq_grids(
         self,
         D: int, H: int, W: int,
         device: torch.device,
         dtype: torch.dtype,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return cached (abs_k_z, r_xy) grids, each [D, H, W]."""
-        if self._cached_freq_grids is not None and self._cached_grid_shape == (D, H, W):
-            abs_k_z, r_xy = self._cached_freq_grids
-            return abs_k_z.to(device=device, dtype=dtype), r_xy.to(device=device, dtype=dtype)
-
+        """Return (abs_k_z, r_xy) grids, each [D, H, W]."""
         freq_z = torch.fft.fftfreq(D, device=device, dtype=dtype)
         freq_y = torch.fft.fftfreq(H, device=device, dtype=dtype)
         freq_x = torch.fft.fftfreq(W, device=device, dtype=dtype)
         k_z, k_y, k_x = torch.meshgrid(freq_z, freq_y, freq_x, indexing='ij')
         abs_k_z = torch.abs(k_z)
         r_xy = torch.sqrt(k_x ** 2 + k_y ** 2)
-        self._cached_freq_grids = (abs_k_z, r_xy)
-        self._cached_grid_shape = (D, H, W)
         return abs_k_z, r_xy
 
     def _build_spectral_mask(
@@ -225,24 +207,46 @@ class FrequencyDomainConstraint(nn.Module):
 
         return M.unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
 
-    def _get_separable_freq_grids(
+    def _build_differentiable_mask(
         self,
         D: int, H: int, W: int,
+        z_cutoff: torch.Tensor,
+        xy_cutoff: torch.Tensor,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return 1-D frequency vectors for separable mask construction.
+    ) -> torch.Tensor:
+        """
+        Build 3D spectral mask [1, 1, D, H, W] using differentiable sigmoid.
+
+        Args:
+            z_cutoff: scalar tensor (requires_grad=True)
+            xy_cutoff: scalar tensor (requires_grad=True)
 
         Returns:
-            abs_freq_z: [D]  absolute z-frequencies
-            r_xy:       [H, W]  radial xy-frequencies (2-D, much smaller than [D,H,W])
+            mask: [1, 1, D, H, W] differentiable w.r.t. cutoffs
         """
-        freq_z = torch.fft.fftfreq(D, device=device, dtype=dtype)
-        freq_y = torch.fft.fftfreq(H, device=device, dtype=dtype)
-        freq_x = torch.fft.fftfreq(W, device=device, dtype=dtype)
-        abs_freq_z = freq_z.abs()                                     # [D]
-        r_xy = torch.sqrt(freq_y.unsqueeze(1) ** 2 + freq_x.unsqueeze(0) ** 2)  # [H, W]
-        return abs_freq_z, r_xy
+        abs_k_z, r_xy = self._get_freq_grids(D, H, W, device, dtype)
+
+        # Differentiable high-pass for z: sigmoid((|f_z| - cutoff) / sigma)
+        M_z = torch.sigmoid((abs_k_z - z_cutoff) / self.z_sigma)
+
+        # Differentiable low-pass for xy: sigmoid((cutoff - r_xy) / sigma)
+        M_xy = torch.sigmoid((xy_cutoff - r_xy) / self.xy_sigma)
+
+        M = M_z * M_xy
+
+        # DC attenuation: want M[0,0,0] = 0.1
+        # Current M[0,0,0] = sigmoid(-z_cutoff/z_sigma) * sigmoid(xy_cutoff/xy_sigma)
+        # Build adjustment factor using non-inplace operations
+        dc_val = M[0, 0, 0].clamp_min(1e-6)
+        dc_scale = 0.1 / dc_val  # scalar tensor
+        # Create DC indicator: 1 at (0,0,0), 0 elsewhere
+        dc_indicator = (abs_k_z == 0) & (r_xy == 0)  # [D, H, W] bool
+        # adjustment = dc_scale at DC, 1.0 elsewhere
+        dc_adjustment = torch.where(dc_indicator, dc_scale, torch.ones_like(M))
+        M = M * dc_adjustment
+
+        return M.unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
 
     def forward(
         self,
@@ -253,14 +257,10 @@ class FrequencyDomainConstraint(nn.Module):
         """
         Apply frequency domain constraints to noise.
 
-        Memory-efficient: when using per-sample cutoffs, the mask is applied
-        as two sequential multiplications (M_z then M_xy) in separable form
-        instead of materialising a full [B, D, H, W] mask tensor.
-
         Args:
             noise: [B, C, D, H, W] raw noise from UNet
-            z_cutoff: [B] per-sample z cutoff (if None, use static self.z_cutoff_low)
-            xy_cutoff: [B] per-sample xy cutoff (if None, use static self.xy_cutoff_high)
+            z_cutoff: scalar tensor (if None, use static self.z_cutoff_low)
+            xy_cutoff: scalar tensor (if None, use static self.xy_cutoff_high)
 
         Returns:
             filtered_noise: [B, C, D, H, W] frequency-constrained noise
@@ -269,49 +269,23 @@ class FrequencyDomainConstraint(nn.Module):
         device = noise.device
         dtype = noise.dtype
 
-        # FFT (shared by both paths)
+        # FFT
         noise_fft = torch.fft.fftn(noise, dim=(-3, -2, -1))  # [B, C, D, H, W] complex
 
         if z_cutoff is not None and xy_cutoff is not None:
-            # ---------- Separable per-sample path (memory-efficient) ----------
-            abs_freq_z, r_xy = self._get_separable_freq_grids(D, H, W, device, dtype)
-            # abs_freq_z: [D],  r_xy: [H, W]
-
-            # M_z: [B, 1, D, 1, 1]  —  only D elements per sample
-            z_c = z_cutoff.view(B, 1, 1, 1, 1)                       # [B,1,1,1,1]
-            freq_z_5d = abs_freq_z.view(1, 1, D, 1, 1)               # [1,1,D,1,1]
-            M_z = torch.sigmoid((freq_z_5d - z_c) / self.z_sigma)    # [B,1,D,1,1]
-
-            # M_xy: [B, 1, 1, H, W]  —  only H*W elements per sample
-            xy_c = xy_cutoff.view(B, 1, 1, 1, 1)                     # [B,1,1,1,1]
-            r_xy_5d = r_xy.view(1, 1, 1, H, W)                       # [1,1,1,H,W]
-            M_xy = torch.sigmoid((xy_c - r_xy_5d) / self.xy_sigma)   # [B,1,1,H,W]
-
-            # Apply M_z and M_xy sequentially (never materialise [B,D,H,W])
-            noise_fft = noise_fft * M_z      # broadcast: [B,C,D,H,W] * [B,1,D,1,1]
-            noise_fft = noise_fft * M_xy     # broadcast: [B,C,D,H,W] * [B,1,1,H,W]
-
-            # DC component attenuation (fully non-inplace to preserve gradient computation)
-            # We want DC to be attenuated by 0.1, but M_z*M_xy already applied some factor.
-            # Compute extra scale needed: 0.1 / (M_z[DC] * M_xy[DC])
-            dc_mask_value = M_z[:, :, 0, 0, 0] * M_xy[:, :, 0, 0, 0]  # [B, 1]
-            dc_extra_scale = 0.1 / dc_mask_value.clamp_min(1e-6)      # [B, 1]
-            # Build adjustment factor: dc_extra_scale at DC position, 1.0 elsewhere
-            # Using pure multiplication (no inplace ops): factor = 1 + (scale-1)*indicator
-            # where indicator is 1 at DC, 0 elsewhere
-            dc_indicator = (abs_freq_z == 0).float().view(1, 1, D, 1, 1) * \
-                           (r_xy == 0).float().view(1, 1, 1, H, W)  # [1,1,D,H,W] broadcast to DC
-            dc_adjustment = 1.0 + (dc_extra_scale.view(B, 1, 1, 1, 1) - 1.0) * dc_indicator
-            noise_fft = noise_fft * dc_adjustment
+            # Differentiable path with learnable cutoffs
+            M = self._build_differentiable_mask(D, H, W, z_cutoff, xy_cutoff, device, dtype)
         else:
-            # ---------- Static cached path (original behaviour) ----------
+            # Static cached path
             if self._cached_mask is None or self._cached_shape != (D, H, W):
                 self._cached_mask = self._build_spectral_mask(D, H, W, device, dtype)
                 self._cached_shape = (D, H, W)
             else:
                 self._cached_mask = self._cached_mask.to(device=device, dtype=dtype)
             M = self._cached_mask  # [1, 1, D, H, W]
-            noise_fft = noise_fft * M.expand(B, C, -1, -1, -1)
+
+        # Apply mask
+        noise_fft = noise_fft * M.expand(B, C, -1, -1, -1)
 
         filtered_noise = torch.fft.ifftn(noise_fft, dim=(-3, -2, -1)).real
         return filtered_noise
@@ -425,6 +399,10 @@ class NoiseSliceFrequenceUE:
          - XY-plane LOW/MID-PASS: ensure intra-slice smoothness
       3. Soft ROI mask: 二值化 → 膨胀 → 高斯模糊
 
+    2-Stage Learnable Cutoff (when learnable_cutoff=True):
+      - Stage 1: Update UNet with frozen cutoff values
+      - Stage 2: Update cutoff parameters with differentiable mask
+
     Configuration (ue.algorithm.params):
       epsilon: L_inf bound (default: 8/255)
       noise_step: UNet training iterations per batch (default: 1)
@@ -434,6 +412,10 @@ class NoiseSliceFrequenceUE:
       z_sigma: Z-axis soft transition sigma (default: 0.05)
       xy_cutoff_high: XY low-pass cutoff (default: 0.3)
       xy_sigma: XY soft transition sigma (default: 0.1)
+
+      # Learnable cutoff
+      learnable_cutoff: Enable learnable cutoff frequencies (default: false)
+      cutoff_lr: Learning rate for cutoff parameters (default: 1e-3)
 
       # ROI mask
       dilate_iterations: Number of dilation iterations (default: 2)
@@ -447,6 +429,8 @@ class NoiseSliceFrequenceUE:
         self._opt_noise_unet: torch.optim.Optimizer | None = None
         self._freq_constraint: FrequencyDomainConstraint | None = None
         self._learnable_cutoff: bool = False
+        self._cutoff_module: LearnableCutoff | None = None
+        self._opt_cutoff: torch.optim.Optimizer | None = None
         self._roi_mask_builder: SoftROIMask | None = None
         self._initialized: bool = False
         self.logger = get_logger()
@@ -503,17 +487,10 @@ class NoiseSliceFrequenceUE:
 
         self._learnable_cutoff = bool(get_config(params, "learnable_cutoff", False))
 
-        # Build noise UNet (C+2 output channels when learnable_cutoff)
+        # Build noise UNet (only C output channels, no extra for cutoff)
         noise_unet_cfg = get_config(cfg, "ue.noise_unet", DictConfig({}))
-        extra_ch = 2 if self._learnable_cutoff else 0
-        base_unet = _build_noise_unet(noise_unet_cfg, in_channels, spatial_dims,
-                                       extra_out_channels=extra_ch)
-        self._noise_unet = NoiseUNetWrapper(
-            base_unet, epsilon=eps,
-            learnable_cutoff=self._learnable_cutoff,
-            z_cutoff_init=z_cutoff_low,
-            xy_cutoff_init=xy_cutoff_high,
-        ).to(device)
+        base_unet = _build_noise_unet(noise_unet_cfg, in_channels, spatial_dims)
+        self._noise_unet = NoiseUNetWrapper(base_unet, epsilon=eps).to(device)
 
         # Build frequency constraint module
         self._freq_constraint = FrequencyDomainConstraint(
@@ -523,7 +500,7 @@ class NoiseSliceFrequenceUE:
             xy_sigma=xy_sigma,
         )
 
-        # Build optimizer (single optimizer for entire UNet including cutoff channels)
+        # Build UNet optimizer
         opt_cfg = get_config(noise_unet_cfg, "optimizer", DictConfig({}))
         lr = float(get_config(opt_cfg, "lr", 1e-4))
         weight_decay = float(get_config(opt_cfg, "weight_decay", 1e-5))
@@ -535,6 +512,19 @@ class NoiseSliceFrequenceUE:
             weight_decay=weight_decay,
             betas=betas,
         )
+
+        # Build learnable cutoff module and optimizer (if enabled)
+        if self._learnable_cutoff:
+            self._cutoff_module = LearnableCutoff(
+                z_init=z_cutoff_low,
+                xy_init=xy_cutoff_high,
+            ).to(device)
+
+            cutoff_lr = float(get_config(params, "cutoff_lr", 1e-3))
+            self._opt_cutoff = torch.optim.Adam(
+                self._cutoff_module.parameters(),
+                lr=cutoff_lr,
+            )
 
         # ROI mask配置
         self._roi_aware = bool(get_config(params, "roi_aware", True))
@@ -554,7 +544,7 @@ class NoiseSliceFrequenceUE:
         self.logger.info(
             f"[NoiseSliceFrequence] Initialized: in_channels={in_channels}, "
             f"eps={eps:.6f}, z_cutoff_low={z_cutoff_low}, xy_cutoff_high={xy_cutoff_high}, "
-            f"learnable_cutoff={self._learnable_cutoff} (UNet out_ch={in_channels + extra_ch}), "
+            f"learnable_cutoff={self._learnable_cutoff}, "
             f"roi_aware={self._roi_aware}, soft_edge={soft_edge}, gaussian_sigma={gaussian_sigma}"
         )
 
@@ -625,13 +615,17 @@ class NoiseSliceFrequenceUE:
         """
         Update noise using UNet + frequency domain constraints.
 
+        When learnable_cutoff=True, uses 2-stage approach:
+          Stage 1: Update UNet with frozen (detached) cutoff values
+          Stage 2: Update cutoff parameters with differentiable mask
+
         Process:
           1. Forward image through noise UNet to get base noise
           2. Apply frequency domain constraints (z-highpass, xy-lowpass)
           3. Create soft ROI mask (二值化 → 膨胀 → 高斯模糊)
           4. Apply ROI mask to filtered noise
           5. Forward through frozen surrogate, compute loss
-          6. Backprop to update noise UNet
+          6. Backprop to update noise UNet (and optionally cutoff)
           7. Store masked noise to backend
         """
         cfg = trainer.config
@@ -684,79 +678,90 @@ class NoiseSliceFrequenceUE:
         last_xy_cutoff = None
 
         for _ in range(max(1, num_steps)):
-            if not self._learnable_cutoff:
-                # ---- Static cutoff path: batch forward as before ----
-                delta_raw = self._noise_unet(x)
-                delta_filtered = self._freq_constraint(delta_raw)
+            # Get current cutoff values (detached for Stage 1)
+            if self._learnable_cutoff and self._cutoff_module is not None:
+                z_cutoff, xy_cutoff = self._cutoff_module()
+                z_cutoff_detached = z_cutoff.detach()
+                xy_cutoff_detached = xy_cutoff.detach()
+                last_z_cutoff = z_cutoff.detach()
+                last_xy_cutoff = xy_cutoff.detach()
+            else:
+                z_cutoff_detached = None
+                xy_cutoff_detached = None
+
+            # ========== Stage 1: Update UNet (cutoff frozen) ==========
+            delta_raw = self._noise_unet(x)
+            delta_filtered = self._freq_constraint(
+                delta_raw, z_cutoff_detached, xy_cutoff_detached
+            )
+
+            if roi_mask is not None:
+                delta = delta_filtered * roi_mask
+            else:
+                delta = delta_filtered
+            delta = delta.clamp(-eps, eps)
+
+            perturb_img = (x + delta).clamp(0.0, 1.0)
+            xn = perturb_img.clone()
+            self._norm_inplace(xn, mean, std)
+
+            out = s_model(xn)
+            logits = out[0] if isinstance(out, (tuple, list)) else out
+            loss = seg_loss_fn(logits, y.unsqueeze(1))
+            last_loss = loss.detach()
+
+            self._opt_noise_unet.zero_grad(set_to_none=True)
+            loss.backward()
+            self._opt_noise_unet.step()
+
+            # ========== Stage 2: Update Cutoff (UNet frozen) ==========
+            if self._learnable_cutoff and self._cutoff_module is not None:
+                # Get fresh cutoff values (with gradient)
+                z_cutoff, xy_cutoff = self._cutoff_module()
+
+                # Forward with frozen UNet output but differentiable cutoff
+                with torch.no_grad():
+                    delta_raw_frozen = self._noise_unet(x)
+
+                delta_filtered_cutoff = self._freq_constraint(
+                    delta_raw_frozen, z_cutoff, xy_cutoff
+                )
 
                 if roi_mask is not None:
-                    delta = delta_filtered * roi_mask
+                    delta_cutoff = delta_filtered_cutoff * roi_mask
                 else:
-                    delta = delta_filtered
-                delta = delta.clamp(-eps, eps)
+                    delta_cutoff = delta_filtered_cutoff
+                delta_cutoff = delta_cutoff.clamp(-eps, eps)
 
-                perturb_img = (x + delta).clamp(0.0, 1.0)
-                xn = perturb_img.clone()
-                self._norm_inplace(xn, mean, std)
+                perturb_img_cutoff = (x + delta_cutoff).clamp(0.0, 1.0)
+                xn_cutoff = perturb_img_cutoff.clone()
+                self._norm_inplace(xn_cutoff, mean, std)
 
-                out = s_model(xn)
-                logits = out[0] if isinstance(out, (tuple, list)) else out
-                loss = seg_loss_fn(logits, y.unsqueeze(1))
-                last_loss = loss.detach()
+                out_cutoff = s_model(xn_cutoff)
+                logits_cutoff = out_cutoff[0] if isinstance(out_cutoff, (tuple, list)) else out_cutoff
+                loss_cutoff = seg_loss_fn(logits_cutoff, y.unsqueeze(1))
 
-                self._opt_noise_unet.zero_grad(set_to_none=True)
-                loss.backward()
-                self._opt_noise_unet.step()
-            else:
-                # ---- Learnable cutoff path: per-sample gradient accumulation ----
-                # Process each sample individually so that the FFT gradient
-                # computation graph only holds 1 sample at a time.
-                # All UNet parameters (noise channels + cutoff channels) are
-                # updated together via a single optimizer step.
-                self._opt_noise_unet.zero_grad(set_to_none=True)
+                self._opt_cutoff.zero_grad(set_to_none=True)
+                loss_cutoff.backward()
+                self._opt_cutoff.step()
 
-                for i in range(B):
-                    x_i = x[i : i + 1]
-                    y_i = y[i : i + 1]
-
-                    noise_i, z_c_i, xy_c_i = self._noise_unet(x_i)
-                    delta_filt_i = self._freq_constraint(noise_i, z_c_i, xy_c_i)
-
-                    if roi_mask is not None:
-                        delta_i = delta_filt_i * roi_mask[i : i + 1]
-                    else:
-                        delta_i = delta_filt_i
-                    delta_i = delta_i.clamp(-eps, eps)
-
-                    perturb_i = (x_i + delta_i).clamp(0.0, 1.0)
-                    xn_i = perturb_i.clone()
-                    self._norm_inplace(xn_i, mean, std)
-
-                    out_i = s_model(xn_i)
-                    logits_i = out_i[0] if isinstance(out_i, (tuple, list)) else out_i
-                    loss_i = seg_loss_fn(logits_i, y_i.unsqueeze(1)) / B
-                    loss_i.backward()
-
-                    # Track stats from last sample
-                    last_loss = loss_i.detach() * B
-                    last_z_cutoff = z_c_i.detach() if last_z_cutoff is None \
-                        else torch.cat([last_z_cutoff, z_c_i.detach()])
-                    last_xy_cutoff = xy_c_i.detach() if last_xy_cutoff is None \
-                        else torch.cat([last_xy_cutoff, xy_c_i.detach()])
-
-                self._opt_noise_unet.step()
+                last_z_cutoff = z_cutoff.detach()
+                last_xy_cutoff = xy_cutoff.detach()
 
         # Store final noise to backend
         self._noise_unet.eval()
         with torch.no_grad():
-            unet_out = self._noise_unet(x)
-            if self._learnable_cutoff:
-                final_noise, z_cutoff, xy_cutoff = unet_out
-                final_delta_filtered = self._freq_constraint(final_noise, z_cutoff, xy_cutoff)
-                last_z_cutoff = z_cutoff
-                last_xy_cutoff = xy_cutoff
+            final_delta_raw = self._noise_unet(x)
+            if self._learnable_cutoff and self._cutoff_module is not None:
+                z_cutoff, xy_cutoff = self._cutoff_module()
+                final_delta_filtered = self._freq_constraint(
+                    final_delta_raw, z_cutoff.detach(), xy_cutoff.detach()
+                )
+                last_z_cutoff = z_cutoff.detach()
+                last_xy_cutoff = xy_cutoff.detach()
             else:
-                final_delta_filtered = self._freq_constraint(unet_out)
+                final_delta_filtered = self._freq_constraint(final_delta_raw)
+
             if roi_mask is not None:
                 final_delta = final_delta_filtered * roi_mask
             else:
@@ -779,8 +784,8 @@ class NoiseSliceFrequenceUE:
         }
 
         if self._learnable_cutoff and last_z_cutoff is not None:
-            result["z_cutoff_mean"] = float(last_z_cutoff.mean().cpu())
-            result["xy_cutoff_mean"] = float(last_xy_cutoff.mean().cpu())
+            result["z_cutoff"] = float(last_z_cutoff.cpu())
+            result["xy_cutoff"] = float(last_xy_cutoff.cpu())
 
         return result
 
