@@ -216,40 +216,24 @@ class FrequencyDomainConstraint(nn.Module):
 
         return M.unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
 
-    def _build_spectral_mask_batched(
+    def _get_separable_freq_grids(
         self,
         D: int, H: int, W: int,
-        z_cutoff: torch.Tensor,    # [B]
-        xy_cutoff: torch.Tensor,   # [B]
         device: torch.device,
         dtype: torch.dtype,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return 1-D frequency vectors for separable mask construction.
+
+        Returns:
+            abs_freq_z: [D]  absolute z-frequencies
+            r_xy:       [H, W]  radial xy-frequencies (2-D, much smaller than [D,H,W])
         """
-        Build per-sample 3D spectral masks [B, 1, D, H, W].
-        Differentiable w.r.t. z_cutoff and xy_cutoff.
-        """
-        abs_k_z, r_xy = self._get_freq_grids(D, H, W, device, dtype)
-        # abs_k_z, r_xy: [D, H, W] -> expand to [1, D, H, W]
-        abs_k_z = abs_k_z.unsqueeze(0)  # [1, D, H, W]
-        r_xy = r_xy.unsqueeze(0)        # [1, D, H, W]
-
-        B = z_cutoff.shape[0]
-        z_c = z_cutoff.view(B, 1, 1, 1)   # [B, 1, 1, 1]
-        xy_c = xy_cutoff.view(B, 1, 1, 1)  # [B, 1, 1, 1]
-
-        # Z-axis HIGH-PASS: differentiable soft mask using sigmoid approximation
-        # sigmoid((|f_z| - cutoff) / sigma) gives smooth 0->1 transition at cutoff
-        M_z = torch.sigmoid((abs_k_z - z_c) / self.z_sigma)  # [B, D, H, W]
-
-        # XY-plane LOW-PASS: sigmoid((cutoff - r_xy) / sigma)
-        M_xy = torch.sigmoid((xy_c - r_xy) / self.xy_sigma)  # [B, D, H, W]
-
-        M = M_z * M_xy  # [B, D, H, W]
-
-        # DC component
-        M[:, 0, 0, 0] = 0.1
-
-        return M.unsqueeze(1)  # [B, 1, D, H, W]
+        freq_z = torch.fft.fftfreq(D, device=device, dtype=dtype)
+        freq_y = torch.fft.fftfreq(H, device=device, dtype=dtype)
+        freq_x = torch.fft.fftfreq(W, device=device, dtype=dtype)
+        abs_freq_z = freq_z.abs()                                     # [D]
+        r_xy = torch.sqrt(freq_y.unsqueeze(1) ** 2 + freq_x.unsqueeze(0) ** 2)  # [H, W]
+        return abs_freq_z, r_xy
 
     def forward(
         self,
@@ -259,6 +243,10 @@ class FrequencyDomainConstraint(nn.Module):
     ) -> torch.Tensor:
         """
         Apply frequency domain constraints to noise.
+
+        Memory-efficient: when using per-sample cutoffs, the mask is applied
+        as two sequential multiplications (M_z then M_xy) in separable form
+        instead of materialising a full [B, D, H, W] mask tensor.
 
         Args:
             noise: [B, C, D, H, W] raw noise from UNet
@@ -272,25 +260,41 @@ class FrequencyDomainConstraint(nn.Module):
         device = noise.device
         dtype = noise.dtype
 
+        # FFT (shared by both paths)
+        noise_fft = torch.fft.fftn(noise, dim=(-3, -2, -1))  # [B, C, D, H, W] complex
+
         if z_cutoff is not None and xy_cutoff is not None:
-            # Per-sample learnable cutoffs (differentiable path)
-            M = self._build_spectral_mask_batched(D, H, W, z_cutoff, xy_cutoff, device, dtype)
-            # M: [B, 1, D, H, W]
+            # ---------- Separable per-sample path (memory-efficient) ----------
+            abs_freq_z, r_xy = self._get_separable_freq_grids(D, H, W, device, dtype)
+            # abs_freq_z: [D],  r_xy: [H, W]
+
+            # M_z: [B, 1, D, 1, 1]  —  only D elements per sample
+            z_c = z_cutoff.view(B, 1, 1, 1, 1)                       # [B,1,1,1,1]
+            freq_z_5d = abs_freq_z.view(1, 1, D, 1, 1)               # [1,1,D,1,1]
+            M_z = torch.sigmoid((freq_z_5d - z_c) / self.z_sigma)    # [B,1,D,1,1]
+
+            # M_xy: [B, 1, 1, H, W]  —  only H*W elements per sample
+            xy_c = xy_cutoff.view(B, 1, 1, 1, 1)                     # [B,1,1,1,1]
+            r_xy_5d = r_xy.view(1, 1, 1, H, W)                       # [1,1,1,H,W]
+            M_xy = torch.sigmoid((xy_c - r_xy_5d) / self.xy_sigma)   # [B,1,1,H,W]
+
+            # Apply M_z and M_xy sequentially (never materialise [B,D,H,W])
+            noise_fft = noise_fft * M_z      # broadcast: [B,C,D,H,W] * [B,1,D,1,1]
+            noise_fft = noise_fft * M_xy     # broadcast: [B,C,D,H,W] * [B,1,1,H,W]
+
+            # DC component attenuation
+            noise_fft[:, :, 0, 0, 0] = noise_fft[:, :, 0, 0, 0] * (0.1 / (M_z[:, :, 0, 0, 0] * M_xy[:, :, 0, 0, 0]).clamp_min(1e-6))
         else:
-            # Static cutoffs (original cached path)
+            # ---------- Static cached path (original behaviour) ----------
             if self._cached_mask is None or self._cached_shape != (D, H, W):
                 self._cached_mask = self._build_spectral_mask(D, H, W, device, dtype)
                 self._cached_shape = (D, H, W)
             else:
                 self._cached_mask = self._cached_mask.to(device=device, dtype=dtype)
             M = self._cached_mask  # [1, 1, D, H, W]
+            noise_fft = noise_fft * M.expand(B, C, -1, -1, -1)
 
-        # FFT -> Apply mask -> IFFT
-        noise_fft = torch.fft.fftn(noise, dim=(-3, -2, -1))  # [B, C, D, H, W] complex
-        M_expanded = M.expand(B, C, -1, -1, -1)  # [B, C, D, H, W]
-        noise_fft_filtered = noise_fft * M_expanded
-        filtered_noise = torch.fft.ifftn(noise_fft_filtered, dim=(-3, -2, -1)).real
-
+        filtered_noise = torch.fft.ifftn(noise_fft, dim=(-3, -2, -1)).real
         return filtered_noise
 
 
