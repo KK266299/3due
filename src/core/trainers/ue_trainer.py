@@ -138,6 +138,9 @@ class UETrainer(TrainerBase):
                 f"[NOISE] avg_noise_loss={noise_loss_sum / noise_loss_cnt:.4f} | "
                 f"max||δ||∞={delta_linf_max:.4f}"
             )
+        # Let plugin log epoch-level info (e.g. learnable cutoff values)
+        if hasattr(self.plugin, "on_noise_epoch_end"):
+            self.plugin.on_noise_epoch_end(self, epoch)
         # Hooks
         for h in self._hooks:
             h.after_train_epoch()

@@ -374,8 +374,8 @@ class NoiseSliceFrequenceLearnable:
         )
 
     # ────────────── epoch boundary: log cutoffs ────────────── #
-    def on_epoch_end(self, trainer, epoch: int):
-        """Called at end of each epoch to log current global cutoff values."""
+    def on_noise_epoch_end(self, trainer, epoch: int):
+        """Called by ue_trainer at end of each noise epoch to log cutoff values."""
         if self._global_cutoff is None:
             return
         with torch.no_grad():
