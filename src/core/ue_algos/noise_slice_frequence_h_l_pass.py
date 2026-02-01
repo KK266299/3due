@@ -16,10 +16,6 @@ This approach creates noise that:
 """
 from __future__ import annotations
 from typing import Dict, Iterable, List, Tuple
-import os
-
-os.environ.setdefault("PYTORCH_NVFUSER_DISABLE", "fallback")
-os.environ.setdefault("PYTORCH_JIT", "0")
 
 import torch
 import torch.nn as nn
