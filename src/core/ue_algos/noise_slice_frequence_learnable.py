@@ -259,6 +259,76 @@ class SoftROIMask(nn.Module):
         return mask.expand(-1, num_channels, -1, -1, -1)
 
 
+class LogitsDivergenceLoss(nn.Module):
+    """
+    Compute logits divergence loss between clean and noisy predictions.
+
+    Supports multiple divergence computation modes:
+      - 'l1': Direct L1 norm of logits difference
+      - 'l2': Direct L2 norm of logits difference
+      - 'fft_l1': FFT of logits difference, then L1 norm
+      - 'fft_l2': FFT of logits difference, then L2 norm
+      - 'kl_div': KL divergence between softmax distributions
+
+    The loss is negated to maximize divergence (since we minimize loss).
+    """
+
+    def __init__(
+        self,
+        mode: str = 'fft_l1',
+        weight: float = 1.0,
+        temperature: float = 1.0,
+        fft_dims: Tuple[int, ...] = (-3, -2, -1),
+    ):
+        super().__init__()
+        self.mode = mode.lower()
+        self.weight = weight
+        self.temperature = temperature
+        self.fft_dims = fft_dims
+
+        valid_modes = {'l1', 'l2', 'fft_l1', 'fft_l2', 'kl_div'}
+        if self.mode not in valid_modes:
+            raise ValueError(f"Invalid mode '{mode}'. Must be one of {valid_modes}")
+
+    def forward(
+        self,
+        logits_clean: torch.Tensor,
+        logits_noisy: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute divergence loss.
+
+        Args:
+            logits_clean: [B, C, D, H, W] predictions on clean images
+            logits_noisy: [B, C, D, H, W] predictions on noisy images
+
+        Returns:
+            loss: Scalar tensor (negative divergence for maximization)
+        """
+        diff = logits_noisy - logits_clean
+
+        if self.mode == 'l1':
+            divergence = diff.abs().mean()
+        elif self.mode == 'l2':
+            divergence = (diff ** 2).mean().sqrt()
+        elif self.mode == 'fft_l1':
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            divergence = diff_fft.abs().mean()
+        elif self.mode == 'fft_l2':
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            divergence = (diff_fft.abs() ** 2).mean().sqrt()
+        elif self.mode == 'kl_div':
+            logits_clean_scaled = logits_clean / self.temperature
+            logits_noisy_scaled = logits_noisy / self.temperature
+            prob_clean = F.softmax(logits_clean_scaled, dim=1)
+            log_prob_noisy = F.log_softmax(logits_noisy_scaled, dim=1)
+            divergence = F.kl_div(log_prob_noisy, prob_clean, reduction='batchmean', log_target=False)
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
+        return -self.weight * divergence
+
+
 # ────────────────────────── Main Plugin ────────────────────────── #
 
 @register_plugin("noise_slice_frequence_learnable")
@@ -290,6 +360,9 @@ class NoiseSliceFrequenceLearnable:
         self._last_logged_epoch: int = -1
         # Z-axis diversity regularization settings
         self._z_diversity_weight: float = 0.0
+        # Logits divergence loss settings
+        self._logits_div_loss: LogitsDivergenceLoss | None = None
+        self._logits_div_enabled: bool = False
         self.logger = get_logger()
 
     @staticmethod
@@ -375,6 +448,22 @@ class NoiseSliceFrequenceLearnable:
         # Z-axis diversity regularization (weight=0 disables it)
         self._z_diversity_weight = float(get_config(params, "z_diversity_weight", 0.0))
 
+        # Logits divergence loss (weight=0 or enabled=false disables it)
+        self._logits_div_enabled = bool(get_config(params, "logits_div_enabled", False))
+        logits_div_weight = float(get_config(params, "logits_div_weight", 0.0))
+        if self._logits_div_enabled and logits_div_weight > 0:
+            logits_div_mode = str(get_config(params, "logits_div_mode", "fft_l1"))
+            logits_div_temperature = float(get_config(params, "logits_div_temperature", 1.0))
+            self._logits_div_loss = LogitsDivergenceLoss(
+                mode=logits_div_mode,
+                weight=logits_div_weight,
+                temperature=logits_div_temperature,
+            )
+        else:
+            self._logits_div_loss = None
+            logits_div_mode = "disabled"
+            logits_div_weight = 0.0
+
         self._initialized = True
 
         z_val, xy_val = self._global_cutoff()
@@ -383,7 +472,9 @@ class NoiseSliceFrequenceLearnable:
         self.logger.info(
             f"[FreqLearnable] Initialized: in_ch={in_channels}, eps={eps:.6f}, "
             f"z_cutoff_init={self._init_z_cutoff:.4f}, xy_cutoff_init={self._init_xy_cutoff:.4f}, "
-            f"z_diversity_weight={self._z_diversity_weight:.4f}"
+            f"z_diversity_weight={self._z_diversity_weight:.4f}, "
+            f"logits_div_enabled={self._logits_div_enabled}, logits_div_mode={logits_div_mode}, "
+            f"logits_div_weight={logits_div_weight:.4f}"
         )
 
     # ────────────── epoch boundary: log cutoffs ────────────── #
@@ -526,9 +617,20 @@ class NoiseSliceFrequenceLearnable:
         # ROI mask
         roi_mask = self._roi_mask_builder(y, C_in).to(device) if self._roi_aware else None
 
+        # Get clean image predictions (for logits divergence loss)
+        logits_clean = None
+        if self._logits_div_enabled and self._logits_div_loss is not None:
+            with torch.no_grad():
+                x_clean_norm = x.clone()
+                self._norm_inplace(x_clean_norm, mean, std)
+                out_clean = s_model(x_clean_norm)
+                logits_clean = out_clean[0] if isinstance(out_clean, (tuple, list)) else out_clean
+                logits_clean = logits_clean.detach()
+
         self._noise_unet.train()
         last_loss = torch.tensor(0.0, device=device)
         last_z_diversity_loss = torch.tensor(0.0, device=device)
+        last_div_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
             # Get global cutoffs (differentiable)
@@ -551,18 +653,26 @@ class NoiseSliceFrequenceLearnable:
             self._norm_inplace(xn, mean, std)
 
             out = s_model(xn)
-            logits = out[0] if isinstance(out, (tuple, list)) else out
-            seg_loss = seg_loss_fn(logits, y.unsqueeze(1))
+            logits_noisy = out[0] if isinstance(out, (tuple, list)) else out
+            seg_loss = seg_loss_fn(logits_noisy, y.unsqueeze(1))
+
+            # Start with seg_loss
+            loss = seg_loss
 
             # Z-axis diversity loss (if weight > 0)
             # We want to MAXIMIZE diversity, so we add negative diversity to loss
             if self._z_diversity_weight > 0:
                 z_diversity = self._compute_z_diversity(delta)
                 z_diversity_loss = -z_diversity  # negative because we want to maximize
-                loss = seg_loss + self._z_diversity_weight * z_diversity_loss
+                loss = loss + self._z_diversity_weight * z_diversity_loss
                 last_z_diversity_loss = z_diversity_loss.detach()
-            else:
-                loss = seg_loss
+
+            # Logits divergence loss (if enabled)
+            # Maximize difference between clean and noisy predictions
+            if self._logits_div_loss is not None and logits_clean is not None:
+                div_loss = self._logits_div_loss(logits_clean, logits_noisy)
+                loss = loss + div_loss
+                last_div_loss = div_loss.detach()
 
             last_loss = loss.detach()
 
@@ -603,6 +713,16 @@ class NoiseSliceFrequenceLearnable:
             z_energy, xy_energy = self._compute_freq_stats(final_delta)
             z_diversity_value = self._compute_z_diversity(final_delta)
 
+            # Compute final logits divergence for logging
+            logits_diff_l1 = 0.0
+            if logits_clean is not None:
+                perturb_final = (x + final_delta).clamp(0.0, 1.0)
+                xn_final = perturb_final.clone()
+                self._norm_inplace(xn_final, mean, std)
+                out_final = s_model(xn_final)
+                logits_final = out_final[0] if isinstance(out_final, (tuple, list)) else out_final
+                logits_diff_l1 = (logits_final - logits_clean).abs().mean().cpu().item()
+
         result = {
             "noise_loss": float(last_loss.cpu()),
             "delta_linf": delta_linf,
@@ -616,6 +736,11 @@ class NoiseSliceFrequenceLearnable:
         # Add z_diversity_loss to result (if enabled)
         if self._z_diversity_weight > 0:
             result["z_diversity_loss"] = float(last_z_diversity_loss.cpu())
+
+        # Add logits_div metrics to result (if enabled)
+        if self._logits_div_loss is not None:
+            result["div_loss"] = float(last_div_loss.cpu())
+            result["logits_diff_l1"] = logits_diff_l1
 
         return result
 

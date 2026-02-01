@@ -68,6 +68,12 @@ ue:
       # === Z-axis Diversity Loss ===
       z_diversity_weight: 0.0   # 设为 0 禁用，>0 启用层间多样性损失
 
+      # === Logits Divergence Loss ===
+      logits_div_enabled: false       # 设为 true 启用 logits 差异损失
+      logits_div_mode: fft_l1         # 模式: l1, l2, fft_l1, fft_l2, kl_div
+      logits_div_weight: 1.0          # 权重（需要 enabled=true 且 weight>0 才生效）
+      logits_div_temperature: 1.0     # 用于 kl_div 模式的温度参数
+
   # Noise UNet configuration
   noise_unet:
     channels: [16, 32, 64, 128]
