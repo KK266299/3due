@@ -1,0 +1,120 @@
+# @package _global_
+# Frequency-Domain Constrained Noise with Global Learnable Cutoff Frequencies
+#
+# Key difference: z_cutoff and xy_cutoff are two global nn.Parameter scalars
+# shared across the entire dataset, updated via gradient descent.
+#
+# Usage:
+#   python ue_generate.py \
+#     dataset=flare21 \
+#     task=flare21_ue \
+#     method=noise_slice_frequence_learnable \
+#     task.run_name=freq_learnable \
+#     training.epochs=100
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: noise_slice_frequence_learnable
+    params:
+      # === Perturbation Bound ===
+      epsilon: 0.0156863        # 4/255 L_inf bound
+
+      # === Training ===
+      noise_step: 1
+      surrogate_step: 10
+
+      # === Frequency Domain Constraints (initial values) ===
+      z_cutoff_low: 0.1         # Initial z-axis high-pass cutoff (will be learned)
+      z_sigma: 0.05             # Soft transition sigma for z-axis
+      xy_cutoff_high: 0.3       # Initial xy-plane low-pass cutoff (will be learned)
+      xy_sigma: 0.1             # Soft transition sigma for xy-plane
+
+      freq_constraint_enabled: true 
+
+      # === Learnable Cutoff ===
+      cutoff_lr_scale: 1.0      # Cutoff lr = noise_unet.lr * this
+
+      # === ROI Mask Settings ===
+      roi_aware: true
+      soft_edge: false
+      dilate_iterations: 2
+      dilate_kernel_size: 3
+      gaussian_sigma: 2.0
+
+      # === Z-axis Diversity Loss ===
+      z_diversity_weight: 0.0   # 设为 0 禁用，>0 启用层间多样性损失
+
+      # === Logits Divergence Loss ===
+      logits_div_enabled: false       # 设为 true 启用 logits 差异损失
+      logits_div_mode: fft_l1         # 模式: l1, l2, fft_l1, fft_l2, kl_div
+      logits_div_weight: 0.01         # 权重（fft_l1模式建议0.01-0.1）
+      logits_div_temperature: 1.0     # 用于 kl_div 模式的温度参数
+
+  # Noise UNet configuration
+  noise_unet:
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 1
+      num_classes: 5
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10
