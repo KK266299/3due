@@ -1,6 +1,8 @@
 #!/bin/bash
 # 可学习截止频率消融实验脚本
-# 在 4 个 GPU 上并行运行不同 loss 参数组合
+# 在 4 个 GPU 上并行运行，每个 GPU 内部串行执行
+
+mkdir -p logs
 
 # 基础参数
 BASE_CMD="python ue_generate.py \
@@ -22,143 +24,141 @@ BASE_CMD="python ue_generate.py \
     ue.surrogates.s_seg.in_channels=1 \
     ue.surrogates.s_seg.num_classes=5"
 
-mkdir -p logs
+# ==================== GPU 0 (串行) ====================
+(
+    echo "[GPU 0] 开始实验 1/3: baseline"
+    $BASE_CMD \
+        training.gpu_ids=[0] \
+        task.run_name=learnable_zdiv0_logits0 \
+        ue.algorithm.params.z_diversity_weight=0.0 \
+        ue.algorithm.params.logits_div_enabled=false \
+        2>&1 | tee logs/learnable_zdiv0_logits0.log
 
-# ==================== GPU 0 ====================
-# 实验 1: baseline (无额外 loss)
-nohup $BASE_CMD \
-    training.gpu_ids=[0] \
-    task.run_name=learnable_zdiv0_logits0 \
-    ue.algorithm.params.z_diversity_weight=0.0 \
-    ue.algorithm.params.logits_div_enabled=false \
-    > logs/learnable_zdiv0_logits0.log 2>&1 &
+    echo "[GPU 0] 开始实验 2/3: zdiv=0.1"
+    $BASE_CMD \
+        training.gpu_ids=[0] \
+        task.run_name=learnable_zdiv01_logits0 \
+        ue.algorithm.params.z_diversity_weight=0.1 \
+        ue.algorithm.params.logits_div_enabled=false \
+        2>&1 | tee logs/learnable_zdiv01_logits0.log
 
-sleep 5
+    echo "[GPU 0] 开始实验 3/3: zdiv=0.2"
+    $BASE_CMD \
+        training.gpu_ids=[0] \
+        task.run_name=learnable_zdiv02_logits0 \
+        ue.algorithm.params.z_diversity_weight=0.2 \
+        ue.algorithm.params.logits_div_enabled=false \
+        2>&1 | tee logs/learnable_zdiv02_logits0.log
 
-# 实验 2: z_diversity=0.1
-nohup $BASE_CMD \
-    training.gpu_ids=[0] \
-    task.run_name=learnable_zdiv01_logits0 \
-    ue.algorithm.params.z_diversity_weight=0.1 \
-    ue.algorithm.params.logits_div_enabled=false \
-    > logs/learnable_zdiv01_logits0.log 2>&1 &
+    echo "[GPU 0] 所有实验完成"
+) &
 
-sleep 5
+# ==================== GPU 1 (串行) ====================
+(
+    echo "[GPU 1] 开始实验 1/3: logits=0.01"
+    $BASE_CMD \
+        training.gpu_ids=[1] \
+        task.run_name=learnable_zdiv0_logits001 \
+        ue.algorithm.params.z_diversity_weight=0.0 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.01 \
+        2>&1 | tee logs/learnable_zdiv0_logits001.log
 
-# 实验 3: z_diversity=0.2
-nohup $BASE_CMD \
-    training.gpu_ids=[0] \
-    task.run_name=learnable_zdiv02_logits0 \
-    ue.algorithm.params.z_diversity_weight=0.2 \
-    ue.algorithm.params.logits_div_enabled=false \
-    > logs/learnable_zdiv02_logits0.log 2>&1 &
+    echo "[GPU 1] 开始实验 2/3: logits=0.05"
+    $BASE_CMD \
+        training.gpu_ids=[1] \
+        task.run_name=learnable_zdiv0_logits005 \
+        ue.algorithm.params.z_diversity_weight=0.0 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.05 \
+        2>&1 | tee logs/learnable_zdiv0_logits005.log
 
-# ==================== GPU 1 ====================
-# 实验 4: logits_div=0.01
-nohup $BASE_CMD \
-    training.gpu_ids=[1] \
-    task.run_name=learnable_zdiv0_logits001 \
-    ue.algorithm.params.z_diversity_weight=0.0 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.01 \
-    > logs/learnable_zdiv0_logits001.log 2>&1 &
+    echo "[GPU 1] 开始实验 3/3: logits=0.1"
+    $BASE_CMD \
+        training.gpu_ids=[1] \
+        task.run_name=learnable_zdiv0_logits01 \
+        ue.algorithm.params.z_diversity_weight=0.0 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.1 \
+        2>&1 | tee logs/learnable_zdiv0_logits01.log
 
-sleep 5
+    echo "[GPU 1] 所有实验完成"
+) &
 
-# 实验 5: logits_div=0.05
-nohup $BASE_CMD \
-    training.gpu_ids=[1] \
-    task.run_name=learnable_zdiv0_logits005 \
-    ue.algorithm.params.z_diversity_weight=0.0 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.05 \
-    > logs/learnable_zdiv0_logits005.log 2>&1 &
+# ==================== GPU 2 (串行) ====================
+(
+    echo "[GPU 2] 开始实验 1/3: zdiv=0.1+logits=0.01"
+    $BASE_CMD \
+        training.gpu_ids=[2] \
+        task.run_name=learnable_zdiv01_logits001 \
+        ue.algorithm.params.z_diversity_weight=0.1 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.01 \
+        2>&1 | tee logs/learnable_zdiv01_logits001.log
 
-sleep 5
+    echo "[GPU 2] 开始实验 2/3: zdiv=0.1+logits=0.05"
+    $BASE_CMD \
+        training.gpu_ids=[2] \
+        task.run_name=learnable_zdiv01_logits005 \
+        ue.algorithm.params.z_diversity_weight=0.1 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.05 \
+        2>&1 | tee logs/learnable_zdiv01_logits005.log
 
-# 实验 6: logits_div=0.1
-nohup $BASE_CMD \
-    training.gpu_ids=[1] \
-    task.run_name=learnable_zdiv0_logits01 \
-    ue.algorithm.params.z_diversity_weight=0.0 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.1 \
-    > logs/learnable_zdiv0_logits01.log 2>&1 &
+    echo "[GPU 2] 开始实验 3/3: zdiv=0.05+logits=0.05"
+    $BASE_CMD \
+        training.gpu_ids=[2] \
+        task.run_name=learnable_zdiv005_logits005 \
+        ue.algorithm.params.z_diversity_weight=0.05 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.05 \
+        2>&1 | tee logs/learnable_zdiv005_logits005.log
 
-# ==================== GPU 2 ====================
-# 实验 7: z_diversity=0.1 + logits_div=0.01
-nohup $BASE_CMD \
-    training.gpu_ids=[2] \
-    task.run_name=learnable_zdiv01_logits001 \
-    ue.algorithm.params.z_diversity_weight=0.1 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.01 \
-    > logs/learnable_zdiv01_logits001.log 2>&1 &
+    echo "[GPU 2] 所有实验完成"
+) &
 
-sleep 5
+# ==================== GPU 3 (串行) ====================
+(
+    echo "[GPU 3] 开始实验 1/3: zdiv=0.05+logits=0.01"
+    $BASE_CMD \
+        training.gpu_ids=[3] \
+        task.run_name=learnable_zdiv005_logits001 \
+        ue.algorithm.params.z_diversity_weight=0.05 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.01 \
+        2>&1 | tee logs/learnable_zdiv005_logits001.log
 
-# 实验 8: z_diversity=0.1 + logits_div=0.05
-nohup $BASE_CMD \
-    training.gpu_ids=[2] \
-    task.run_name=learnable_zdiv01_logits005 \
-    ue.algorithm.params.z_diversity_weight=0.1 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.05 \
-    > logs/learnable_zdiv01_logits005.log 2>&1 &
+    echo "[GPU 3] 开始实验 2/3: zdiv=0.2+logits=0.01"
+    $BASE_CMD \
+        training.gpu_ids=[3] \
+        task.run_name=learnable_zdiv02_logits001 \
+        ue.algorithm.params.z_diversity_weight=0.2 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.01 \
+        2>&1 | tee logs/learnable_zdiv02_logits001.log
 
-sleep 5
+    echo "[GPU 3] 开始实验 3/3: zdiv=0.2+logits=0.05"
+    $BASE_CMD \
+        training.gpu_ids=[3] \
+        task.run_name=learnable_zdiv02_logits005 \
+        ue.algorithm.params.z_diversity_weight=0.2 \
+        ue.algorithm.params.logits_div_enabled=true \
+        ue.algorithm.params.logits_div_mode=fft_l1 \
+        ue.algorithm.params.logits_div_weight=0.05 \
+        2>&1 | tee logs/learnable_zdiv02_logits005.log
 
-# 实验 9: z_diversity=0.05 + logits_div=0.05
-nohup $BASE_CMD \
-    training.gpu_ids=[2] \
-    task.run_name=learnable_zdiv005_logits005 \
-    ue.algorithm.params.z_diversity_weight=0.05 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.05 \
-    > logs/learnable_zdiv005_logits005.log 2>&1 &
+    echo "[GPU 3] 所有实验完成"
+) &
 
-# ==================== GPU 3 ====================
-# 实验 10: z_diversity=0.05 + logits_div=0.01
-nohup $BASE_CMD \
-    training.gpu_ids=[3] \
-    task.run_name=learnable_zdiv005_logits001 \
-    ue.algorithm.params.z_diversity_weight=0.05 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.01 \
-    > logs/learnable_zdiv005_logits001.log 2>&1 &
-
-sleep 5
-
-# 实验 11: z_diversity=0.2 + logits_div=0.01
-nohup $BASE_CMD \
-    training.gpu_ids=[3] \
-    task.run_name=learnable_zdiv02_logits001 \
-    ue.algorithm.params.z_diversity_weight=0.2 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.01 \
-    > logs/learnable_zdiv02_logits001.log 2>&1 &
-
-sleep 5
-
-# 实验 12: z_diversity=0.2 + logits_div=0.05
-nohup $BASE_CMD \
-    training.gpu_ids=[3] \
-    task.run_name=learnable_zdiv02_logits005 \
-    ue.algorithm.params.z_diversity_weight=0.2 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.05 \
-    > logs/learnable_zdiv02_logits005.log 2>&1 &
-
-echo "已启动 12 个实验任务"
+echo "已启动 4 个 GPU 的实验任务（每个 GPU 串行执行 3 个实验）"
 echo ""
 echo "参数范围:"
 echo "  z_diversity_weight: 0, 0.05, 0.1, 0.2"
@@ -172,3 +172,7 @@ echo "  GPU 3: zdiv=0.05+logits=0.01, zdiv=0.2+logits=0.01, zdiv=0.2+logits=0.05
 echo ""
 echo "查看日志: tail -f logs/learnable_*.log"
 echo "查看进程: ps aux | grep ue_generate"
+echo ""
+echo "等待所有实验完成..."
+wait
+echo "所有实验已完成！"
