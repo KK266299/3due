@@ -2,7 +2,7 @@ python main.py \
   method=poison_files \
   model.pretrained=false \
   dataset=brats19 \
-  task.run_name=victim_minmin_4_255 \
+  task.run_name=victim_noise_slice_4_255 \
   model=unet \
   model.name=unet \
   task=brats19_seg \
@@ -16,7 +16,7 @@ python main.py \
   training.data.poison.key.from=field \
   training.data.poison.key.field=case_id \
   training.data.poison.source.type=manifest \
-  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/minmin_noise_step_5e-3_4_255/20251219_115411/noise/epoch_0099/manifest.json
+  training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/noise_slice_4_255/20260225_184516/noise/epoch_0099/manifest.json
 
 
 

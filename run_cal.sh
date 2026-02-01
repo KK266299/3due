@@ -25,7 +25,7 @@ run_one() {
 
 # ── GPU 0: brats19 x3 ────────────────────────────────────────────
 (
-run_one brats19_seg /home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/best_model.pth cuda:0
+run_one brats19_seg /home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_umed_brats19/20260225_183433/checkpoints/checkpoints/best_model.pth cuda:7
 run_one brats19_seg /home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_random_noise_gaussian/20251228_082846/checkpoints/checkpoints/best_model.pth cuda:0
 run_one brats19_seg /home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_minmin_4_255/20251220_061401/checkpoints/checkpoints/best_model.pth cuda:0
 echo "[GPU 0] Done."

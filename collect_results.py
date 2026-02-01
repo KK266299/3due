@@ -41,7 +41,9 @@ _BRATS19_MODELS = [
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_minmin_4_255/20251220_061401/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_lsp_4_255/20260225_075837/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_sep/20251222_124616/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_tap_noise_4_255/20260225_225630/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_pue_4_255/20260225_021757/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_umed_brats19/20260225_183433/checkpoints/checkpoints/best_model.pth",
 ]
 
 _FLARE21_MODELS = [
@@ -49,7 +51,11 @@ _FLARE21_MODELS = [
     "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_random_noise_gaussian_4_255/20260225_081338/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_minmin_noise_step_5e-3_4_255/20260112_061355/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_sep/20260224_165559/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_tap_4_255/20260225_033246/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_umed_flare21/20260225_165841/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_nofreq_zdiv02_logits005/20260205_061624/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_nofreq_zdiv0_logits01/20260205_061751/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_nofreq_zdiv0_logits005/20260205_044934/checkpoints/checkpoints/best_model.pth",
 ]
 
 DATASET_MODELS = {

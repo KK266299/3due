@@ -32,6 +32,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.colors import Normalize
+from matplotlib.cm import ScalarMappable
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -68,6 +70,26 @@ METHOD_COLORS = [
 ]
 
 METHOD_CMAPS = ["RdBu_r", "PiYG_r", "PuOr_r", "BrBG_r", "coolwarm", "seismic"]
+
+# Noise colorbar range
+NOISE_VMIN = -4 / 255
+NOISE_VMAX = 4 / 255
+NOISE_CMAP = "bwr"
+
+
+def _add_noise_colorbar(fig, axes_list, location="right", shrink=0.6, pad=0.02,
+                        label="Noise Intensity", fontsize=9):
+    """Add a shared colorbar for noise images with range [-4/255, 4/255]."""
+    norm = Normalize(vmin=NOISE_VMIN, vmax=NOISE_VMAX)
+    sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes_list, location=location,
+                        shrink=shrink, pad=pad, aspect=30)
+    cbar.set_ticks([NOISE_VMIN, NOISE_VMIN / 2, 0, NOISE_VMAX / 2, NOISE_VMAX])
+    cbar.set_ticklabels(["-4/255", "-2/255", "0", "2/255", "4/255"])
+    if label:
+        cbar.set_label(label, fontsize=fontsize)
+    return cbar
 
 
 # ======================== Helpers (reuse from single) ======================== #
@@ -159,20 +181,6 @@ def run_inference(model: torch.nn.Module, image: torch.Tensor, device: torch.dev
             out = out[0]
         pred = out.argmax(dim=1).squeeze(0).cpu()
     return pred
-
-
-def colorize_noise(noise_2d: np.ndarray, eps: float = 8/255) -> np.ndarray:
-    normalized = np.clip(noise_2d / max(eps, 1e-12), -1, 1)
-    rgb = np.zeros((*noise_2d.shape, 3), dtype=np.float32)
-    neg = normalized < 0
-    rgb[neg, 2] = 1.0
-    rgb[neg, 0] = 1.0 + normalized[neg]
-    rgb[neg, 1] = 1.0 + normalized[neg]
-    pos = normalized >= 0
-    rgb[pos, 0] = 1.0
-    rgb[pos, 1] = 1.0 - normalized[pos]
-    rgb[pos, 2] = 1.0 - normalized[pos]
-    return (rgb * 255).astype(np.uint8)
 
 
 def label_to_rgb(label_2d: np.ndarray, num_classes: int = 4) -> np.ndarray:
@@ -342,15 +350,18 @@ def compare_scheme_a(
         axes[0, i].axis("off")
     axes[0, 0].set_ylabel("Original", fontsize=11, fontweight="bold")
 
+    noise_axes = []  # collect noise axes for shared colorbar
     for m_idx, (method, noise_np) in enumerate(zip(methods, noises)):
         row_noise = 1 + m_idx * 2
         row_diff = 2 + m_idx * 2
 
-        # Noise row
+        # Noise row — use diverging colormap with fixed range
         for i, z in enumerate(slices):
-            noise_rgb = colorize_noise(noise_np[channel, z], eps)
-            axes[row_noise, i].imshow(noise_rgb)
+            axes[row_noise, i].imshow(
+                noise_np[channel, z], cmap=NOISE_CMAP,
+                vmin=NOISE_VMIN, vmax=NOISE_VMAX)
             axes[row_noise, i].axis("off")
+            noise_axes.append(axes[row_noise, i])
         axes[row_noise, 0].set_ylabel(
             f"{method.name}\nNoise", fontsize=10, fontweight="bold"
         )
@@ -367,6 +378,9 @@ def compare_scheme_a(
         axes[row_diff, 0].set_ylabel(
             f"{method.name}\nSlice Diff", fontsize=10, fontweight="bold"
         )
+
+    # Add shared colorbar for noise rows
+    _add_noise_colorbar(fig, noise_axes, shrink=0.8, pad=0.03)
 
     fig.suptitle(
         f"Compare A: Multi-Slice Noise — {case_id}\n"
@@ -600,9 +614,9 @@ def compare_scheme_f(
         pred_c_slice = pred_c_np[slice_idx]
         pred_n_slice = pred_n_np[slice_idx]
 
-        # Row 0: Noise BWR, Noisy image, |δ|×10
-        noise_rgb = colorize_noise(noise_slice, eps)
-        axes[0, col_base].imshow(noise_rgb)
+        # Row 0: Noise (diverging cmap), Noisy image, |δ|×10
+        axes[0, col_base].imshow(
+            noise_slice, cmap=NOISE_CMAP, vmin=NOISE_VMIN, vmax=NOISE_VMAX)
         axes[0, col_base].set_title(f"{method.name}\nNoise", fontsize=10,
                                     fontweight="bold", color=color)
 
@@ -646,11 +660,17 @@ def compare_scheme_f(
 
         dice_strs.append(f"{method.name}: {d_clean:.3f}→{d_noisy:.3f} (Δ{delta:+.3f})")
 
-    # Turn off all axes
+    # Turn off all axes — remove black borders
+    noise_axes_f = []
     for ax_row in axes:
         for ax in ax_row:
-            ax.set_xticks([])
-            ax.set_yticks([])
+            ax.axis("off")
+
+    # Collect noise axes for shared colorbar
+    for m_idx in range(M):
+        col_base = 2 + m_idx * 3
+        noise_axes_f.append(axes[0, col_base])
+    _add_noise_colorbar(fig, noise_axes_f, shrink=0.8, pad=0.03)
 
     fig.suptitle(
         f"Compare F: Segmentation Impact — {case_id} (z={slice_idx})\n"
@@ -696,30 +716,38 @@ def compare_unified(
     z0 = slice_z
     z1 = min(slice_z + 1, D - 1)
 
-    # (a) cols: Original + M noise + Noisy(Ours)
-    n_a = 1 + M + 1
+    # Layout: [Original] [Colorbar] [Noise1..NoiseM | Noisy] [panel b] [panel c]
+    n_right = M + 1  # M noise cols + 1 Noisy col
 
     # --- Figure sizing ---
     cell = 2.0
+    cbar_w = 0.35  # width for vertical colorbar
     b_w = 1.6
     c_w = 1.2
-    gap = 0.4  # gap between panels
-    fig_w = cell * n_a + gap + b_w + gap + c_w
+    gap = 0.4
+    fig_w = cell + cbar_w + cell * n_right + gap + b_w + gap + c_w
     fig_h = cell * 2 + 0.5
 
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
 
-    # Use three separate GridSpecs for proper gaps between panels
-    left_edge = 0.0
-    a_right = (cell * n_a) / fig_w
-    b_left = a_right + gap / fig_w
+    # Panel positions in figure fraction coordinates
+    orig_right = cell / fig_w
+    cbar_frac_left = orig_right + 0.005
+    right_left = (cell + cbar_w) / fig_w + 0.005
+    right_right = (cell + cbar_w + cell * n_right) / fig_w
+    b_left = right_right + gap / fig_w
     b_right = b_left + b_w / fig_w
     c_left = b_right + gap / fig_w
     c_right = 1.0
 
-    gs_a = gridspec.GridSpec(
-        2, n_a, figure=fig,
-        left=left_edge, right=a_right, bottom=0.02, top=0.88,
+    gs_orig = gridspec.GridSpec(
+        2, 1, figure=fig,
+        left=0.0, right=orig_right, bottom=0.02, top=0.88,
+        wspace=0.005, hspace=0.005,
+    )
+    gs_right = gridspec.GridSpec(
+        2, n_right, figure=fig,
+        left=right_left, right=right_right, bottom=0.02, top=0.88,
         wspace=0.005, hspace=0.005,
     )
     gs_b = gridspec.GridSpec(
@@ -732,51 +760,49 @@ def compare_unified(
         wspace=0.005, hspace=0.005,
     )
 
-    # ============ (a) Image grid — no borders ============
-    col_titles = (["Original"]
-                  + [m.name for m in methods]
-                  + ["Noisy"])
+    # ============ Original column ============
+    for row, z in enumerate([z0, z1]):
+        ax = fig.add_subplot(gs_orig[row, 0])
+        ax.imshow(image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
+        ax.set_xticks([]); ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_visible(False)
 
-    a_axes = {}
-    for row in range(2):
-        for col in range(n_a):
-            ax = fig.add_subplot(gs_a[row, col])
-            ax.set_xticks([]); ax.set_yticks([])
-            for sp in ax.spines.values():
-                sp.set_visible(False)
-            a_axes[(row, col)] = ax
+    # ============ Vertical colorbar — right of Original ============
+    cbar_ax = fig.add_axes([cbar_frac_left, 0.08, 0.012, 0.75])
+    norm = Normalize(vmin=NOISE_VMIN, vmax=NOISE_VMAX)
+    sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_ticks([])  # no side ticks
+    # Labels at top and bottom of colorbar
+    cbar.ax.text(0.5, 1.02, "4/255", ha="center", va="bottom",
+                 fontsize=14, transform=cbar.ax.transAxes)
+    cbar.ax.text(0.5, -0.02, "-4/255", ha="center", va="top",
+                 fontsize=14, transform=cbar.ax.transAxes)
 
+    # ============ Noise + Noisy grid — no borders, no text ============
     ours_noise_np = noises[-1].numpy()
 
     for row, z in enumerate([z0, z1]):
-        a_axes[(row, 0)].imshow(
-            image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
-
+        # Noise columns
         for m_idx in range(M):
-            col = 1 + m_idx
+            ax = fig.add_subplot(gs_right[row, m_idx])
             noise_np_m = noises[m_idx].numpy()
-            a_axes[(row, col)].imshow(
-                colorize_noise(noise_np_m[vis_channel, z], eps))
+            ax.imshow(noise_np_m[vis_channel, z], cmap=NOISE_CMAP,
+                      vmin=NOISE_VMIN, vmax=NOISE_VMAX)
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
 
+        # Noisy column (last)
+        ax_n = fig.add_subplot(gs_right[row, M])
         noisy_slice = np.clip(
             image_np[vis_channel, z] + ours_noise_np[vis_channel, z], 0, 1)
-        a_axes[(row, 1 + M)].imshow(noisy_slice, cmap="gray", vmin=0, vmax=1)
-
-    for c, title in enumerate(col_titles):
-        color = "black"
-        if 1 <= c <= M:
-            color = METHOD_COLORS[(c - 1) % len(METHOD_COLORS)]
-        a_axes[(0, c)].set_title(title, fontsize=8, fontweight="bold",
-                                 color=color, pad=2)
-
-    for row, z in enumerate([z0, z1]):
-        a_axes[(row, 0)].text(
-            -0.03, 0.5, f"z={z}", fontsize=7, fontweight="bold",
-            rotation=90, va="center", ha="right",
-            transform=a_axes[(row, 0)].transAxes)
-
-    fig.text(left_edge + 0.005, 0.96, "(a)", fontsize=12,
-             fontweight="bold", va="top")
+        ax_n.imshow(noisy_slice, cmap="gray", vmin=0, vmax=1)
+        ax_n.set_xticks([]); ax_n.set_yticks([])
+        for sp in ax_n.spines.values():
+            sp.set_visible(False)
 
     # ============ (b) Pearson correlation — keep plot frame ============
     ax_b = fig.add_subplot(gs_b[0, 0])
@@ -795,45 +821,32 @@ def compare_unified(
 
         color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
         z_indices = np.arange(len(corrs))
-        mean_c = np.mean(corrs)
-        ax_b.plot(corrs, z_indices, color=color, linewidth=1.0, alpha=0.85,
-                  label=f"{methods[m_idx].name} ({mean_c:+.2f})")
+        ax_b.plot(corrs, z_indices, color=color, linewidth=1.0, alpha=0.85)
 
     ax_b.invert_yaxis()
     ax_b.axvline(x=0, color="gray", linestyle=":", linewidth=0.5)
     ax_b.set_xlim(-1.05, 1.05)
 
-    # Title at top
-    ax_b.set_title("Inter-Slice Correlation", fontsize=8, fontweight="bold",
-                    pad=3)
-    # xlabel at bottom
-    ax_b.set_xlabel("Pearson r", fontsize=7)
-    ax_b.set_ylabel("Slice z", fontsize=7)
-    ax_b.tick_params(labelsize=5)
+    ax_b.set_xticklabels([])
+    ax_b.set_yticklabels([])
+    ax_b.tick_params(length=0)
     ax_b.grid(True, alpha=0.2)
-    ax_b.legend(fontsize=5.5, loc="lower left")
 
     ax_b.axhline(y=z0, color="black", linestyle="--", linewidth=0.5, alpha=0.4)
     ax_b.axhline(y=z1, color="black", linestyle="--", linewidth=0.5, alpha=0.4)
 
-    fig.text(b_left, 0.96, "(b)", fontsize=12, fontweight="bold", va="top")
-
-    # ============ (c) Clean + Seg — no borders ============
+    # ============ (c) Clean + Seg — no borders, no text ============
     ax_c0 = fig.add_subplot(gs_c[0, 0])
     ax_c0.imshow(image_np[vis_channel, z0], cmap="gray", vmin=0, vmax=1)
     ax_c0.set_xticks([]); ax_c0.set_yticks([])
     for sp in ax_c0.spines.values():
         sp.set_visible(False)
-    ax_c0.set_title("Clean", fontsize=8, fontweight="bold", pad=2)
 
     ax_c1 = fig.add_subplot(gs_c[1, 0])
     ax_c1.imshow(label_to_rgb(pred_np[z0]))
     ax_c1.set_xticks([]); ax_c1.set_yticks([])
     for sp in ax_c1.spines.values():
         sp.set_visible(False)
-    ax_c1.set_title("Seg", fontsize=8, fontweight="bold", pad=2)
-
-    fig.text(c_left, 0.96, "(c)", fontsize=12, fontweight="bold", va="top")
 
     plt.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white",
                 pad_inches=0.03)
@@ -938,7 +951,7 @@ def main():
             center_z = min(max(0, args.slice_idx), D - 1)
         print(f"  Center slice: z={center_z}")
 
-        # Load all noises
+        # Load all noises and clamp to [-4/255, 4/255]
         noise_list: List[torch.Tensor] = []
         noise_np_list: List[np.ndarray] = []
         for m in method_objs:
@@ -946,9 +959,12 @@ def main():
             if noise is None:
                 print(f"  [Warning] {m.name}: no noise, using zeros")
                 noise = torch.zeros_like(image)
+            linf_raw = noise.abs().max().item()
+            noise = noise.clamp(NOISE_VMIN, NOISE_VMAX)
             noise_list.append(noise)
             noise_np_list.append(noise.numpy())
-            print(f"  {m.name}: L∞={noise.abs().max():.6f}, "
+            print(f"  {m.name}: L∞(raw)={linf_raw:.6f}, "
+                  f"L∞(clamped)={noise.abs().max():.6f}, "
                   f"L2(rms)={torch.sqrt(torch.mean(noise**2)):.6f}")
 
         prefix = f"{idx:04d}_{case_id}"

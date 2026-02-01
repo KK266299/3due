@@ -1,0 +1,6 @@
+python image_qua.py --noise_manifest /home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/tap_noise_4_255/20260225_074809/noise/epoch_0099/manifest.json --output_dir outputs/image_quality/brats19/tap_noise_4_255 --dataset_config configs/dataset/brats19.yaml --device cuda:1 &
+python image_qua.py --noise_manifest /home/dengzhipeng/data/project/3d_ue/outputs/brats19_ue/noise_slice_4_255/20260225_184516/noise/epoch_0099/manifest.json --output_dir outputs/image_quality/brats19/noise_slice_4_255 --dataset_config configs/dataset/brats19.yaml --device cuda:1 &
+python image_qua.py --noise_manifest /home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/tap_noise_4_255/20260224_163024/noise/epoch_0099/manifest.json --output_dir outputs/image_quality/flare21/tap_noise_4_255 --dataset_config configs/dataset/flare21.yaml --device cuda:1 &
+python image_qua.py --noise_manifest /home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/noise_slice_4_255/20260225_184519/noise/epoch_0099/manifest.json --output_dir outputs/image_quality/flare21/noise_slice_4_255 --dataset_config configs/dataset/flare21.yaml --device cuda:1 &
+wait
+echo "All tasks done! Generating summary..."
