@@ -288,6 +288,8 @@ class NoiseSliceFrequenceLearnable:
         self._init_xy_cutoff: float = 0.0
         # Track epoch for detecting epoch boundary
         self._last_logged_epoch: int = -1
+        # Z-axis diversity regularization settings
+        self._z_diversity_weight: float = 0.0
         self.logger = get_logger()
 
     @staticmethod
@@ -370,6 +372,9 @@ class NoiseSliceFrequenceLearnable:
             gaussian_sigma=float(get_config(params, "gaussian_sigma", 2.0)),
         )
 
+        # Z-axis diversity regularization (weight=0 disables it)
+        self._z_diversity_weight = float(get_config(params, "z_diversity_weight", 0.0))
+
         self._initialized = True
 
         z_val, xy_val = self._global_cutoff()
@@ -377,7 +382,8 @@ class NoiseSliceFrequenceLearnable:
         self._init_xy_cutoff = xy_val.item()
         self.logger.info(
             f"[FreqLearnable] Initialized: in_ch={in_channels}, eps={eps:.6f}, "
-            f"z_cutoff_init={self._init_z_cutoff:.4f}, xy_cutoff_init={self._init_xy_cutoff:.4f}"
+            f"z_cutoff_init={self._init_z_cutoff:.4f}, xy_cutoff_init={self._init_xy_cutoff:.4f}, "
+            f"z_diversity_weight={self._z_diversity_weight:.4f}"
         )
 
     # ────────────── epoch boundary: log cutoffs ────────────── #
@@ -522,6 +528,7 @@ class NoiseSliceFrequenceLearnable:
 
         self._noise_unet.train()
         last_loss = torch.tensor(0.0, device=device)
+        last_z_diversity_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
             # Get global cutoffs (differentiable)
@@ -545,7 +552,18 @@ class NoiseSliceFrequenceLearnable:
 
             out = s_model(xn)
             logits = out[0] if isinstance(out, (tuple, list)) else out
-            loss = seg_loss_fn(logits, y.unsqueeze(1))
+            seg_loss = seg_loss_fn(logits, y.unsqueeze(1))
+
+            # Z-axis diversity loss (if weight > 0)
+            # We want to MAXIMIZE diversity, so we add negative diversity to loss
+            if self._z_diversity_weight > 0:
+                z_diversity = self._compute_z_diversity(delta)
+                z_diversity_loss = -z_diversity  # negative because we want to maximize
+                loss = seg_loss + self._z_diversity_weight * z_diversity_loss
+                last_z_diversity_loss = z_diversity_loss.detach()
+            else:
+                loss = seg_loss
+
             last_loss = loss.detach()
 
             # Update both networks from the same loss
@@ -583,15 +601,53 @@ class NoiseSliceFrequenceLearnable:
 
         with torch.no_grad():
             z_energy, xy_energy = self._compute_freq_stats(final_delta)
+            z_diversity_value = self._compute_z_diversity(final_delta)
 
-        return {
+        result = {
             "noise_loss": float(last_loss.cpu()),
             "delta_linf": delta_linf,
             "z_high_freq_energy": z_energy,
             "xy_low_freq_energy": xy_energy,
             "z_cutoff": z_val_f,
             "xy_cutoff": xy_val_f,
+            "z_diversity": float(z_diversity_value.cpu()),
         }
+
+        # Add z_diversity_loss to result (if enabled)
+        if self._z_diversity_weight > 0:
+            result["z_diversity_loss"] = float(last_z_diversity_loss.cpu())
+
+        return result
+
+    def _compute_z_diversity(self, delta: torch.Tensor) -> torch.Tensor:
+        """
+        Compute z-axis inter-slice diversity in frequency domain.
+
+        Computes the mean L2 distance between adjacent slices after 2D FFT,
+        encouraging noise to have high variation along the z-axis.
+
+        Args:
+            delta: [B, C, D, H, W] noise tensor
+
+        Returns:
+            z_diversity: Scalar tensor representing mean inter-slice L2 difference
+        """
+        # Apply 2D FFT on each slice (xy-plane)
+        delta_fft_2d = torch.fft.fft2(delta, dim=(-2, -1))  # [B, C, D, H, W] complex
+
+        # Compute magnitude spectrum for each slice
+        delta_fft_mag = delta_fft_2d.abs()  # [B, C, D, H, W]
+
+        # Compute L2 difference between adjacent slices along z-axis
+        slice_diff = delta_fft_mag[:, :, 1:, :, :] - delta_fft_mag[:, :, :-1, :, :]  # [B, C, D-1, H, W]
+
+        # Compute L2 norm for each pair of slices
+        l2_per_pair = torch.sqrt((slice_diff ** 2).sum(dim=(-2, -1)) + 1e-10)  # [B, C, D-1]
+
+        # Mean over all pairs, channels, and batches
+        z_diversity = l2_per_pair.mean()
+
+        return z_diversity
 
     def _compute_freq_stats(self, delta: torch.Tensor) -> Tuple[float, float]:
         B, C, D, H, W = delta.shape
