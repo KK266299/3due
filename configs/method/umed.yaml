@@ -1,0 +1,99 @@
+# @package _global_
+# UMed: Unlearnable Medical Image Segmentation via Contour- and Texture-Aware
+# Perturbations (arXiv:2403.14250)
+#
+# Dual-branch perturbation generators:
+#   - G_c (contour): CDC U-Net, perturbation restricted to boundary band
+#   - G_t (texture): Standard U-Net, LBP-adaptive clipping on ROI interior
+# Bi-level optimisation: surrogate updated every `surrogate_step` iterations
+#
+# Key parameters:
+#   - epsilon: L_inf perturbation bound (paper default: 4/255)
+#   - boundary_width: morphological kernel radius for contour extraction
+#   - surrogate_step: frequency of surrogate updates (paper: every 5 iters)
+#   - cdc_theta: initial blend factor for CDC convolution
+
+training:
+  model_save_start: 9999
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4
+    k: 2
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: umed
+    params:
+      epsilon: 0.0156863        # 4/255 L_inf bound (paper default)
+      noise_step: 1             # generator training iterations per batch
+      surrogate_step: 5         # S-step: update surrogate every N batches (paper: 5)
+      boundary_width: 3         # morphological kernel radius for contour extraction
+
+  # Contour generator (G_c) - CDC U-Net
+  contour_unet:
+    channels: [16, 32, 64, 128]
+    cdc_theta: 0.5              # initial CDC blend factor
+
+  # Texture generator (G_t) - Standard U-Net
+  texture_unet:
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+
+  # Shared optimiser for both generators
+  generator_optimizer:
+    name: adam
+    lr: 1e-4
+    weight_decay: 1e-5
+    betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 1e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10

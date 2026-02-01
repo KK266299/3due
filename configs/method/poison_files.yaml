@@ -11,7 +11,16 @@ training:
       perturb_type: classwise
       apply_stage: before_normalize
       # key: { type: classwise, from: index }; or key: { type: classwise, from: field, field: another_field }
-      key: { type: classwise, from: field, field: subject_id } 
+      key: { type: classwise, from: field, field: subject_id }
       source:
         type: shards
         manifest_path: /home/dengzhipeng/data/project/reid_ue/mimic_cxr_ue/outputs/mimic_cxr_ue_minmin/20250831_190411/noise/manifest.json
+      defense:
+        type: null              # gaussian_blur | gamma | low_resolution | random_affine | null=disabled
+        sigma: 1.0              # gaussian_blur: blur sigma
+        kernel_size: 0          # gaussian_blur: 0=auto
+        gamma_range: [0.7, 1.5] # gamma: random gamma range
+        scale: 0.5              # low_resolution: downsample factor
+        rotation_range: 15.0    # random_affine: degrees per axis
+        scale_range: [0.85, 1.25] # random_affine: isotropic scale range
+        prob: 0.5               # random_affine: apply probability

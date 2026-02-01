@@ -1,0 +1,106 @@
+# @package _global_
+# Slice-by-Slice UNet Noise Generator Configuration
+#
+# This method generates noise independently for each 2D slice using a 2D UNet,
+# then assembles the per-slice noise into a 3D volume.
+#
+# Key features:
+#   - 2D UNet for per-slice noise generation (lighter than 3D UNet)
+#   - Each slice gets independent noise patterns
+#   - Same save paths and backend as other UNet noise methods
+#
+# Key parameters:
+#   - slice_batch_size: Number of slices to process at once (0 = all at once)
+#     Set this if you encounter OOM errors with large volumes
+#
+# Maximum noise bound: 8/255 ≈ 0.0313725 (L∞ constraint)
+
+training:
+  model_save_start: 9999  # no need to save model for noise generation
+  model_save_freq: 10
+  epochs: 100
+  batch_size: 8
+  num_workers: 0
+  sampler:
+    name: pk
+    p: 4   # every batch 4 different patients
+    k: 2   # each patient 2 images
+  data:
+    poison:
+      enabled: false
+    transforms:
+      geom_aug: false
+      intensity_aug: false
+      normalize: false
+
+ue:
+  store_dir: ${task.save_dir}/${task.run_name}/${now:%Y%m%d_%H%M%S}/noise
+
+  key:
+    type: samplewise
+    from: field
+    field: case_id
+
+  algorithm:
+    kind: training_based
+    name: unet_noise_slice
+    params:
+      # L∞ noise bound
+      epsilon: 0.0313725          # 8/255
+
+      # Training iterations
+      noise_step: 1               # UNet training iterations per batch
+      surrogate_step: 2           # S-step: batches per epoch for surrogate training
+
+      # Slice processing
+      slice_batch_size: 0         # 0 = process all slices at once
+                                  # Set to e.g. 64/128 if OOM with large volumes
+
+      # Legacy (unused, kept for compatibility)
+      step_size: 5e-3
+
+  # 2D Noise UNet configuration
+  noise_unet:
+    # 2D UNet for per-slice noise generation
+    channels: [16, 32, 64, 128]
+    strides: [2, 2, 2]
+    num_res_units: 1
+    act: "LEAKYRELU"
+    norm: "INSTANCE"
+    dropout: 0.0
+    # Optimizer for noise UNet
+    optimizer:
+      name: adam
+      lr: 1e-4
+      weight_decay: 1e-5
+      betas: [0.9, 0.999]
+
+  eot:
+    enabled: false
+    n: 3
+    geom_aug: true
+    pix_aug: true
+    same_on_batch: false
+
+  # Surrogate model for computing segmentation loss (3D)
+  surrogates:
+    s_seg:
+      backbone: unet
+      in_channels: 4
+      num_classes: 4
+      spatial_dims: 3
+      channels: [32, 64, 128, 256, 512]
+      strides: [2, 2, 2, 2]
+      num_res_units: 2
+      norm: "INSTANCE"
+      act: "RELU"
+      dropout: 0.0
+      optimizer: { name: adam, lr: 5e-4, weight_decay: 5e-4, betas: [0.9, 0.9999], eps: 1.0e-8 }
+
+  io:
+    enabled: true
+    include_manifest: true
+    strategy: files
+    dtype: int8
+    save_from_epoch: 50
+    save_every: 10

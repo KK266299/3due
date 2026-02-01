@@ -28,6 +28,11 @@ Algorithm:
 
 Key: RWP (Random Weight Perturbation) 使噪声对模型初始化更加鲁棒，
      提供理论上的 (q, η)-Learnability 认证保证。
+
+Performance notes (3D volumes):
+  - AMP (mixed precision) 可通过 ue.amp.enabled=true 开启，对 3D UNet 有显著加速
+  - 当 mean=0, std=1（默认无归一化）时自动跳过 clone + in-place normalize
+  - RWP 内层循环中 perturb_base 只计算一次，避免重复 x+delta+clamp
 """
 from __future__ import annotations
 from typing import Dict, Iterable, List
@@ -61,6 +66,25 @@ class PUE:
     def __init__(self):
         # segmentation 用的 DiceCE loss（lazy 构建）
         self._seg_loss: DiceCELoss | None = None
+        # AMP state（lazy init from config on first call）
+        self._amp_enabled: bool | None = None
+        self._scaler: torch.amp.GradScaler | None = None
+
+    # ======================== AMP helpers ======================== #
+    def _is_amp_enabled(self, cfg) -> bool:
+        if self._amp_enabled is None:
+            self._amp_enabled = bool(get_config(cfg, "ue.amp.enabled", False))
+        return self._amp_enabled
+
+    def _get_scaler(self) -> torch.amp.GradScaler:
+        if self._scaler is None:
+            self._scaler = torch.amp.GradScaler()
+        return self._scaler
+
+    # ======================== Normalization helpers ======================== #
+    @staticmethod
+    def _is_noop_norm(mean, std) -> bool:
+        return all(float(m) == 0.0 for m in mean) and all(float(s) == 1.0 for s in std)
 
     @staticmethod
     def _norm_inplace(x: torch.Tensor, mean, std):
@@ -71,6 +95,14 @@ class PUE:
         for c, (m, s) in enumerate(zip(mean, std)):
             x[:, c].sub_(float(m)).div_(float(s))
         return x
+
+    def _prepare_input(self, raw: torch.Tensor, mean, std, noop_norm: bool) -> torch.Tensor:
+        """Prepare model input: skip clone+normalize when mean=0, std=1."""
+        if noop_norm:
+            return raw
+        xn = raw.clone()
+        self._norm_inplace(xn, mean, std)
+        return xn
 
     # === RWP: 临时加/减 权重噪声（不污染参数与优化器状态） ===
     @staticmethod
@@ -150,6 +182,9 @@ class PUE:
         if (not rwp_enabled) or (rwp_sigma <= 0) or (U_train <= 1):
             rwp_enabled = False  # 自动退化为普通训练
 
+        # AMP
+        amp_on = self._is_amp_enabled(cfg)
+
         # data
         x = batch["image"].to(device).float()  # [B,C,...]
         y = batch["label"]
@@ -163,6 +198,7 @@ class PUE:
         # normalization config（默认 no-op: mean=0, std=1）
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
+        noop_norm = self._is_noop_norm(mean, std)
 
         # noise: sample-wise，通道数必须与输入一致
         delta = nb.batch_noise(list(keys)).to(device).float()  # [B,C_in,...]
@@ -189,37 +225,47 @@ class PUE:
         opt.zero_grad(set_to_none=True)
         loss_scalar = 0.0
 
+        # noisy input 只算一次（x + delta 在 S-step 内不变）
+        noisy = (x + delta).clamp(0.0, 1.0)
+
         if rwp_enabled:
             for _ in range(U_train):
                 noises = self._add_weight_noise_(s_model, rwp_sigma)  # 临时加噪
 
-                # forward with noisy input and noisy weights
-                noisy = (x + delta).clamp(0.0, 1.0)
-                xn = noisy.clone()
-                self._norm_inplace(xn, mean, std)
+                xn = self._prepare_input(noisy, mean, std, noop_norm)
 
-                out = s_model(xn)
-                logits = out[0] if isinstance(out, (tuple, list)) else out
+                with torch.amp.autocast(device_type=device.type, enabled=amp_on):
+                    out = s_model(xn)
+                    logits = out[0] if isinstance(out, (tuple, list)) else out
+                    loss = seg_loss_fn(logits, y.unsqueeze(1)) / float(U_train)  # 均值聚合
 
-                loss = seg_loss_fn(logits, y.unsqueeze(1)) / float(U_train)  # 均值聚合
-                loss.backward()  # 累计梯度
+                if amp_on:
+                    self._get_scaler().scale(loss).backward()
+                else:
+                    loss.backward()
                 loss_scalar += float(loss.detach().cpu())
 
                 self._remove_weight_noise_(s_model, noises)  # 立刻减回噪声
         else:
             # 普通训练（无RWP）
-            noisy = (x + delta).clamp(0.0, 1.0)
-            xn = noisy.clone()
-            self._norm_inplace(xn, mean, std)
+            xn = self._prepare_input(noisy, mean, std, noop_norm)
 
-            out = s_model(xn)
-            logits = out[0] if isinstance(out, (tuple, list)) else out
+            with torch.amp.autocast(device_type=device.type, enabled=amp_on):
+                out = s_model(xn)
+                logits = out[0] if isinstance(out, (tuple, list)) else out
+                loss = seg_loss_fn(logits, y.unsqueeze(1))
 
-            loss = seg_loss_fn(logits, y.unsqueeze(1))
-            loss.backward()
+            if amp_on:
+                self._get_scaler().scale(loss).backward()
+            else:
+                loss.backward()
             loss_scalar = float(loss.detach().cpu())
 
-        opt.step()
+        if amp_on:
+            self._get_scaler().step(opt)
+            self._get_scaler().update()
+        else:
+            opt.step()
 
         return {
             "surrogate_loss": loss_scalar,
@@ -248,6 +294,9 @@ class PUE:
         if (not rwp_enabled) or (rwp_sigma <= 0) or (U_noise <= 1):
             rwp_enabled = False  # 自动退化
 
+        # AMP
+        amp_on = self._is_amp_enabled(cfg)
+
         # -------- data & config --------
         x = batch["image"].to(device).float()  # [N, C_in, ...]
         y = batch["label"]
@@ -268,6 +317,7 @@ class PUE:
         # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
+        noop_norm = self._is_noop_norm(mean, std)
 
         seg_loss_fn = self._get_seg_loss(trainer)
 
@@ -298,18 +348,21 @@ class PUE:
                     # RWP: 对 U_noise 次权重采样取平均梯度
                     grad_accum = torch.zeros_like(delta_tbl)
 
+                    # perturb_base 在同一 PGD step 内不变，只算一次
+                    perturb_base = (x + delta_tbl).clamp(0.0, 1.0).detach()
+
                     for _u in range(U_noise):
                         noises = self._add_weight_noise_(s_model, rwp_sigma)
 
-                        # x + delta，保证输入 surrogate 的图像始终在 [0,1]
-                        perturb_img = (x + delta_tbl).clamp(0.0, 1.0).detach().requires_grad_(True)
-                        xn = perturb_img.clone()
-                        self._norm_inplace(xn, mean, std)
+                        # 从 perturb_base clone 出 leaf tensor（比重算 x+delta+clamp 更快）
+                        perturb_img = perturb_base.clone().requires_grad_(True)
+                        xn = self._prepare_input(perturb_img, mean, std, noop_norm)
 
-                        out = s_model(xn)
-                        logits = out[0] if isinstance(out, (tuple, list)) else out
+                        with torch.amp.autocast(device_type=device.type, enabled=amp_on):
+                            out = s_model(xn)
+                            logits = out[0] if isinstance(out, (tuple, list)) else out
+                            loss_u = seg_loss_fn(logits, y.unsqueeze(1))
 
-                        loss_u = seg_loss_fn(logits, y.unsqueeze(1))
                         (g_u,) = torch.autograd.grad(
                             loss_u, perturb_img, retain_graph=False, create_graph=False
                         )
@@ -322,13 +375,13 @@ class PUE:
                 else:
                     # 普通 PGD（无RWP）
                     perturb_img = (x + delta_tbl).clamp(0.0, 1.0).detach().requires_grad_(True)
-                    xn = perturb_img.clone()
-                    self._norm_inplace(xn, mean, std)
+                    xn = self._prepare_input(perturb_img, mean, std, noop_norm)
 
-                    out = s_model(xn)
-                    logits = out[0] if isinstance(out, (tuple, list)) else out
+                    with torch.amp.autocast(device_type=device.type, enabled=amp_on):
+                        out = s_model(xn)
+                        logits = out[0] if isinstance(out, (tuple, list)) else out
+                        loss = seg_loss_fn(logits, y.unsqueeze(1))
 
-                    loss = seg_loss_fn(logits, y.unsqueeze(1))
                     last_loss = loss.detach()
 
                     (g,) = torch.autograd.grad(

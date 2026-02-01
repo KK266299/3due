@@ -2,14 +2,14 @@ python main.py \
     method=poison_files \
     model.pretrained=false \
     dataset=flare21 \
-    task.run_name=victim_noise_slice_freq_4_255_hard \
+    task.run_name=victim_noise_slice_4_255 \
     model=unet \
     model.name=unet \
     task=flare21_seg \
     training.epochs=100 \
     training.optimizer=adam \
     training.optimizers.adam.lr=5e-4 \
-    training.gpu_ids=[0] \
+    training.gpu_ids=[3] \
     training.batch_size=8 \
     training.eval_batch_size=8 \
     training.data.poison.perturb_type=samplewise \
@@ -17,4 +17,4 @@ python main.py \
     training.data.poison.key.from=field \
     training.data.poison.key.field=case_id \
     training.data.poison.source.type=manifest \
-    training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/noise_slice_freq_4_255_hard/20260117_163327/noise/epoch_0099/manifest.json
+    training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/noise_slice_4_255/20260225_184519/noise/epoch_0099/manifest.json
