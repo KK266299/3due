@@ -22,6 +22,8 @@ BASE_CMD="python ue_generate.py \
     ue.surrogates.s_seg.in_channels=1 \
     ue.surrogates.s_seg.num_classes=5"
 
+mkdir -p logs
+
 # ==================== GPU 0 ====================
 # 实验 1: baseline (无额外 loss)
 nohup $BASE_CMD \
@@ -52,115 +54,121 @@ nohup $BASE_CMD \
     > logs/learnable_zdiv02_logits0.log 2>&1 &
 
 # ==================== GPU 1 ====================
-# 实验 4: logits_div=0.5
+# 实验 4: logits_div=0.01
 nohup $BASE_CMD \
     training.gpu_ids=[1] \
-    task.run_name=learnable_zdiv0_logits05 \
+    task.run_name=learnable_zdiv0_logits001 \
     ue.algorithm.params.z_diversity_weight=0.0 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.5 \
-    > logs/learnable_zdiv0_logits05.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.01 \
+    > logs/learnable_zdiv0_logits001.log 2>&1 &
 
 sleep 5
 
-# 实验 5: logits_div=1.0
+# 实验 5: logits_div=0.05
 nohup $BASE_CMD \
     training.gpu_ids=[1] \
-    task.run_name=learnable_zdiv0_logits10 \
+    task.run_name=learnable_zdiv0_logits005 \
     ue.algorithm.params.z_diversity_weight=0.0 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=1.0 \
-    > logs/learnable_zdiv0_logits10.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.05 \
+    > logs/learnable_zdiv0_logits005.log 2>&1 &
 
 sleep 5
 
-# 实验 6: logits_div=2.0
+# 实验 6: logits_div=0.1
 nohup $BASE_CMD \
     training.gpu_ids=[1] \
-    task.run_name=learnable_zdiv0_logits20 \
+    task.run_name=learnable_zdiv0_logits01 \
     ue.algorithm.params.z_diversity_weight=0.0 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=2.0 \
-    > logs/learnable_zdiv0_logits20.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.1 \
+    > logs/learnable_zdiv0_logits01.log 2>&1 &
 
 # ==================== GPU 2 ====================
-# 实验 7: z_diversity=0.1 + logits_div=0.5
+# 实验 7: z_diversity=0.1 + logits_div=0.01
 nohup $BASE_CMD \
     training.gpu_ids=[2] \
-    task.run_name=learnable_zdiv01_logits05 \
+    task.run_name=learnable_zdiv01_logits001 \
     ue.algorithm.params.z_diversity_weight=0.1 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.5 \
-    > logs/learnable_zdiv01_logits05.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.01 \
+    > logs/learnable_zdiv01_logits001.log 2>&1 &
 
 sleep 5
 
-# 实验 8: z_diversity=0.1 + logits_div=1.0
+# 实验 8: z_diversity=0.1 + logits_div=0.05
 nohup $BASE_CMD \
     training.gpu_ids=[2] \
-    task.run_name=learnable_zdiv01_logits10 \
+    task.run_name=learnable_zdiv01_logits005 \
     ue.algorithm.params.z_diversity_weight=0.1 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=1.0 \
-    > logs/learnable_zdiv01_logits10.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.05 \
+    > logs/learnable_zdiv01_logits005.log 2>&1 &
 
 sleep 5
 
-# 实验 9: z_diversity=0.2 + logits_div=0.5
+# 实验 9: z_diversity=0.05 + logits_div=0.05
 nohup $BASE_CMD \
     training.gpu_ids=[2] \
-    task.run_name=learnable_zdiv02_logits05 \
-    ue.algorithm.params.z_diversity_weight=0.2 \
+    task.run_name=learnable_zdiv005_logits005 \
+    ue.algorithm.params.z_diversity_weight=0.05 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.5 \
-    > logs/learnable_zdiv02_logits05.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.05 \
+    > logs/learnable_zdiv005_logits005.log 2>&1 &
 
 # ==================== GPU 3 ====================
-# 实验 10: z_diversity=0.2 + logits_div=1.0
+# 实验 10: z_diversity=0.05 + logits_div=0.01
 nohup $BASE_CMD \
     training.gpu_ids=[3] \
-    task.run_name=learnable_zdiv02_logits10 \
+    task.run_name=learnable_zdiv005_logits001 \
+    ue.algorithm.params.z_diversity_weight=0.05 \
+    ue.algorithm.params.logits_div_enabled=true \
+    ue.algorithm.params.logits_div_mode=fft_l1 \
+    ue.algorithm.params.logits_div_weight=0.01 \
+    > logs/learnable_zdiv005_logits001.log 2>&1 &
+
+sleep 5
+
+# 实验 11: z_diversity=0.2 + logits_div=0.01
+nohup $BASE_CMD \
+    training.gpu_ids=[3] \
+    task.run_name=learnable_zdiv02_logits001 \
     ue.algorithm.params.z_diversity_weight=0.2 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=1.0 \
-    > logs/learnable_zdiv02_logits10.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.01 \
+    > logs/learnable_zdiv02_logits001.log 2>&1 &
 
 sleep 5
 
-# 实验 11: z_diversity=0.05 + logits_div=0.5
+# 实验 12: z_diversity=0.2 + logits_div=0.05
 nohup $BASE_CMD \
     training.gpu_ids=[3] \
-    task.run_name=learnable_zdiv005_logits05 \
-    ue.algorithm.params.z_diversity_weight=0.05 \
+    task.run_name=learnable_zdiv02_logits005 \
+    ue.algorithm.params.z_diversity_weight=0.2 \
     ue.algorithm.params.logits_div_enabled=true \
     ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=0.5 \
-    > logs/learnable_zdiv005_logits05.log 2>&1 &
-
-sleep 5
-
-# 实验 12: z_diversity=0.05 + logits_div=1.0
-nohup $BASE_CMD \
-    training.gpu_ids=[3] \
-    task.run_name=learnable_zdiv005_logits10 \
-    ue.algorithm.params.z_diversity_weight=0.05 \
-    ue.algorithm.params.logits_div_enabled=true \
-    ue.algorithm.params.logits_div_mode=fft_l1 \
-    ue.algorithm.params.logits_div_weight=1.0 \
-    > logs/learnable_zdiv005_logits10.log 2>&1 &
+    ue.algorithm.params.logits_div_weight=0.05 \
+    > logs/learnable_zdiv02_logits005.log 2>&1 &
 
 echo "已启动 12 个实验任务"
-echo "GPU 0: baseline, zdiv=0.1, zdiv=0.2"
-echo "GPU 1: logits=0.5, logits=1.0, logits=2.0"
-echo "GPU 2: zdiv=0.1+logits=0.5, zdiv=0.1+logits=1.0, zdiv=0.2+logits=0.5"
-echo "GPU 3: zdiv=0.2+logits=1.0, zdiv=0.05+logits=0.5, zdiv=0.05+logits=1.0"
+echo ""
+echo "参数范围:"
+echo "  z_diversity_weight: 0, 0.05, 0.1, 0.2"
+echo "  logits_div_weight:  0, 0.01, 0.05, 0.1"
+echo ""
+echo "GPU 分配:"
+echo "  GPU 0: baseline, zdiv=0.1, zdiv=0.2"
+echo "  GPU 1: logits=0.01, logits=0.05, logits=0.1"
+echo "  GPU 2: zdiv=0.1+logits=0.01, zdiv=0.1+logits=0.05, zdiv=0.05+logits=0.05"
+echo "  GPU 3: zdiv=0.05+logits=0.01, zdiv=0.2+logits=0.01, zdiv=0.2+logits=0.05"
 echo ""
 echo "查看日志: tail -f logs/learnable_*.log"
 echo "查看进程: ps aux | grep ue_generate"
