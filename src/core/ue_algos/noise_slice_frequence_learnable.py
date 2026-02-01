@@ -283,6 +283,9 @@ class NoiseSliceFrequenceLearnable:
         self._epoch_cutoff_sum_z: float = 0.0
         self._epoch_cutoff_sum_xy: float = 0.0
         self._epoch_cutoff_count: int = 0
+        # Store initial cutoff values for comparison
+        self._init_z_cutoff: float = 0.0
+        self._init_xy_cutoff: float = 0.0
         self.logger = get_logger()
 
     @staticmethod
@@ -368,9 +371,11 @@ class NoiseSliceFrequenceLearnable:
         self._initialized = True
 
         z_val, xy_val = self._global_cutoff()
+        self._init_z_cutoff = z_val.item()
+        self._init_xy_cutoff = xy_val.item()
         self.logger.info(
             f"[FreqLearnable] Initialized: in_ch={in_channels}, eps={eps:.6f}, "
-            f"z_cutoff_init={z_val.item():.4f}, xy_cutoff_init={xy_val.item():.4f}"
+            f"z_cutoff_init={self._init_z_cutoff:.4f}, xy_cutoff_init={self._init_xy_cutoff:.4f}"
         )
 
     # ────────────── epoch boundary: log cutoffs ────────────── #
@@ -380,11 +385,30 @@ class NoiseSliceFrequenceLearnable:
             return
         with torch.no_grad():
             z_val, xy_val = self._global_cutoff()
+
+        z_curr = z_val.item()
+        xy_curr = xy_val.item()
+
+        # Compute changes from initial values
+        z_delta = z_curr - self._init_z_cutoff
+        xy_delta = xy_curr - self._init_xy_cutoff
+
+        # Compute epoch average if available
+        if self._epoch_cutoff_count > 0:
+            z_avg = self._epoch_cutoff_sum_z / self._epoch_cutoff_count
+            xy_avg = self._epoch_cutoff_sum_xy / self._epoch_cutoff_count
+            avg_info = f", epoch_avg: z={z_avg:.6f}, xy={xy_avg:.6f}"
+        else:
+            avg_info = ""
+
         self.logger.info(
-            f"[FreqLearnable] Epoch {epoch}: "
-            f"z_cutoff = {z_val.item():.6f}, xy_cutoff = {xy_val.item():.6f}"
+            f"[FreqLearnable] Epoch {epoch} cutoff update:\n"
+            f"  z_cutoff:  {z_curr:.6f} (init: {self._init_z_cutoff:.6f}, delta: {z_delta:+.6f})\n"
+            f"  xy_cutoff: {xy_curr:.6f} (init: {self._init_xy_cutoff:.6f}, delta: {xy_delta:+.6f})"
+            f"{avg_info}"
         )
-        # Reset running averages
+
+        # Reset running averages for next epoch
         self._epoch_cutoff_sum_z = 0.0
         self._epoch_cutoff_sum_xy = 0.0
         self._epoch_cutoff_count = 0
