@@ -286,6 +286,8 @@ class NoiseSliceFrequenceLearnable:
         # Store initial cutoff values for comparison
         self._init_z_cutoff: float = 0.0
         self._init_xy_cutoff: float = 0.0
+        # Track epoch for detecting epoch boundary
+        self._last_logged_epoch: int = -1
         self.logger = get_logger()
 
     @staticmethod
@@ -379,10 +381,11 @@ class NoiseSliceFrequenceLearnable:
         )
 
     # ────────────── epoch boundary: log cutoffs ────────────── #
-    def on_noise_epoch_end(self, trainer, epoch: int):
-        """Called by ue_trainer at end of each noise epoch to log cutoff values."""
-        if self._global_cutoff is None:
+    def _log_epoch_cutoff_stats(self, epoch: int):
+        """Log cutoff statistics for the completed epoch."""
+        if self._global_cutoff is None or self._epoch_cutoff_count == 0:
             return
+
         with torch.no_grad():
             z_val, xy_val = self._global_cutoff()
 
@@ -393,25 +396,20 @@ class NoiseSliceFrequenceLearnable:
         z_delta = z_curr - self._init_z_cutoff
         xy_delta = xy_curr - self._init_xy_cutoff
 
-        # Compute epoch average if available
-        if self._epoch_cutoff_count > 0:
-            z_avg = self._epoch_cutoff_sum_z / self._epoch_cutoff_count
-            xy_avg = self._epoch_cutoff_sum_xy / self._epoch_cutoff_count
-            avg_info = f", epoch_avg: z={z_avg:.6f}, xy={xy_avg:.6f}"
-        else:
-            avg_info = ""
-
         self.logger.info(
-            f"[FreqLearnable] Epoch {epoch} cutoff update:\n"
-            f"  z_cutoff:  {z_curr:.6f} (init: {self._init_z_cutoff:.6f}, delta: {z_delta:+.6f})\n"
-            f"  xy_cutoff: {xy_curr:.6f} (init: {self._init_xy_cutoff:.6f}, delta: {xy_delta:+.6f})"
-            f"{avg_info}"
+            f"[FreqLearnable] Epoch {epoch} cutoff update: "
+            f"z_cutoff={z_curr:.6f} (init={self._init_z_cutoff:.4f}, Δ={z_delta:+.6f}), "
+            f"xy_cutoff={xy_curr:.6f} (init={self._init_xy_cutoff:.4f}, Δ={xy_delta:+.6f})"
         )
 
         # Reset running averages for next epoch
         self._epoch_cutoff_sum_z = 0.0
         self._epoch_cutoff_sum_xy = 0.0
         self._epoch_cutoff_count = 0
+
+    def on_noise_epoch_end(self, trainer, epoch: int):
+        """Called by ue_trainer at end of each noise epoch to log cutoff values."""
+        self._log_epoch_cutoff_stats(epoch)
 
     # ────────────── S-step: update surrogate ────────────── #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
@@ -494,6 +492,13 @@ class NoiseSliceFrequenceLearnable:
 
         B, C_in = x.shape[:2]
         self._init_components(trainer, C_in, len(x.shape) - 2)
+
+        # Detect epoch boundary and log previous epoch's cutoff stats
+        current_epoch = getattr(trainer, "current_epoch", None) or getattr(trainer, "epoch", 0)
+        if current_epoch > self._last_logged_epoch and self._last_logged_epoch >= 0:
+            self._log_epoch_cutoff_stats(self._last_logged_epoch)
+        if current_epoch != self._last_logged_epoch:
+            self._last_logged_epoch = current_epoch
 
         params = require_config(require_config(cfg, "ue.algorithm"), "params")
         eps = float(get_config(params, "epsilon", 8 / 255.0))
