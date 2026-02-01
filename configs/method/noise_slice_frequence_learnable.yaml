@@ -65,6 +65,9 @@ ue:
       dilate_kernel_size: 3
       gaussian_sigma: 2.0
 
+      # === Z-axis Diversity Loss ===
+      z_diversity_weight: 0.0   # 设为 0 禁用，>0 启用层间多样性损失
+
   # Noise UNet configuration
   noise_unet:
     channels: [16, 32, 64, 128]
