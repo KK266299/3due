@@ -283,6 +283,10 @@ class NoiseSliceFrequenceLearnable:
         self._epoch_cutoff_sum_z: float = 0.0
         self._epoch_cutoff_sum_xy: float = 0.0
         self._epoch_cutoff_count: int = 0
+        self._last_logged_epoch: int = -1
+        self._z_cutoff_init: float = 0.0
+        self._xy_cutoff_init: float = 0.0
+        self._z_diversity_weight: float = 0.0
         self.logger = get_logger()
 
     @staticmethod
@@ -365,29 +369,45 @@ class NoiseSliceFrequenceLearnable:
             gaussian_sigma=float(get_config(params, "gaussian_sigma", 2.0)),
         )
 
+        # Z-diversity regularization weight
+        self._z_diversity_weight = float(get_config(params, "z_diversity_weight", 0.0))
+
         self._initialized = True
 
         z_val, xy_val = self._global_cutoff()
+        self._z_cutoff_init = z_val.item()
+        self._xy_cutoff_init = xy_val.item()
         self.logger.info(
             f"[FreqLearnable] Initialized: in_ch={in_channels}, eps={eps:.6f}, "
-            f"z_cutoff_init={z_val.item():.4f}, xy_cutoff_init={xy_val.item():.4f}"
+            f"z_cutoff_init={self._z_cutoff_init:.4f}, xy_cutoff_init={self._xy_cutoff_init:.4f}"
         )
 
     # ────────────── epoch boundary: log cutoffs ────────────── #
-    def on_noise_epoch_end(self, trainer, epoch: int):
-        """Called by ue_trainer at end of each noise epoch to log cutoff values."""
-        if self._global_cutoff is None:
+    def _log_epoch_cutoff_stats(self, epoch: int):
+        """Log cutoff values at epoch boundary (detected inside noise_step_batch)."""
+        if self._epoch_cutoff_count == 0:
             return
-        with torch.no_grad():
-            z_val, xy_val = self._global_cutoff()
+        avg_z = self._epoch_cutoff_sum_z / self._epoch_cutoff_count
+        avg_xy = self._epoch_cutoff_sum_xy / self._epoch_cutoff_count
+        dz = avg_z - self._z_cutoff_init
+        dxy = avg_xy - self._xy_cutoff_init
         self.logger.info(
             f"[FreqLearnable] Epoch {epoch}: "
-            f"z_cutoff = {z_val.item():.6f}, xy_cutoff = {xy_val.item():.6f}"
+            f"z_cutoff = {avg_z:.6f} (Δ{dz:+.6f}), "
+            f"xy_cutoff = {avg_xy:.6f} (Δ{dxy:+.6f})"
         )
-        # Reset running averages
         self._epoch_cutoff_sum_z = 0.0
         self._epoch_cutoff_sum_xy = 0.0
         self._epoch_cutoff_count = 0
+
+    @staticmethod
+    def _compute_z_diversity(delta: torch.Tensor) -> torch.Tensor:
+        """Mean L2 distance between adjacent slices in 2D FFT magnitude space."""
+        # delta: [B, C, D, H, W]
+        fft_2d = torch.fft.fft2(delta, dim=(-2, -1))
+        mag = fft_2d.abs()  # [B, C, D, H, W]
+        diff = mag[:, :, 1:, :, :] - mag[:, :, :-1, :, :]
+        return diff.pow(2).mean()
 
     # ────────────── S-step: update surrogate ────────────── #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
@@ -471,6 +491,13 @@ class NoiseSliceFrequenceLearnable:
         B, C_in = x.shape[:2]
         self._init_components(trainer, C_in, len(x.shape) - 2)
 
+        # Detect epoch boundary and log previous epoch's cutoff stats
+        current_epoch = getattr(trainer, "current_epoch", -1)
+        if current_epoch >= 0 and current_epoch != self._last_logged_epoch:
+            if self._last_logged_epoch >= 0:
+                self._log_epoch_cutoff_stats(self._last_logged_epoch)
+            self._last_logged_epoch = current_epoch
+
         params = require_config(require_config(cfg, "ue.algorithm"), "params")
         eps = float(get_config(params, "epsilon", 8 / 255.0))
         num_steps = int(get_config(params, "noise_step", 1))
@@ -516,7 +543,12 @@ class NoiseSliceFrequenceLearnable:
 
             out = s_model(xn)
             logits = out[0] if isinstance(out, (tuple, list)) else out
-            loss = seg_loss_fn(logits, y.unsqueeze(1))
+            seg_loss = seg_loss_fn(logits, y.unsqueeze(1))
+
+            loss = seg_loss
+            if self._z_diversity_weight > 0:
+                z_div = self._compute_z_diversity(delta)
+                loss = loss + self._z_diversity_weight * z_div
             last_loss = loss.detach()
 
             # Update both networks from the same loss

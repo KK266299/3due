@@ -57,6 +57,7 @@ ue:
 
       # === Learnable Cutoff ===
       cutoff_lr_scale: 1.0      # Cutoff lr = noise_unet.lr * this
+      z_diversity_weight: 0.0   # Weight for z-axis diversity regularization (0 = disabled)
 
       # === ROI Mask Settings ===
       roi_aware: true
