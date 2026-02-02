@@ -259,6 +259,66 @@ class SoftROIMask(nn.Module):
         return mask.expand(-1, num_channels, -1, -1, -1)
 
 
+class LogitsDivergenceLoss(nn.Module):
+    """
+    Compute logits divergence loss between clean and noisy predictions.
+
+    Supports multiple divergence computation modes:
+      - 'l1': Direct L1 norm of logits difference
+      - 'l2': Direct L2 norm of logits difference
+      - 'fft_l1': FFT of logits difference, then L1 norm
+      - 'fft_l2': FFT of logits difference, then L2 norm
+      - 'kl_div': KL divergence between softmax distributions
+
+    The loss is negated to maximize divergence (since we minimize loss).
+    """
+
+    def __init__(
+        self,
+        mode: str = 'fft_l1',
+        weight: float = 1.0,
+        temperature: float = 1.0,
+        fft_dims: Tuple[int, ...] = (-3, -2, -1),
+    ):
+        super().__init__()
+        self.mode = mode.lower()
+        self.weight = weight
+        self.temperature = temperature
+        self.fft_dims = fft_dims
+
+        valid_modes = {'l1', 'l2', 'fft_l1', 'fft_l2', 'kl_div'}
+        if self.mode not in valid_modes:
+            raise ValueError(f"Invalid mode '{mode}'. Must be one of {valid_modes}")
+
+    def forward(
+        self,
+        logits_clean: torch.Tensor,
+        logits_noisy: torch.Tensor,
+    ) -> torch.Tensor:
+        diff = logits_noisy - logits_clean
+
+        if self.mode == 'l1':
+            divergence = diff.abs().mean()
+        elif self.mode == 'l2':
+            divergence = (diff ** 2).mean().sqrt()
+        elif self.mode == 'fft_l1':
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            divergence = diff_fft.abs().mean()
+        elif self.mode == 'fft_l2':
+            diff_fft = torch.fft.fftn(diff, dim=self.fft_dims)
+            divergence = (diff_fft.abs() ** 2).mean().sqrt()
+        elif self.mode == 'kl_div':
+            logits_clean_scaled = logits_clean / self.temperature
+            logits_noisy_scaled = logits_noisy / self.temperature
+            prob_clean = F.softmax(logits_clean_scaled, dim=1)
+            log_prob_noisy = F.log_softmax(logits_noisy_scaled, dim=1)
+            divergence = F.kl_div(log_prob_noisy, prob_clean, reduction='batchmean', log_target=False)
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
+        return -self.weight * divergence
+
+
 # ────────────────────────── Main Plugin ────────────────────────── #
 
 @register_plugin("noise_slice_frequence_learnable")
@@ -280,15 +340,13 @@ class NoiseSliceFrequenceLearnable:
         self._freq_constraint: FrequencyDomainConstraint | None = None
         self._roi_mask_builder: SoftROIMask | None = None
         self._initialized: bool = False
-        self._learnable: bool = True
         self._epoch_cutoff_sum_z: float = 0.0
         self._epoch_cutoff_sum_xy: float = 0.0
         self._epoch_cutoff_count: int = 0
-        self._last_logged_epoch: int = -1
-        self._z_cutoff_init: float = 0.0
-        self._xy_cutoff_init: float = 0.0
-        self._z_diversity_weight: float = 0.0
         self.logger = get_logger()
+        # ---- extra features (no CUDA ops when disabled) ----
+        self._z_diversity_weight: float = 0.0
+        self._logits_div_loss: LogitsDivergenceLoss | None = None
 
     @staticmethod
     def _norm_inplace(x: torch.Tensor, mean, std):
@@ -356,9 +414,7 @@ class NoiseSliceFrequenceLearnable:
             self._noise_unet.parameters(), lr=lr, weight_decay=wd, betas=betas,
         )
 
-        cutoff_lr_scale = float(get_config(params, "cutoff_lr_scale", 1.0))
-        self._learnable = cutoff_lr_scale > 0
-        cutoff_lr = lr * cutoff_lr_scale
+        cutoff_lr = lr * float(get_config(params, "cutoff_lr_scale", 1.0))
         self._opt_cutoff = torch.optim.Adam(
             self._global_cutoff.parameters(), lr=cutoff_lr, weight_decay=0.0, betas=betas,
         )
@@ -372,45 +428,40 @@ class NoiseSliceFrequenceLearnable:
             gaussian_sigma=float(get_config(params, "gaussian_sigma", 2.0)),
         )
 
-        # Z-diversity regularization weight
+        # Extra loss features (read config but NO CUDA allocation here)
         self._z_diversity_weight = float(get_config(params, "z_diversity_weight", 0.0))
+
+        logits_div_weight = float(get_config(params, "logits_div_weight", 0.0))
+        if logits_div_weight > 0:
+            self._logits_div_loss = LogitsDivergenceLoss(
+                mode=str(get_config(params, "logits_div_mode", "fft_l1")),
+                weight=logits_div_weight,
+                temperature=float(get_config(params, "logits_div_temperature", 1.0)),
+            )
 
         self._initialized = True
 
         z_val, xy_val = self._global_cutoff()
-        self._z_cutoff_init = z_val.item()
-        self._xy_cutoff_init = xy_val.item()
         self.logger.info(
             f"[FreqLearnable] Initialized: in_ch={in_channels}, eps={eps:.6f}, "
-            f"z_cutoff_init={self._z_cutoff_init:.4f}, xy_cutoff_init={self._xy_cutoff_init:.4f}"
+            f"z_cutoff_init={z_val.item():.4f}, xy_cutoff_init={xy_val.item():.4f}"
         )
 
     # ────────────── epoch boundary: log cutoffs ────────────── #
-    def _log_epoch_cutoff_stats(self, epoch: int):
-        """Log cutoff values at epoch boundary (detected inside noise_step_batch)."""
-        if self._epoch_cutoff_count == 0:
+    def on_noise_epoch_end(self, trainer, epoch: int):
+        """Called by ue_trainer at end of each noise epoch to log cutoff values."""
+        if self._global_cutoff is None:
             return
-        avg_z = self._epoch_cutoff_sum_z / self._epoch_cutoff_count
-        avg_xy = self._epoch_cutoff_sum_xy / self._epoch_cutoff_count
-        dz = avg_z - self._z_cutoff_init
-        dxy = avg_xy - self._xy_cutoff_init
+        with torch.no_grad():
+            z_val, xy_val = self._global_cutoff()
         self.logger.info(
             f"[FreqLearnable] Epoch {epoch}: "
-            f"z_cutoff = {avg_z:.6f} (Δ{dz:+.6f}), "
-            f"xy_cutoff = {avg_xy:.6f} (Δ{dxy:+.6f})"
+            f"z_cutoff = {z_val.item():.6f}, xy_cutoff = {xy_val.item():.6f}"
         )
+        # Reset running averages
         self._epoch_cutoff_sum_z = 0.0
         self._epoch_cutoff_sum_xy = 0.0
         self._epoch_cutoff_count = 0
-
-    @staticmethod
-    def _compute_z_diversity(delta: torch.Tensor) -> torch.Tensor:
-        """Mean L2 distance between adjacent slices in 2D FFT magnitude space."""
-        # delta: [B, C, D, H, W]
-        fft_2d = torch.fft.fft2(delta, dim=(-2, -1))
-        mag = fft_2d.abs()  # [B, C, D, H, W]
-        diff = mag[:, :, 1:, :, :] - mag[:, :, :-1, :, :]
-        return diff.pow(2).mean()
 
     # ────────────── S-step: update surrogate ────────────── #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
@@ -494,13 +545,6 @@ class NoiseSliceFrequenceLearnable:
         B, C_in = x.shape[:2]
         self._init_components(trainer, C_in, len(x.shape) - 2)
 
-        # Detect epoch boundary and log previous epoch's cutoff stats
-        current_epoch = getattr(trainer, "current_epoch", -1)
-        if current_epoch >= 0 and current_epoch != self._last_logged_epoch:
-            if self._last_logged_epoch >= 0:
-                self._log_epoch_cutoff_stats(self._last_logged_epoch)
-            self._last_logged_epoch = current_epoch
-
         params = require_config(require_config(cfg, "ue.algorithm"), "params")
         eps = float(get_config(params, "epsilon", 8 / 255.0))
         num_steps = int(get_config(params, "noise_step", 1))
@@ -521,20 +565,28 @@ class NoiseSliceFrequenceLearnable:
         # ROI mask
         roi_mask = self._roi_mask_builder(y, C_in).to(device) if self._roi_aware else None
 
+        # ---- Clean logits (ONLY when logits_div is enabled) ----
+        logits_clean = None
+        if self._logits_div_loss is not None:
+            with torch.no_grad():
+                x_clean_norm = x.clone()
+                self._norm_inplace(x_clean_norm, mean, std)
+                out_clean = s_model(x_clean_norm)
+                logits_clean = out_clean[0] if isinstance(out_clean, (tuple, list)) else out_clean
+                logits_clean = logits_clean.detach()
+
         self._noise_unet.train()
         last_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
+            # Get global cutoffs (differentiable)
+            z_c, xy_c = self._global_cutoff()  # scalar tensors with grad
+
             # NoiseUNet forward
             delta_raw = self._noise_unet(x)
 
-            if self._learnable:
-                # Learnable path: sigmoid masks (differentiable w.r.t. cutoff)
-                z_c, xy_c = self._global_cutoff()
-                delta_filtered = self._freq_constraint(delta_raw, z_c, xy_c)
-            else:
-                # Static path: Gaussian falloff + hard threshold (same as h_l_pass)
-                delta_filtered = self._freq_constraint(delta_raw)
+            # Apply frequency constraint with learnable cutoffs
+            delta_filtered = self._freq_constraint(delta_raw, z_c, xy_c)
 
             if roi_mask is not None:
                 delta = delta_filtered * roi_mask
@@ -548,22 +600,24 @@ class NoiseSliceFrequenceLearnable:
 
             out = s_model(xn)
             logits = out[0] if isinstance(out, (tuple, list)) else out
-            seg_loss = seg_loss_fn(logits, y.unsqueeze(1))
+            loss = seg_loss_fn(logits, y.unsqueeze(1))
 
-            loss = seg_loss
+            # ---- Optional extra losses (ZERO CUDA ops when weights=0) ----
             if self._z_diversity_weight > 0:
                 z_div = self._compute_z_diversity(delta)
-                loss = loss + self._z_diversity_weight * z_div
+                loss = loss - self._z_diversity_weight * z_div
+
+            if self._logits_div_loss is not None and logits_clean is not None:
+                loss = loss + self._logits_div_loss(logits_clean, logits)
+
             last_loss = loss.detach()
 
-            # Update networks
+            # Update both networks from the same loss
             self._opt_unet.zero_grad(set_to_none=True)
-            if self._learnable:
-                self._opt_cutoff.zero_grad(set_to_none=True)
+            self._opt_cutoff.zero_grad(set_to_none=True)
             loss.backward()
             self._opt_unet.step()
-            if self._learnable:
-                self._opt_cutoff.step()
+            self._opt_cutoff.step()
 
         # Read current cutoff values (after update)
         with torch.no_grad():
@@ -580,10 +634,7 @@ class NoiseSliceFrequenceLearnable:
         self._noise_unet.eval()
         with torch.no_grad():
             final_noise = self._noise_unet(x)
-            if self._learnable:
-                final_filtered = self._freq_constraint(final_noise, z_val, xy_val)
-            else:
-                final_filtered = self._freq_constraint(final_noise)
+            final_filtered = self._freq_constraint(final_noise, z_val, xy_val)
             if roi_mask is not None:
                 final_delta = final_filtered * roi_mask
             else:
@@ -605,6 +656,14 @@ class NoiseSliceFrequenceLearnable:
             "z_cutoff": z_val_f,
             "xy_cutoff": xy_val_f,
         }
+
+    @staticmethod
+    def _compute_z_diversity(delta: torch.Tensor) -> torch.Tensor:
+        """Mean L2 distance between adjacent slices in 2D FFT magnitude space."""
+        fft_2d = torch.fft.fft2(delta, dim=(-2, -1))
+        mag = fft_2d.abs()
+        diff = mag[:, :, 1:, :, :] - mag[:, :, :-1, :, :]
+        return torch.sqrt((diff ** 2).sum(dim=(-2, -1)) + 1e-10).mean()
 
     def _compute_freq_stats(self, delta: torch.Tensor) -> Tuple[float, float]:
         B, C, D, H, W = delta.shape
