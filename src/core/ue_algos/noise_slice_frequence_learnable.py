@@ -280,6 +280,7 @@ class NoiseSliceFrequenceLearnable:
         self._freq_constraint: FrequencyDomainConstraint | None = None
         self._roi_mask_builder: SoftROIMask | None = None
         self._initialized: bool = False
+        self._learnable: bool = True
         self._epoch_cutoff_sum_z: float = 0.0
         self._epoch_cutoff_sum_xy: float = 0.0
         self._epoch_cutoff_count: int = 0
@@ -355,7 +356,9 @@ class NoiseSliceFrequenceLearnable:
             self._noise_unet.parameters(), lr=lr, weight_decay=wd, betas=betas,
         )
 
-        cutoff_lr = lr * float(get_config(params, "cutoff_lr_scale", 1.0))
+        cutoff_lr_scale = float(get_config(params, "cutoff_lr_scale", 1.0))
+        self._learnable = cutoff_lr_scale > 0
+        cutoff_lr = lr * cutoff_lr_scale
         self._opt_cutoff = torch.optim.Adam(
             self._global_cutoff.parameters(), lr=cutoff_lr, weight_decay=0.0, betas=betas,
         )
@@ -522,14 +525,16 @@ class NoiseSliceFrequenceLearnable:
         last_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
-            # Get global cutoffs (differentiable)
-            z_c, xy_c = self._global_cutoff()  # scalar tensors with grad
-
             # NoiseUNet forward
             delta_raw = self._noise_unet(x)
 
-            # Apply frequency constraint with learnable cutoffs
-            delta_filtered = self._freq_constraint(delta_raw, z_c, xy_c)
+            if self._learnable:
+                # Learnable path: sigmoid masks (differentiable w.r.t. cutoff)
+                z_c, xy_c = self._global_cutoff()
+                delta_filtered = self._freq_constraint(delta_raw, z_c, xy_c)
+            else:
+                # Static path: Gaussian falloff + hard threshold (same as h_l_pass)
+                delta_filtered = self._freq_constraint(delta_raw)
 
             if roi_mask is not None:
                 delta = delta_filtered * roi_mask
@@ -551,12 +556,14 @@ class NoiseSliceFrequenceLearnable:
                 loss = loss + self._z_diversity_weight * z_div
             last_loss = loss.detach()
 
-            # Update both networks from the same loss
+            # Update networks
             self._opt_unet.zero_grad(set_to_none=True)
-            self._opt_cutoff.zero_grad(set_to_none=True)
+            if self._learnable:
+                self._opt_cutoff.zero_grad(set_to_none=True)
             loss.backward()
             self._opt_unet.step()
-            self._opt_cutoff.step()
+            if self._learnable:
+                self._opt_cutoff.step()
 
         # Read current cutoff values (after update)
         with torch.no_grad():
@@ -573,7 +580,10 @@ class NoiseSliceFrequenceLearnable:
         self._noise_unet.eval()
         with torch.no_grad():
             final_noise = self._noise_unet(x)
-            final_filtered = self._freq_constraint(final_noise, z_val, xy_val)
+            if self._learnable:
+                final_filtered = self._freq_constraint(final_noise, z_val, xy_val)
+            else:
+                final_filtered = self._freq_constraint(final_noise)
             if roi_mask is not None:
                 final_delta = final_filtered * roi_mask
             else:
