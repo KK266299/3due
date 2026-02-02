@@ -5,43 +5,74 @@
 
 mkdir -p logs
 
-# 基础参数
-BASE_CMD="python main.py \
-    dataset=flare21 \
-    task=flare21_seg \
-    model=unet \
-    training.epochs=200 \
-    training.batch_size=2 \
-    training.data.poison.enabled=true \
-    training.data.poison.perturb_type=samplewise \
-    training.data.poison.apply_stage=before_normalize \
-    training.data.poison.key.type=samplewise \
-    training.data.poison.key.from=field \
-    training.data.poison.key.field=case_id \
-    training.data.poison.source.type=shards \
-    training.data.transforms.forbid_geom_aug=true \
-    training.data.transforms.normalize=false"
-
 # ==================== GPU 0 (串行) ====================
 (
     echo "[GPU 0] 开始实验 1/3: victim_learnable_zdiv0_logits0"
-    $BASE_CMD \
-        training.gpu_ids=[0] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv0_logits0 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[0] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv0_logits0/20260201_140225/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv0_logits0.log
 
     echo "[GPU 0] 开始实验 2/3: victim_learnable_zdiv01_logits0"
-    $BASE_CMD \
-        training.gpu_ids=[0] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv01_logits0 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[0] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv01_logits0/20260201_173257/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv01_logits0.log
 
     echo "[GPU 0] 开始实验 3/3: victim_learnable_zdiv02_logits0"
-    $BASE_CMD \
-        training.gpu_ids=[0] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv02_logits0 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[0] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv02_logits0/20260201_210147/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv02_logits0.log
 
@@ -51,23 +82,71 @@ BASE_CMD="python main.py \
 # ==================== GPU 1 (串行) ====================
 (
     echo "[GPU 1] 开始实验 1/3: victim_learnable_zdiv0_logits001"
-    $BASE_CMD \
-        training.gpu_ids=[1] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv0_logits001 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[1] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv0_logits001/20260201_140225/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv0_logits001.log
 
     echo "[GPU 1] 开始实验 2/3: victim_learnable_zdiv0_logits005"
-    $BASE_CMD \
-        training.gpu_ids=[1] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv0_logits005 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[1] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv0_logits005/20260201_185443/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv0_logits005.log
 
     echo "[GPU 1] 开始实验 3/3: victim_learnable_zdiv0_logits01"
-    $BASE_CMD \
-        training.gpu_ids=[1] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv0_logits01 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[1] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv0_logits01/20260201_235036/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv0_logits01.log
 
@@ -77,23 +156,71 @@ BASE_CMD="python main.py \
 # ==================== GPU 2 (串行) ====================
 (
     echo "[GPU 2] 开始实验 1/3: victim_learnable_zdiv01_logits001"
-    $BASE_CMD \
-        training.gpu_ids=[2] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv01_logits001 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[2] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv01_logits001/20260201_140225/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv01_logits001.log
 
     echo "[GPU 2] 开始实验 2/3: victim_learnable_zdiv01_logits005"
-    $BASE_CMD \
-        training.gpu_ids=[2] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv01_logits005 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[2] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv01_logits005/20260201_185010/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv01_logits005.log
 
     echo "[GPU 2] 开始实验 3/3: victim_learnable_zdiv005_logits005"
-    $BASE_CMD \
-        training.gpu_ids=[2] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv005_logits005 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[2] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv005_logits005/20260201_234112/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv005_logits005.log
 
@@ -103,23 +230,71 @@ BASE_CMD="python main.py \
 # ==================== GPU 3 (串行) ====================
 (
     echo "[GPU 3] 开始实验 1/3: victim_learnable_zdiv005_logits001"
-    $BASE_CMD \
-        training.gpu_ids=[3] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv005_logits001 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[3] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv005_logits001/20260201_140225/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv005_logits001.log
 
     echo "[GPU 3] 开始实验 2/3: victim_learnable_zdiv02_logits001"
-    $BASE_CMD \
-        training.gpu_ids=[3] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv02_logits001 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[3] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv02_logits001/20260201_185137/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv02_logits001.log
 
     echo "[GPU 3] 开始实验 3/3: victim_learnable_zdiv02_logits005"
-    $BASE_CMD \
-        training.gpu_ids=[3] \
+    python main.py \
+        method=poison_files \
+        model.pretrained=false \
+        dataset=flare21 \
         task.run_name=victim_learnable_zdiv02_logits005 \
+        model=unet \
+        model.name=unet \
+        task=flare21_seg \
+        training.epochs=100 \
+        training.optimizer=adam \
+        training.optimizers.adam.lr=5e-4 \
+        training.gpu_ids=[3] \
+        training.batch_size=8 \
+        training.eval_batch_size=8 \
+        training.data.poison.perturb_type=samplewise \
+        training.data.poison.key.type=samplewise \
+        training.data.poison.key.from=field \
+        training.data.poison.key.field=case_id \
+        training.data.poison.source.type=manifest \
         training.data.poison.source.manifest_path=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/learnable_zdiv02_logits005/20260201_234703/noise/epoch_0099/manifest.json \
         2>&1 | tee logs/victim_learnable_zdiv02_logits005.log
 
