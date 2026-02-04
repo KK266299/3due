@@ -358,6 +358,8 @@ class NoiseSliceFrequenceLearnable:
         self._init_xy_cutoff: float = 0.0
         # Track epoch for detecting epoch boundary
         self._last_logged_epoch: int = -1
+        # Frequency constraint switch
+        self._freq_constraint_enabled: bool = True
         # Z-axis diversity regularization settings
         self._z_diversity_weight: float = 0.0
         # Logits divergence loss settings
@@ -445,6 +447,9 @@ class NoiseSliceFrequenceLearnable:
             gaussian_sigma=float(get_config(params, "gaussian_sigma", 2.0)),
         )
 
+        # Frequency constraint switch (false = skip freq mask entirely)
+        self._freq_constraint_enabled = bool(get_config(params, "freq_constraint_enabled", True))
+
         # Z-axis diversity regularization (weight=0 disables it)
         self._z_diversity_weight = float(get_config(params, "z_diversity_weight", 0.0))
 
@@ -471,6 +476,7 @@ class NoiseSliceFrequenceLearnable:
         self._init_xy_cutoff = xy_val.item()
         self.logger.info(
             f"[FreqLearnable] Initialized: in_ch={in_channels}, eps={eps:.6f}, "
+            f"freq_constraint={self._freq_constraint_enabled}, "
             f"z_cutoff_init={self._init_z_cutoff:.4f}, xy_cutoff_init={self._init_xy_cutoff:.4f}, "
             f"z_diversity_weight={self._z_diversity_weight:.4f}, "
             f"logits_div_enabled={self._logits_div_enabled}, logits_div_mode={logits_div_mode}, "
@@ -633,14 +639,15 @@ class NoiseSliceFrequenceLearnable:
         last_div_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
-            # Get global cutoffs (differentiable)
-            z_c, xy_c = self._global_cutoff()  # scalar tensors with grad
-
             # NoiseUNet forward
             delta_raw = self._noise_unet(x)
 
-            # Apply frequency constraint with learnable cutoffs
-            delta_filtered = self._freq_constraint(delta_raw, z_c, xy_c)
+            # Apply frequency constraint (if enabled)
+            if self._freq_constraint_enabled:
+                z_c, xy_c = self._global_cutoff()  # scalar tensors with grad
+                delta_filtered = self._freq_constraint(delta_raw, z_c, xy_c)
+            else:
+                delta_filtered = delta_raw
 
             if roi_mask is not None:
                 delta = delta_filtered * roi_mask
@@ -676,12 +683,14 @@ class NoiseSliceFrequenceLearnable:
 
             last_loss = loss.detach()
 
-            # Update both networks from the same loss
+            # Update networks from the same loss
             self._opt_unet.zero_grad(set_to_none=True)
-            self._opt_cutoff.zero_grad(set_to_none=True)
+            if self._freq_constraint_enabled:
+                self._opt_cutoff.zero_grad(set_to_none=True)
             loss.backward()
             self._opt_unet.step()
-            self._opt_cutoff.step()
+            if self._freq_constraint_enabled:
+                self._opt_cutoff.step()
 
         # Read current cutoff values (after update)
         with torch.no_grad():
@@ -698,7 +707,10 @@ class NoiseSliceFrequenceLearnable:
         self._noise_unet.eval()
         with torch.no_grad():
             final_noise = self._noise_unet(x)
-            final_filtered = self._freq_constraint(final_noise, z_val, xy_val)
+            if self._freq_constraint_enabled:
+                final_filtered = self._freq_constraint(final_noise, z_val, xy_val)
+            else:
+                final_filtered = final_noise
             if roi_mask is not None:
                 final_delta = final_filtered * roi_mask
             else:

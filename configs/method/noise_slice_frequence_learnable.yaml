@@ -55,6 +55,9 @@ ue:
       xy_cutoff_high: 0.3       # Initial xy-plane low-pass cutoff (will be learned)
       xy_sigma: 0.1             # Soft transition sigma for xy-plane
 
+      # === Frequency Constraint Switch ===
+      freq_constraint_enabled: true  # 设为 false 禁用频域mask，仅用NoiseUNet原始输出
+
       # === Learnable Cutoff ===
       cutoff_lr_scale: 1.0      # Cutoff lr = noise_unet.lr * this
 
