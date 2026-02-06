@@ -185,6 +185,16 @@ def label_to_rgb(label_2d: np.ndarray, colors: np.ndarray) -> np.ndarray:
     return rgb
 
 
+def compute_fft_magnitude(data_2d: np.ndarray) -> np.ndarray:
+    """计算2D FFT幅度谱（log scale，中心化）"""
+    fft = np.fft.fft2(data_2d)
+    fft_shift = np.fft.fftshift(fft)
+    magnitude = np.abs(fft_shift)
+    # log scale，避免log(0)
+    magnitude_log = np.log10(magnitude + 1e-10)
+    return magnitude_log
+
+
 def visualize_logits(
     image: torch.Tensor,
     label: torch.Tensor,
@@ -198,7 +208,7 @@ def visualize_logits(
     eps: float = 8/255,
 ):
     """
-    可视化logits对比
+    可视化logits对比（包含FFT频谱）
 
     Args:
         image: [C, D, H, W] 原始图像
@@ -254,8 +264,10 @@ def visualize_logits(
     # 创建图形
     # Row 1: 原图, 噪声, 加噪图, GT
     # Row 2: Pred Clean, Pred Noisy, Pred Diff Overlay
-    # Row 3-N: 每个类别的logits对比
-    n_rows = 3 + num_classes
+    # Row 3: Logits统计
+    # Row 4: FFT总览（所有类别的FFT差异汇总）
+    # Row 5+: 每个类别2行（logits + FFT）
+    n_rows = 4 + num_classes * 2
     fig = plt.figure(figsize=(20, 4 * n_rows))
     gs = gridspec.GridSpec(n_rows, 5, figure=fig, hspace=0.3, wspace=0.2)
 
@@ -417,35 +429,116 @@ def visualize_logits(
     ax13.text(0.1, 0.9, stats_text, fontsize=9, family='monospace',
              verticalalignment='top', transform=ax13.transAxes)
 
-    # ============ Row 4+: 每个类别的Logits可视化 ============
+    # ============ Row 4: FFT 总览 ============
+    # 计算所有类别的FFT差异汇总
+    fft_diff_sum = np.zeros((H, W))
+    for c in range(num_classes):
+        logit_diff_c = logits_diff[c, slice_idx]
+        fft_diff_c = compute_fft_magnitude(logit_diff_c)
+        fft_diff_sum += np.abs(fft_diff_c)
+    fft_diff_avg = fft_diff_sum / num_classes
+
+    ax_fft1 = fig.add_subplot(gs[3, 0])
+    # 原图FFT
+    orig_fft = compute_fft_magnitude(image_np[0, slice_idx])
+    im_fft1 = ax_fft1.imshow(orig_fft, cmap='magma')
+    ax_fft1.set_title("Original Image FFT", fontsize=10)
+    ax_fft1.axis('off')
+    plt.colorbar(im_fft1, ax=ax_fft1, fraction=0.046, pad=0.04)
+
+    ax_fft2 = fig.add_subplot(gs[3, 1])
+    # 噪声FFT
+    noise_fft = compute_fft_magnitude(noise_np[0, slice_idx])
+    im_fft2 = ax_fft2.imshow(noise_fft, cmap='magma')
+    ax_fft2.set_title("Noise FFT", fontsize=10)
+    ax_fft2.axis('off')
+    plt.colorbar(im_fft2, ax=ax_fft2, fraction=0.046, pad=0.04)
+
+    ax_fft3 = fig.add_subplot(gs[3, 2])
+    # Logits差异FFT平均
+    im_fft3 = ax_fft3.imshow(fft_diff_avg, cmap='magma')
+    ax_fft3.set_title("Avg Logits Diff FFT", fontsize=10)
+    ax_fft3.axis('off')
+    plt.colorbar(im_fft3, ax=ax_fft3, fraction=0.046, pad=0.04)
+
+    ax_fft4 = fig.add_subplot(gs[3, 3])
+    # 径向功率谱对比
+    # 计算径向平均
+    center_y, center_x = H // 2, W // 2
+    y_coords, x_coords = np.ogrid[:H, :W]
+    r = np.sqrt((y_coords - center_y)**2 + (x_coords - center_x)**2).astype(int)
+    r_max = min(center_y, center_x)
+
+    # Clean logits FFT径向平均（取第一个前景类）
+    fg_cls = 1 if num_classes > 1 else 0
+    fft_clean_fg = compute_fft_magnitude(logits_clean_np[fg_cls, slice_idx])
+    fft_noisy_fg = compute_fft_magnitude(logits_noisy_np[fg_cls, slice_idx])
+
+    radial_clean = np.zeros(r_max)
+    radial_noisy = np.zeros(r_max)
+    for i in range(r_max):
+        mask = r == i
+        if mask.sum() > 0:
+            radial_clean[i] = fft_clean_fg[mask].mean()
+            radial_noisy[i] = fft_noisy_fg[mask].mean()
+
+    ax_fft4.plot(radial_clean, 'b-', label='Clean', linewidth=1.5)
+    ax_fft4.plot(radial_noisy, 'r-', label='Noisy', linewidth=1.5)
+    ax_fft4.set_xlabel('Frequency (radius)')
+    ax_fft4.set_ylabel('Log Magnitude')
+    ax_fft4.set_title(f'Radial Power Spectrum ({labels[fg_cls]})', fontsize=10)
+    ax_fft4.legend(fontsize=8)
+    ax_fft4.grid(True, alpha=0.3)
+
+    ax_fft5 = fig.add_subplot(gs[3, 4])
+    ax_fft5.axis('off')
+    fft_info = (
+        "FFT Analysis:\n"
+        "───────────────────────\n"
+        "• Low freq = center\n"
+        "• High freq = edge\n"
+        "───────────────────────\n"
+        "Logits FFT Diff:\n"
+        f"  mean: {fft_diff_avg.mean():.3f}\n"
+        f"  max:  {fft_diff_avg.max():.3f}\n"
+        "───────────────────────\n"
+        "噪声通过改变logits的\n"
+        "频谱分布来影响预测"
+    )
+    ax_fft5.text(0.1, 0.95, fft_info, fontsize=9, family='monospace',
+                verticalalignment='top', transform=ax_fft5.transAxes)
+
+    # ============ Row 5+: 每个类别的Logits和FFT可视化 ============
     for cls_id in range(num_classes):
-        row_idx = 3 + cls_id
+        row_logit = 4 + cls_id * 2      # Logits行
+        row_fft = 4 + cls_id * 2 + 1    # FFT行
         class_name = labels[cls_id] if cls_id < len(labels) else f"Class {cls_id}"
 
         logit_clean = logits_clean_np[cls_id, slice_idx]
         logit_noisy = logits_noisy_np[cls_id, slice_idx]
         logit_diff = logits_diff[cls_id, slice_idx]
 
+        # ---- Logits行 ----
         # 确定共同的colorbar范围
         vmin = min(logit_clean.min(), logit_noisy.min())
         vmax = max(logit_clean.max(), logit_noisy.max())
 
         # Clean logit
-        ax_c = fig.add_subplot(gs[row_idx, 0])
+        ax_c = fig.add_subplot(gs[row_logit, 0])
         im_c = ax_c.imshow(logit_clean, cmap='viridis', vmin=vmin, vmax=vmax)
         ax_c.set_title(f"{class_name} - Logit Clean", fontsize=9)
         ax_c.axis('off')
         plt.colorbar(im_c, ax=ax_c, fraction=0.046, pad=0.04)
 
         # Noisy logit
-        ax_n = fig.add_subplot(gs[row_idx, 1])
+        ax_n = fig.add_subplot(gs[row_logit, 1])
         im_n = ax_n.imshow(logit_noisy, cmap='viridis', vmin=vmin, vmax=vmax)
         ax_n.set_title(f"{class_name} - Logit Noisy", fontsize=9)
         ax_n.axis('off')
         plt.colorbar(im_n, ax=ax_n, fraction=0.046, pad=0.04)
 
         # Diff logit
-        ax_d = fig.add_subplot(gs[row_idx, 2])
+        ax_d = fig.add_subplot(gs[row_logit, 2])
         diff_abs_max = max(abs(logit_diff.min()), abs(logit_diff.max()))
         if diff_abs_max < 1e-6:
             diff_abs_max = 1.0
@@ -455,7 +548,7 @@ def visualize_logits(
         plt.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04)
 
         # Softmax probabilities
-        ax_p = fig.add_subplot(gs[row_idx, 3])
+        ax_p = fig.add_subplot(gs[row_logit, 3])
         prob_clean = F.softmax(torch.from_numpy(logits_clean_np[:, slice_idx]), dim=0).numpy()[cls_id]
         prob_noisy = F.softmax(torch.from_numpy(logits_noisy_np[:, slice_idx]), dim=0).numpy()[cls_id]
         prob_diff = prob_noisy - prob_clean
@@ -468,7 +561,7 @@ def visualize_logits(
         plt.colorbar(im_p, ax=ax_p, fraction=0.046, pad=0.04)
 
         # Stats for this class
-        ax_s = fig.add_subplot(gs[row_idx, 4])
+        ax_s = fig.add_subplot(gs[row_logit, 4])
         ax_s.axis('off')
         cls_stats = (
             f"{class_name}:\n"
@@ -485,6 +578,79 @@ def visualize_logits(
         )
         ax_s.text(0.1, 0.95, cls_stats, fontsize=8, family='monospace',
                  verticalalignment='top', transform=ax_s.transAxes)
+
+        # ---- FFT行 ----
+        # 计算FFT
+        fft_clean = compute_fft_magnitude(logit_clean)
+        fft_noisy = compute_fft_magnitude(logit_noisy)
+        fft_diff = fft_noisy - fft_clean
+
+        # FFT共同范围
+        fft_vmin = min(fft_clean.min(), fft_noisy.min())
+        fft_vmax = max(fft_clean.max(), fft_noisy.max())
+
+        # FFT Clean
+        ax_fc = fig.add_subplot(gs[row_fft, 0])
+        im_fc = ax_fc.imshow(fft_clean, cmap='magma', vmin=fft_vmin, vmax=fft_vmax)
+        ax_fc.set_title(f"{class_name} - FFT Clean", fontsize=9)
+        ax_fc.axis('off')
+        plt.colorbar(im_fc, ax=ax_fc, fraction=0.046, pad=0.04)
+
+        # FFT Noisy
+        ax_fn = fig.add_subplot(gs[row_fft, 1])
+        im_fn = ax_fn.imshow(fft_noisy, cmap='magma', vmin=fft_vmin, vmax=fft_vmax)
+        ax_fn.set_title(f"{class_name} - FFT Noisy", fontsize=9)
+        ax_fn.axis('off')
+        plt.colorbar(im_fn, ax=ax_fn, fraction=0.046, pad=0.04)
+
+        # FFT Diff
+        ax_fd = fig.add_subplot(gs[row_fft, 2])
+        fft_diff_abs_max = max(abs(fft_diff.min()), abs(fft_diff.max()))
+        if fft_diff_abs_max < 1e-6:
+            fft_diff_abs_max = 1.0
+        im_fd = ax_fd.imshow(fft_diff, cmap='RdBu_r', vmin=-fft_diff_abs_max, vmax=fft_diff_abs_max)
+        ax_fd.set_title(f"{class_name} - FFT Diff", fontsize=9)
+        ax_fd.axis('off')
+        plt.colorbar(im_fd, ax=ax_fd, fraction=0.046, pad=0.04)
+
+        # 径向功率谱对比
+        ax_fr = fig.add_subplot(gs[row_fft, 3])
+        radial_clean_cls = np.zeros(r_max)
+        radial_noisy_cls = np.zeros(r_max)
+        for i in range(r_max):
+            mask = r == i
+            if mask.sum() > 0:
+                radial_clean_cls[i] = fft_clean[mask].mean()
+                radial_noisy_cls[i] = fft_noisy[mask].mean()
+
+        ax_fr.plot(radial_clean_cls, 'b-', label='Clean', linewidth=1.5)
+        ax_fr.plot(radial_noisy_cls, 'r-', label='Noisy', linewidth=1.5)
+        ax_fr.fill_between(range(r_max), radial_clean_cls, radial_noisy_cls,
+                           alpha=0.3, color='purple')
+        ax_fr.set_xlabel('Frequency')
+        ax_fr.set_ylabel('Log Mag')
+        ax_fr.set_title(f"{class_name} - Radial Spectrum", fontsize=9)
+        ax_fr.legend(fontsize=7)
+        ax_fr.grid(True, alpha=0.3)
+
+        # FFT Stats
+        ax_fs = fig.add_subplot(gs[row_fft, 4])
+        ax_fs.axis('off')
+        fft_stats = (
+            f"{class_name} FFT:\n"
+            f"───────────────\n"
+            f"FFT Clean:\n"
+            f"  mean: {fft_clean.mean():.3f}\n"
+            f"  max:  {fft_clean.max():.3f}\n"
+            f"FFT Noisy:\n"
+            f"  mean: {fft_noisy.mean():.3f}\n"
+            f"  max:  {fft_noisy.max():.3f}\n"
+            f"FFT Diff:\n"
+            f"  L1:   {np.abs(fft_diff).mean():.4f}\n"
+            f"  max:  {np.abs(fft_diff).max():.4f}"
+        )
+        ax_fs.text(0.1, 0.95, fft_stats, fontsize=8, family='monospace',
+                  verticalalignment='top', transform=ax_fs.transAxes)
 
     # 总标题
     fig.suptitle(
