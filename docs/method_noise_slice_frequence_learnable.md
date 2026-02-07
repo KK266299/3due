@@ -8,8 +8,6 @@
 4. [方法总览](#4-方法总览)
 5. [核心组件详解](#5-核心组件详解)
 6. [训练流程](#6-训练流程)
-7. [关键设计决策](#7-关键设计决策)
-8. [配置参数说明](#8-配置参数说明)
 
 ---
 
@@ -320,16 +318,24 @@ class SoftROIMask(nn.Module):
 
 **动机**：噪声集中在分割目标区域及其周围，而不是浪费扰动预算在背景上。软边缘避免了硬边界带来的频域伪影。
 
-### 5.5 LogitsDivergenceLoss — 分割差异损失（可选）
+### 5.5 LogitsDivergenceLoss — 频域分割差异损失
 
 ```python
 class LogitsDivergenceLoss(nn.Module):
     # 计算干净图像与扰动图像经代理模型后的 logits 差异
-    # 支持多种度量：L1, L2, FFT-L1, FFT-L2, KL散度
+    # 使用 FFT-L1 度量：对 logits 差异做 3D FFT，取幅值的 L1 范数
     # 返回负值（因为要最大化差异 = 最小化负差异）
+
+    def forward(logits_clean, logits_noisy):
+        diff = logits_noisy - logits_clean
+        diff_fft = fftn(diff, dim=(-3, -2, -1))
+        divergence = diff_fft.abs().mean()
+        return -weight * divergence
 ```
 
 **动机**：DiceCE Loss 仅衡量扰动图像的分割质量，而 logits divergence 直接度量"扰动前后分割结果的偏离程度"，提供更直接的优化信号来最大化分割破坏效果。
+
+**为什么使用 FFT-L1**：在频域中度量 logits 差异而非空间域，是因为频域能更好地捕获结构性偏差——不仅关注逐像素的预测偏移，还关注预测结果在空间频率分布上的整体错乱程度。对 3D 医学图像而言，这意味着扰动不仅在局部破坏分割，还在全局的频率结构上瓦解了模型对解剖形态的理解。
 
 ---
 
@@ -384,105 +390,3 @@ for each epoch:
 - 如果 loss 需要更强的层间差异 → 梯度推动 `z_c` 降低（允许更多 Z 高频通过）
 - 如果 loss 需要更平滑的层内噪声 → 梯度推动 `xy_c` 降低（截断更多 XY 高频）
 - 每个 epoch 结束后记录当前截止频率值，用于监控训练状态
-
----
-
-## 7. 关键设计决策
-
-### 7.1 全局截止频率 vs Per-sample 截止频率
-
-| | Per-sample (CutoffPredictor) | 全局 (GlobalLearnableCutoff) |
-|---|---|---|
-| 参数量 | ~4K（MLP 网络） | 2（两个标量） |
-| 灵活性 | 每个样本不同截止频率 | 整个数据集共享 |
-| 内存 | 需要 per-sample 循环避免 OOM | 正常 batch forward |
-| 适用场景 | 数据异质性大 | 数据集统一的最优频率参数 |
-| 实现复杂度 | 高 | 低 |
-
-本方法选择全局版本，原因是：
-- 3D 医学图像体积大，per-sample 的 FFT 计算图在 backward 时 OOM 风险高
-- 对于同一数据集（如 FLARE21 的腹部 CT），最优截止频率在样本间差异不大
-- 两个全局标量足以捕获数据集级别的最优频率约束
-
-### 7.2 sigmoid 替代 torch.where
-
-`torch.where` 是分段函数，在截止点没有梯度：
-
-```python
-# 不可微：∂M/∂cutoff = 0
-M = torch.where(freq >= cutoff, 1.0, gaussian_decay)
-```
-
-`sigmoid` 处处可微，允许梯度回传到截止频率参数：
-
-```python
-# 可微：∂M/∂cutoff = -sigmoid(1-sigmoid)/σ ≠ 0
-M = sigmoid((freq - cutoff) / σ)
-```
-
-σ（sigma）控制过渡带宽度：σ 越小过渡越陡峭（接近硬阈值），σ 越大过渡越平滑。
-
-### 7.3 分离式掩码应用
-
-不构建完整的 3D 掩码 `M[D, H, W]`，而是分别应用 `M_z[D, 1, 1]` 和 `M_xy[1, H, W]`：
-
-```python
-noise_fft = noise_fft * M_z   # Z 轴高通
-noise_fft = noise_fft * M_xy  # XY 低通
-```
-
-两步广播等价于 `noise_fft * (M_z × M_xy)`，但避免了物化 `[D, H, W]` 的完整掩码。对于典型的 3D 医学图像尺寸（如 `[32, 256, 256]`），这节省了约 2M 个浮点数的内存。
-
-### 7.4 DC 分量校正
-
-频域中的 DC 分量（频率 = 0）代表信号的全局均值。如果 DC 通过率过高，噪声会引入明显的亮度偏移；如果过低，噪声失去基线偏移能力。我们固定 DC 衰减为 0.1：
-
-```python
-dc_product = sigmoid(-z_c/σ_z) * sigmoid(xy_c/σ_xy)
-correction = 0.1 / dc_product
-M_z[dc_position] *= correction
-```
-
-### 7.5 双优化器设计
-
-NoiseUNet（~数十万参数）和 GlobalLearnableCutoff（2 个参数）使用独立的 Adam 优化器：
-
-- 参数规模差异巨大，共享 optimizer 的自适应学习率会被大网络主导
-- 独立 optimizer 允许通过 `cutoff_lr_scale` 为截止频率设置不同的学习率
-- 截止频率不使用 weight decay（它们是物理量，不应被正则化）
-
----
-
-## 8. 配置参数说明
-
-### 8.1 核心参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `epsilon` | 4/255 ≈ 0.0157 | L∞ 扰动上界 |
-| `noise_step` | 1 | 每个 batch 的噪声更新步数 |
-| `surrogate_step` | 10 | 代理模型每轮更新的 batch 数 |
-| `z_cutoff_low` | 0.1 | Z 轴高通截止频率初始值 |
-| `xy_cutoff_high` | 0.3 | XY 低通截止频率初始值 |
-| `z_sigma` | 0.05 | Z 轴 sigmoid 过渡带宽 |
-| `xy_sigma` | 0.1 | XY sigmoid 过渡带宽 |
-| `cutoff_lr_scale` | 1.0 | 截止频率学习率 = UNet lr × 此值 |
-
-### 8.2 可选特性
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `roi_aware` | true | 是否使用 ROI 掩码聚焦噪声 |
-| `soft_edge` | false | 是否使用软边缘 ROI（膨胀+高斯模糊） |
-| `z_diversity_weight` | 0.0 | Z 轴多样性正则化权重（0=禁用） |
-| `logits_div_weight` | 0.0 | Logits 差异损失权重（0=禁用） |
-| `logits_div_mode` | fft_l1 | Logits 差异计算方式 |
-
-### 8.3 文件索引
-
-| 文件 | 说明 |
-|------|------|
-| `src/core/ue_algos/noise_slice_frequence_learnable.py` | 主实现（本文档描述的方法） |
-| `configs/method/noise_slice_frequence_learnable.yaml` | 默认配置 |
-| `src/core/ue_algos/noise_slice_frequence_h_l_pass.py` | 前身：per-sample 可学习截止频率版本 |
-| `src/core/ue_algos/noise_slice_frequence.py` | 原始：静态频域约束版本 |
