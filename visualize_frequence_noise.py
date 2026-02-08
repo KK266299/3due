@@ -49,7 +49,7 @@ from omegaconf import OmegaConf
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src.registry import get_dataset_builder
+from src.registry import get_dataset_builder, get_model
 from src.core.ue_artifacts import UEShardsAccessor
 from src.core.ue_keys import extract_key
 from src.utils.config import get_config
@@ -128,6 +128,40 @@ def load_noise(noise_dir: str, key: str) -> torch.Tensor | None:
     except KeyError:
         print(f"[Warning] Noise not found for key={key}")
         return None
+
+
+def load_seg_model(
+    model_path: str, config: OmegaConf, device: torch.device
+) -> torch.nn.Module:
+    """加载分割模型 checkpoint"""
+    model_cfg = config.model
+    model_cls = get_model(model_cfg.name)
+    model = model_cls(model_cfg)
+
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        model.load_state_dict(checkpoint)
+
+    model = model.to(device)
+    model.eval()
+    return model
+
+
+def run_inference(
+    model: torch.nn.Module,
+    image: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    """运行模型推理，返回 argmax 预测 [D, H, W]"""
+    with torch.no_grad():
+        x = image.unsqueeze(0).to(device)  # [1, C, D, H, W]
+        out = model(x)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        pred = out.argmax(dim=1).squeeze(0).cpu()  # [D, H, W]
+    return pred
 
 
 def apply_window_nnunet(
@@ -359,17 +393,25 @@ def visualize_roi_noise_total(
     global_mean: float = 121.07,
     global_std: float = 49.66,
     z_clip: float = 5.0,
+    pred_clean: torch.Tensor | None = None,
+    pred_noisy: torch.Tensor | None = None,
 ):
     """
     ROI-aware 噪声综合可视化（总图）
 
-    布局: 2 行 × 4 列
+    布局 (无模型):  2 行 × 4 列
       Row 1: 原图, 噪声(蓝白红), 加噪图, |Noise|×20
       Row 2: ROI 掩码, 标签叠加, ROI 内噪声, 噪声能量
+
+    布局 (有模型):  3 行 × 4 列
+      Row 1: 同上
+      Row 2: 同上
+      Row 3: GT Label, Pred(Clean), Pred(Noisy), Pred差异
 
     无图例，无标题，所有面板带黑色边框。
     """
     C, D, H, W = image.shape
+    has_pred = pred_clean is not None
 
     # 自动选择切片
     label_np = label.numpy()
@@ -407,8 +449,9 @@ def visualize_roi_noise_total(
     # ROI 掩码
     roi_mask = (label_slice > 0).astype(np.float32)
 
-    # ---------- 创建 2×4 图形 ----------
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8), facecolor='white')
+    # ---------- 创建图形 ----------
+    n_rows = 3 if has_pred else 2
+    fig, axes = plt.subplots(n_rows, 4, figsize=(16, 4 * n_rows), facecolor='white')
     fig.subplots_adjust(wspace=0.04, hspace=0.04)
 
     # Row 1, Col 0: 原图
@@ -454,6 +497,36 @@ def visualize_roi_noise_total(
     noise_energy = np.mean(noise_np ** 2, axis=(0, 1))  # [H, W]
     axes[1, 3].imshow(noise_energy, cmap='hot')
     _add_black_border(axes[1, 3])
+
+    # ---------- Row 3: 分割结果（仅当提供模型预测时） ----------
+    if has_pred:
+        pred_clean_np = pred_clean.numpy()
+        pred_clean_slice = pred_clean_np[slice_idx]
+
+        # (2,0) GT Label
+        axes[2, 0].imshow(label_rgb)
+        _add_black_border(axes[2, 0])
+
+        # (2,1) Pred Clean
+        pred_clean_rgb = label_to_rgb(pred_clean_slice, num_classes)
+        axes[2, 1].imshow(pred_clean_rgb)
+        _add_black_border(axes[2, 1])
+
+        # (2,2) Pred Noisy
+        if pred_noisy is not None:
+            pred_noisy_np = pred_noisy.numpy()
+            pred_noisy_slice = pred_noisy_np[slice_idx]
+            pred_noisy_rgb = label_to_rgb(pred_noisy_slice, num_classes)
+        else:
+            pred_noisy_slice = pred_clean_slice
+            pred_noisy_rgb = pred_clean_rgb
+        axes[2, 2].imshow(pred_noisy_rgb)
+        _add_black_border(axes[2, 2])
+
+        # (2,3) 预测差异: clean != noisy 的位置高亮
+        pred_diff = (pred_clean_slice != pred_noisy_slice).astype(np.float32)
+        axes[2, 3].imshow(pred_diff, cmap='hot', vmin=0, vmax=1)
+        _add_black_border(axes[2, 3])
 
     plt.savefig(output_path, dpi=150, bbox_inches='tight',
                 facecolor='white', pad_inches=0.1)
@@ -866,15 +939,51 @@ def main():
     parser.add_argument("--roi_vis", action="store_true",
                         help="生成 ROI-aware 噪声可视化（总图 + 小图，无图例，黑色边框）")
 
+    # 分割模型（可选，用于可视化预测结果）
+    parser.add_argument("--model_path", type=str, default=None,
+                        help="分割模型 checkpoint 路径（可选，提供后在总图中显示分割结果）")
+    parser.add_argument("--model_config", type=str, default=None,
+                        help="模型配置文件路径（可选，默认使用 FLARE21 UNet 配置）")
+    parser.add_argument("--device", type=str, default="cuda:0",
+                        help="计算设备 (default: cuda:0)")
+
     args = parser.parse_args()
 
     # 加载配置
     config = load_config(args.dataset_config)
 
+    # 合并模型配置
+    if args.model_path:
+        if args.model_config and os.path.exists(args.model_config):
+            model_cfg = OmegaConf.load(args.model_config)
+            config = OmegaConf.merge(config, model_cfg)
+        elif not hasattr(config, "model"):
+            # 默认 FLARE21 UNet 配置
+            config.model = OmegaConf.create({
+                "name": "unet",
+                "in_channels": 1,
+                "num_classes": 5,
+                "spatial_dims": 3,
+                "channels": [32, 64, 128, 256, 512],
+                "strides": [2, 2, 2, 2],
+                "num_res_units": 2,
+                "norm": "INSTANCE",
+                "act": "RELU",
+                "dropout": 0.0,
+            })
+
     # 加载数据集
     print(f"[Loading Dataset] split={args.split}")
     dataset = load_dataset(config, split=args.split)
     print(f"[Dataset Size] {len(dataset)}")
+
+    # 加载分割模型（可选）
+    seg_model = None
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    if args.model_path:
+        print(f"[Loading Model] {args.model_path}")
+        seg_model = load_seg_model(args.model_path, config, device)
+        print(f"[Model Loaded] device={device}")
 
     # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
@@ -914,6 +1023,17 @@ def main():
                 args.output_dir, f"{idx:04d}_{case_id}_roi_small.png"
             )
 
+            # 模型推理（可选）
+            pred_clean = None
+            pred_noisy = None
+            if seg_model is not None:
+                pred_clean = run_inference(seg_model, image, device)
+                if noise is not None:
+                    noisy_image = (image + noise).clamp(0, 1)
+                    pred_noisy = run_inference(seg_model, noisy_image, device)
+                else:
+                    pred_noisy = pred_clean
+
             visualize_roi_noise_total(
                 image=image,
                 label=label,
@@ -928,6 +1048,8 @@ def main():
                 global_mean=args.global_mean,
                 global_std=args.global_std,
                 z_clip=args.z_clip,
+                pred_clean=pred_clean,
+                pred_noisy=pred_noisy,
             )
 
             visualize_roi_noise_small(
