@@ -44,27 +44,6 @@ bh = h_min * 0.6
 ax.add_patch(plt.Rectangle((cx - gap/2, cy - bh/2), gap, bh,
     facecolor=blue_dark, edgecolor='#1B6B9A', linewidth=1.5, zorder=3))
 
-# Skip connections
-n_skip = 3
-for i in range(1, n_skip + 1):
-    frac = i / (n_skip + 1)
-    x_enc = cx - total_w/2 + frac * (total_w/2 - gap/2)
-    x_dec = cx + gap/2 + (1 - frac) * (total_w/2 - gap/2)
-    h_at = h_max - frac * (h_max - h_min)
-    y_top = cy + h_at/2
-
-    ax.annotate('',
-        xy=(x_dec, y_top + 0.02),
-        xytext=(x_enc, y_top + 0.02),
-        arrowprops=dict(arrowstyle='->', color=skip_color,
-                        lw=1.0, linestyle=(0, (4, 3)),
-                        connectionstyle='arc3,rad=-0.20'),
-        zorder=2)
-
-# Single flow arrow: input → output through center
-ax.annotate('', xy=(cx + 0.03, cy), xytext=(cx - 0.03, cy),
-    arrowprops=dict(arrowstyle='->', color=dark_text, lw=1.2), zorder=4)
-
 # Label
 ax.text(cx, cy - h_max/2 - 0.13, '3D Seg.', fontsize=9, fontweight='bold',
     ha='center', va='top', color=dark_text, fontfamily='sans-serif')
