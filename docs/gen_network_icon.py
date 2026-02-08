@@ -39,6 +39,25 @@ ax.add_patch(plt.Polygon(enc_poly, closed=True,
 ax.add_patch(plt.Polygon(dec_poly, closed=True,
     facecolor=blue_fill, edgecolor=blue_border, linewidth=2.0, zorder=1))
 
+# Internal vertical lines inside trapezoids (suggest multi-layer structure)
+n_lines = 4
+for i in range(1, n_lines + 1):
+    frac = i / (n_lines + 1)
+
+    # Encoder: interpolate x position and height
+    x_enc = cx - total_w/2 + frac * (total_w/2 - gap/2)
+    h_enc = h_max - frac * (h_max - h_min)
+    ax.plot([x_enc, x_enc],
+            [cy - h_enc/2 + 0.02, cy + h_enc/2 - 0.02],
+            color=blue_border, linewidth=1.0, alpha=0.45, zorder=2)
+
+    # Decoder: mirror
+    x_dec = cx + gap/2 + frac * (total_w/2 - gap/2)
+    h_dec = h_min + frac * (h_max - h_min)
+    ax.plot([x_dec, x_dec],
+            [cy - h_dec/2 + 0.02, cy + h_dec/2 - 0.02],
+            color=blue_border, linewidth=1.0, alpha=0.45, zorder=2)
+
 # Bottleneck
 bh = h_min * 0.6
 ax.add_patch(plt.Rectangle((cx - gap/2, cy - bh/2), gap, bh,
