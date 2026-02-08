@@ -325,14 +325,15 @@ def compute_noise_spectrum(noise: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return spectrum_z, spectrum_xy
 
 
-def _add_black_border(ax, linewidth=2):
-    """为 axes 添加黑色边框，移除刻度和标签"""
+def _add_black_border(ax, linewidth=3):
+    """为 axes 添加黑色边框线，移除刻度和标签。边框画在最上层，防止白底噪声图与背景融合。"""
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color('black')
         spine.set_linewidth(linewidth)
+        spine.set_zorder(10)  # 画在图像上层
 
 
 def _auto_select_slice(label_np: np.ndarray, D: int) -> int:
