@@ -23,6 +23,15 @@ python visualize_frequence_noise.py \
     --window_level 40 \
     --sample_idx 0 \
     --slice_idx -1
+
+ROI-aware 可视化（无图例、黑色边框，生成总图 + 小图）：
+python visualize_frequence_noise.py \
+    --noise_dir outputs/flare21_ue/freq_roi_soft/20260116_112656/noise/epoch_0099 \
+    --output_dir outputs/visualize_freq \
+    --dataset_config configs/dataset/flare21.yaml \
+    --roi_vis \
+    --sample_idx 0 \
+    --slice_idx -1
 """
 from __future__ import annotations
 
@@ -314,6 +323,181 @@ def compute_noise_spectrum(noise: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     spectrum_z = np.log10(spectrum_z + 1e-10)
 
     return spectrum_z, spectrum_xy
+
+
+def _add_black_border(ax, linewidth=2):
+    """为 axes 添加黑色边框，移除刻度和标签"""
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color('black')
+        spine.set_linewidth(linewidth)
+
+
+def _auto_select_slice(label_np: np.ndarray, D: int) -> int:
+    """自动选择有标签的中间切片"""
+    label_sum = (label_np > 0).sum(axis=(1, 2))  # [D]
+    nonzero_slices = np.where(label_sum > 0)[0]
+    if len(nonzero_slices) > 0:
+        return int(nonzero_slices[len(nonzero_slices) // 2])
+    return D // 2
+
+
+def visualize_roi_noise_total(
+    image: torch.Tensor,
+    label: torch.Tensor,
+    noise: torch.Tensor | None,
+    slice_idx: int,
+    output_path: str,
+    eps: float = 8/255,
+    window_width: float = 400,
+    window_level: float = 40,
+    num_classes: int = 5,
+    norm_mode: str = "nnunet",
+    global_mean: float = 121.07,
+    global_std: float = 49.66,
+    z_clip: float = 5.0,
+):
+    """
+    ROI-aware 噪声综合可视化（总图）
+
+    布局: 2 行 × 4 列
+      Row 1: 原图, 噪声(蓝白红), 加噪图, |Noise|×20
+      Row 2: ROI 掩码, 标签叠加, ROI 内噪声, 噪声能量
+
+    无图例，无标题，所有面板带黑色边框。
+    """
+    C, D, H, W = image.shape
+
+    # 自动选择切片
+    label_np = label.numpy()
+    if slice_idx < 0:
+        slice_idx = _auto_select_slice(label_np, D)
+    slice_idx = min(max(0, slice_idx), D - 1)
+
+    if noise is None:
+        noise = torch.zeros_like(image)
+
+    image_np = image.numpy()
+    noise_np = noise.numpy()
+    noisy_np = np.clip(image_np + noise_np, 0, 1)
+
+    # 取切片
+    orig_slice = image_np[0, slice_idx]
+    noise_slice = noise_np[0, slice_idx]
+    noisy_slice = noisy_np[0, slice_idx]
+    label_slice = label_np[slice_idx]
+
+    # 应用窗宽窗位
+    if norm_mode == "nnunet":
+        orig_windowed = apply_window_nnunet(
+            orig_slice, window_width, window_level,
+            global_mean=global_mean, global_std=global_std, z_clip=z_clip,
+        )
+        noisy_windowed = apply_window_nnunet(
+            noisy_slice, window_width, window_level,
+            global_mean=global_mean, global_std=global_std, z_clip=z_clip,
+        )
+    else:
+        orig_windowed = apply_window_direct(orig_slice, window_width, window_level)
+        noisy_windowed = apply_window_direct(noisy_slice, window_width, window_level)
+
+    # ROI 掩码
+    roi_mask = (label_slice > 0).astype(np.float32)
+
+    # ---------- 创建 2×4 图形 ----------
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8), facecolor='white')
+    fig.subplots_adjust(wspace=0.04, hspace=0.04)
+
+    # Row 1, Col 0: 原图
+    axes[0, 0].imshow(orig_windowed, cmap='gray', vmin=0, vmax=1)
+    _add_black_border(axes[0, 0])
+
+    # Row 1, Col 1: 噪声（蓝白红）
+    noise_rgb = colorize_noise(noise_slice, eps)
+    axes[0, 1].imshow(noise_rgb)
+    _add_black_border(axes[0, 1])
+
+    # Row 1, Col 2: 加噪图
+    axes[0, 2].imshow(noisy_windowed, cmap='gray', vmin=0, vmax=1)
+    _add_black_border(axes[0, 2])
+
+    # Row 1, Col 3: |Noise| × 20
+    diff = np.abs(noise_slice) * 20
+    axes[0, 3].imshow(diff, cmap='hot', vmin=0, vmax=1)
+    _add_black_border(axes[0, 3])
+
+    # Row 2, Col 0: ROI 掩码
+    axes[1, 0].imshow(roi_mask, cmap='gray', vmin=0, vmax=1)
+    _add_black_border(axes[1, 0])
+
+    # Row 2, Col 1: 标签叠加原图
+    label_rgb = label_to_rgb(label_slice, num_classes)
+    overlay = orig_windowed[..., np.newaxis].repeat(3, axis=-1)
+    fg_mask = label_slice > 0
+    alpha = 0.5
+    overlay[fg_mask] = (
+        overlay[fg_mask] * (1 - alpha) + label_rgb[fg_mask] / 255.0 * alpha
+    )
+    axes[1, 1].imshow(overlay)
+    _add_black_border(axes[1, 1])
+
+    # Row 2, Col 2: ROI 内噪声
+    noise_roi = noise_slice * roi_mask
+    noise_roi_rgb = colorize_noise(noise_roi, eps)
+    axes[1, 2].imshow(noise_roi_rgb)
+    _add_black_border(axes[1, 2])
+
+    # Row 2, Col 3: 噪声能量空间分布
+    noise_energy = np.mean(noise_np ** 2, axis=(0, 1))  # [H, W]
+    axes[1, 3].imshow(noise_energy, cmap='hot')
+    _add_black_border(axes[1, 3])
+
+    plt.savefig(output_path, dpi=150, bbox_inches='tight',
+                facecolor='white', pad_inches=0.1)
+    plt.close(fig)
+    print(f"[Saved] ROI total: {output_path}")
+
+
+def visualize_roi_noise_small(
+    image: torch.Tensor,
+    label: torch.Tensor,
+    noise: torch.Tensor | None,
+    slice_idx: int,
+    output_path: str,
+    eps: float = 8/255,
+):
+    """
+    小噪声图: 仅显示 ROI 噪声（蓝白红），无图例，黑色边框。
+    """
+    C, D, H, W = image.shape
+
+    label_np = label.numpy()
+    if slice_idx < 0:
+        slice_idx = _auto_select_slice(label_np, D)
+    slice_idx = min(max(0, slice_idx), D - 1)
+
+    if noise is None:
+        noise = torch.zeros_like(image)
+
+    noise_np = noise.numpy()
+    noise_slice = noise_np[0, slice_idx]
+
+    # ROI 掩码
+    roi_mask = (label_np[slice_idx] > 0).astype(np.float32)
+    noise_roi = noise_slice * roi_mask
+
+    noise_rgb = colorize_noise(noise_roi, eps)
+
+    fig, ax = plt.subplots(1, 1, figsize=(4, 4), facecolor='white')
+    ax.imshow(noise_rgb, aspect='equal')
+    _add_black_border(ax, linewidth=3)
+
+    plt.savefig(output_path, dpi=150, bbox_inches='tight',
+                facecolor='white', pad_inches=0.02)
+    plt.close(fig)
+    print(f"[Saved] ROI small: {output_path}")
 
 
 def visualize_frequence_noise(
@@ -677,6 +861,10 @@ def main():
     parser.add_argument("--z_clip", type=float, default=5.0,
                         help="nnunet模式下的z-score clip范围")
 
+    # ROI 可视化模式
+    parser.add_argument("--roi_vis", action="store_true",
+                        help="生成 ROI-aware 噪声可视化（总图 + 小图，无图例，黑色边框）")
+
     args = parser.parse_args()
 
     # 加载配置
@@ -716,25 +904,59 @@ def main():
         # 输出文件名
         output_path = os.path.join(args.output_dir, f"{idx:04d}_{case_id}_freq_vis.png")
 
-        # 可视化
-        visualize_frequence_noise(
-            image=image,
-            label=label,
-            noise=noise,
-            slice_idx=args.slice_idx,
-            output_path=output_path,
-            case_id=case_id,
-            eps=args.eps,
-            window_width=args.window_width,
-            window_level=args.window_level,
-            z_cutoff_low=args.z_cutoff_low,
-            xy_cutoff_high=args.xy_cutoff_high,
-            num_classes=args.num_classes,
-            norm_mode=args.norm_mode,
-            global_mean=args.global_mean,
-            global_std=args.global_std,
-            z_clip=args.z_clip,
-        )
+        if args.roi_vis:
+            # ---- ROI-aware 可视化: 总图 + 小图, 无图例, 黑色边框 ----
+            roi_total_path = os.path.join(
+                args.output_dir, f"{idx:04d}_{case_id}_roi_total.png"
+            )
+            roi_small_path = os.path.join(
+                args.output_dir, f"{idx:04d}_{case_id}_roi_small.png"
+            )
+
+            visualize_roi_noise_total(
+                image=image,
+                label=label,
+                noise=noise,
+                slice_idx=args.slice_idx,
+                output_path=roi_total_path,
+                eps=args.eps,
+                window_width=args.window_width,
+                window_level=args.window_level,
+                num_classes=args.num_classes,
+                norm_mode=args.norm_mode,
+                global_mean=args.global_mean,
+                global_std=args.global_std,
+                z_clip=args.z_clip,
+            )
+
+            visualize_roi_noise_small(
+                image=image,
+                label=label,
+                noise=noise,
+                slice_idx=args.slice_idx,
+                output_path=roi_small_path,
+                eps=args.eps,
+            )
+        else:
+            # ---- 原始频域可视化 ----
+            visualize_frequence_noise(
+                image=image,
+                label=label,
+                noise=noise,
+                slice_idx=args.slice_idx,
+                output_path=output_path,
+                case_id=case_id,
+                eps=args.eps,
+                window_width=args.window_width,
+                window_level=args.window_level,
+                z_cutoff_low=args.z_cutoff_low,
+                xy_cutoff_high=args.xy_cutoff_high,
+                num_classes=args.num_classes,
+                norm_mode=args.norm_mode,
+                global_mean=args.global_mean,
+                global_std=args.global_std,
+                z_clip=args.z_clip,
+            )
 
     print(f"[Done] Visualized {min(args.num_samples, len(dataset) - args.sample_idx)} samples")
 
