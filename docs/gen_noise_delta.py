@@ -96,7 +96,7 @@ ax.axis('off')
 
 plt.tight_layout(pad=0.05)
 plt.savefig('/home/user/3due/docs/noise_delta.png', dpi=300,
-    bbox_inches='tight', transparent=True, pad_inches=0.03)
+    bbox_inches='tight', transparent=False, pad_inches=0.03)
 plt.savefig('/home/user/3due/docs/noise_delta.pdf',
-    bbox_inches='tight', transparent=True, pad_inches=0.03)
+    bbox_inches='tight', transparent=False, pad_inches=0.03)
 print("Done")
