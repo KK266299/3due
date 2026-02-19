@@ -179,25 +179,32 @@ _REGISTRY: Dict[str, type] = {
 }
 
 
+# Each class accepts only these params (used to filter YAML union keys)
+_ACCEPTED_PARAMS: Dict[str, set] = {
+    "gaussian_blur": {"sigma", "kernel_size"},
+    "gamma": {"gamma_range"},
+    "low_resolution": {"scale"},
+    "random_affine": {"rotation_range", "scale_range", "prob"},
+}
+
+
 def build_defense_transform(cfg: Dict[str, Any]) -> Callable | None:
     """
     Build a defense transform from config dict.
 
-    Example cfg:
-        {"type": "gaussian_blur", "sigma": 1.0}
-        {"type": "gamma", "gamma_range": [0.7, 1.5]}
-        {"type": "low_resolution", "scale": 0.5}
-        {"type": "random_affine", "rotation_range": 15.0, "scale_range": [0.85, 1.25]}
+    Because the Hydra YAML declares a union of ALL possible params (with
+    defaults), we filter to only the params accepted by the chosen class.
 
-    Returns None if cfg is None or empty.
+    Returns None if cfg is None, empty, or type is None/"".
     """
     if cfg is None:
         return None
 
     cfg = dict(cfg)
-    dtype = str(cfg.pop("type", "")).lower()
-    if not dtype:
+    dtype = cfg.pop("type", None)
+    if dtype is None or str(dtype).strip() == "" or str(dtype).lower() == "null":
         return None
+    dtype = str(dtype).lower()
 
     cls = _REGISTRY.get(dtype)
     if cls is None:
@@ -205,4 +212,7 @@ def build_defense_transform(cfg: Dict[str, Any]) -> Callable | None:
             f"Unknown defense transform type: {dtype!r}. "
             f"Available: {list(_REGISTRY.keys())}"
         )
-    return cls(**cfg)
+
+    accepted = _ACCEPTED_PARAMS.get(dtype, set())
+    filtered = {k: v for k, v in cfg.items() if k in accepted and v is not None}
+    return cls(**filtered)

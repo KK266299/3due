@@ -161,7 +161,7 @@ def attach_unlearnable_noise(
     # defense augmentation config (optional, for ablation experiments)
     defense_cfg = get_config(pcfg, "defense", None)
     if defense_cfg is not None:
-        defense_cfg = dict(defense_cfg)
+        defense_cfg = OmegaConf.to_container(defense_cfg, resolve=True)
 
     # 统一走离线模式：PoisonedDataset 内部通过 UEShardsAccessor.from_manifest 读噪声
     return PoisonedDataset(
