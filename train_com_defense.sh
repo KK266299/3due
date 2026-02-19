@@ -5,6 +5,8 @@
 #   GPU 5: low_resolution                (单个)
 #   GPU 6: random_affine                 (单个)
 
+export PYTHONUNBUFFERED=1
+
 MANIFEST_PATH=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_ue/nofreq_zdiv02_logits005/20260204_172349/noise/epoch_0099/manifest.json
 
 mkdir -p logs
@@ -12,7 +14,7 @@ mkdir -p logs
 # ==================== GPU 4 (串行: gaussian_blur + gamma) ====================
 (
     echo "[GPU 4] 开始实验 1/2: defense_gaussian_blur"
-    python main.py \
+    python -u main.py \
         method=poison_files \
         model.pretrained=false \
         dataset=flare21 \
@@ -38,7 +40,7 @@ mkdir -p logs
         2>&1 | tee logs/victim_defense_gaussian_blur.log
 
     echo "[GPU 4] 开始实验 2/2: defense_gamma"
-    python main.py \
+    python -u main.py \
         method=poison_files \
         model.pretrained=false \
         dataset=flare21 \
@@ -69,7 +71,7 @@ mkdir -p logs
 # ==================== GPU 5 (low_resolution) ====================
 (
     echo "[GPU 5] 开始实验: defense_low_resolution"
-    python main.py \
+    python -u main.py \
         method=poison_files \
         model.pretrained=false \
         dataset=flare21 \
@@ -100,7 +102,7 @@ mkdir -p logs
 # ==================== GPU 6 (random_affine) ====================
 (
     echo "[GPU 6] 开始实验: defense_random_affine"
-    python main.py \
+    python -u main.py \
         method=poison_files \
         model.pretrained=false \
         dataset=flare21 \
@@ -133,7 +135,7 @@ mkdir -p logs
 echo "已启动 3 个 GPU (4,5,6) 的 FLARE21 Defense 消融实验"
 echo ""
 echo "实验对应关系 (4个实验):"
-echo "  GPU 4: gaussian_blur (sigma=1.0) + gamma (range=[0.7,1.5])"
+echo "  GPU 4: gaussian_blur (sigma=1.0) -> gamma (range=[0.7,1.5])"
 echo "  GPU 5: low_resolution (scale=0.5)"
 echo "  GPU 6: random_affine (rot=15°, scale=[0.85,1.25], prob=0.5)"
 echo ""
