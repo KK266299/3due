@@ -158,6 +158,11 @@ def attach_unlearnable_noise(
     clamp_max = float(get_config(pcfg, "clamp_max", 1.0))
     apply_stage = str(get_config(pcfg, "apply_stage", "before_normalize"))
 
+    # defense augmentation config (optional, for ablation experiments)
+    defense_cfg = get_config(pcfg, "defense", None)
+    if defense_cfg is not None:
+        defense_cfg = dict(defense_cfg)
+
     # 统一走离线模式：PoisonedDataset 内部通过 UEShardsAccessor.from_manifest 读噪声
     return PoisonedDataset(
         base=dataset,
@@ -168,6 +173,7 @@ def attach_unlearnable_noise(
         apply_stage=apply_stage,
         mean=mean,
         std=std,
+        defense_cfg=defense_cfg,
     )
 
 

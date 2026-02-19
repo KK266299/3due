@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 
 from ..core.ue_artifacts import UEShardsAccessor
 from ..core.ue_keys import extract_key
+from .defense_transforms import build_defense_transform
 
 
 def _normalize_inplace(img: torch.Tensor, mean, std):
@@ -52,6 +53,7 @@ class PoisonedDataset(Dataset):
         apply_stage: str = "before_normalize",
         mean=(0.0, 0.0, 0.0),
         std=(1.0, 1.0, 1.0),
+        defense_cfg: Dict[str, Any] | None = None,
     ):
         super().__init__()
         self.base = base
@@ -61,6 +63,7 @@ class PoisonedDataset(Dataset):
         self.apply_stage = str(apply_stage)
         self.mean = tuple(mean)
         self.std = tuple(std)
+        self.defense_fn = build_defense_transform(defense_cfg)
 
         # 从 base 拿 3D transform pipeline（约定：transform(image, label) -> (image_t, label_t)）
         self.transform = getattr(base, "transform", None)
@@ -152,15 +155,19 @@ class PoisonedDataset(Dataset):
         # 3. Add noise in [0,1] and clamp
         img = torch.clamp(img + noise, min=self.clamp_min, max=self.clamp_max)
 
+        # 3.5 Defense augmentation (optional, for ablation experiments)
+        label = sample.get("label", None)
+        if label is None:
+            raise RuntimeError("3D segmentation sample must contain 'label' key.")
+        if self.defense_fn is not None:
+            img, label = self.defense_fn(img, label)
+            img = torch.clamp(img, min=self.clamp_min, max=self.clamp_max)
+
         # 4. Spatial/data transforms
         if self.transform is None:
             raise RuntimeError(
                 "transform is required for 3D segmentation in PoisonedDataset."
             )
-
-        label = sample.get("label", None)
-        if label is None:
-            raise RuntimeError("3D segmentation sample must contain 'label' key.")
 
         img_t, label_t = self.transform(img, label)
         sample["label"] = label_t.long()
