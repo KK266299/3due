@@ -1,7 +1,8 @@
 % UMed3D — 中文版本
-% 基于 ctexart 文档类，适配中文排版
-\documentclass[a4paper,11pt]{ctexart}
+% 使用 article + CJKutf8，兼容 pdfLaTeX（Overleaf 等环境）
+\documentclass[a4paper,11pt]{article}
 %
+\usepackage{CJKutf8}
 \usepackage[T1]{fontenc}
 \usepackage{graphicx}
 \usepackage{amsmath}
@@ -19,6 +20,7 @@
 %\renewcommand\UrlFont{\color{blue}\rmfamily}
 %
 \begin{document}
+\begin{CJK}{UTF8}{gbsn}
 %
 \title{\textbf{UMed3D: 基于频域感知的层间扰动\\实现3D医学体数据保护}}
 \author{匿名作者}
@@ -328,4 +330,5 @@ In: MICCAI, pp.~234--241 (2015)
 
 \end{thebibliography}
 
+\end{CJK}
 \end{document}
