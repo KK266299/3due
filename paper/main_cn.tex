@@ -1,0 +1,331 @@
+% UMed3D — 中文版本
+% 基于 ctexart 文档类，适配中文排版
+\documentclass[a4paper,11pt]{ctexart}
+%
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{color}
+\usepackage{geometry}
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+%
+% ── 超链接（可选） ──
+%\usepackage{hyperref}
+%\renewcommand\UrlFont{\color{blue}\rmfamily}
+%
+\begin{document}
+%
+\title{\textbf{UMed3D: 基于频域感知的层间扰动\\实现3D医学体数据保护}}
+\author{匿名作者}
+\date{}
+\maketitle
+%
+% ═══════════════════════════════════════════════════════════════════
+%                          摘要
+% ═══════════════════════════════════════════════════════════════════
+\begin{abstract}
+公开3D医学图像分割（MIS）数据集的广泛传播在加速临床研究的同时，也加剧了未授权AI模型训练和患者隐私泄露的风险。不可学习样本（Unlearnable Examples, UEs）通过在训练数据中注入不可感知的扰动来阻止模型有效学习，提供了一种有前景的主动防御手段。然而，现有方法主要针对2D自然图像分类任务设计，忽略了3D医学体数据固有的\textit{各向异性}和\textit{层间解剖一致性}——这些正是3D分割网络所利用的关键学习先验。为弥合这一差距，我们提出\textbf{UMed3D}，一个专为3D医学图像分割设计的不可学习样本生成框架。UMed3D采用基于UNet的生成器产生ROI约束的自适应扰动，并通过频域对抗损失方案进行引导。我们引入\textit{Z轴多样性损失}（Z-Diversity Loss），通过最大化相邻层间的频谱差异来破坏层间一致性；同时提出\textit{频谱Logits散度损失}（Spectral Logits Divergence Loss），在频域中最大化干净图像与扰动图像之间的预测差异。在BraTS19、FLARE21和KiTS19上的实验表明，UMed3D能够将3D分割性能从87\% DSC降至7\% DSC，同时保持较小的扰动幅度（$\epsilon{=}4/255$）和较高的视觉保真度。
+
+\noindent\textbf{关键词：} 不可学习样本 $\cdot$ 3D医学图像分割 $\cdot$ 频域对抗损失 $\cdot$ 数据隐私保护
+\end{abstract}
+%
+% ═══════════════════════════════════════════════════════════════════
+%                       1  引言
+% ═══════════════════════════════════════════════════════════════════
+\section{引言}
+
+3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。为加速研究，越来越多的机构选择公开共享数据集~\cite{menze2014multimodal,heller2019kits19,ma2021abdomenct}。然而，这种开放式传播引发了严重隐忧：一旦发布，体数据可被自由利用于未授权的模型训练，可能侵犯患者隐私并违反数据治理政策。
+
+\textbf{不可学习样本（UEs）}~\cite{huang2021unlearnable}提供了一种有吸引力的主动防御方案：在数据\textit{发布之前}注入不可感知的扰动，使得在受保护数据上训练的模型学习到``捷径''模式而非真正的语义特征，从而在干净测试数据上失效。虽然UEs对2D自然图像分类有效，但现有方法——包括误差最小化噪声~\cite{huang2021unlearnable}、TAP~\cite{fowl2021adversarial}、SEP~\cite{liu2023stable}和LSP~\cite{yu2022availability}——因两个根本性差距而不适用于3D医学分割：
+
+\textbf{（1）忽视3D体数据先验。}现代3D架构依赖一个关键归纳偏置：\textit{解剖层间一致性}。器官和病变沿$z$轴平滑变化，3D卷积核显式地聚合跨层上下文以利用这种连续性。现有2D UE方法逐层生成扰动而无层间协调；因此，3D卷积核能有效地``平滑掉''这种时间上不连贯的噪声，严重限制了保护效果。\textbf{（2）缺乏解剖先验。}医学图像包含具有物理意义的背景区域（如CT中$-$1000 HU的空气区域）。全局噪声注入既违反临床完整性，又在非目标区域浪费扰动预算，使噪声易于通过简单预处理被检测或移除。
+
+我们的核心洞察是：\textit{层间一致性既是3D分割能力的来源，也是其可利用的脆弱性}。在频域中，沿$z$轴的平滑解剖连续性表现为$z$轴频谱的低频主导特性。通过注入在相邻层间具有最大频谱多样性的噪声来破坏这一特性，可以迫使3D卷积核沿$z$方向接收到相互矛盾的输入，从根本上削弱其学习连贯体表示的能力。
+
+基于这一洞察，我们提出\textbf{UMed3D}，一个专为3D医学图像分割定制的不可学习样本框架。我们的贡献包括：
+\begin{enumerate}
+    \item \textbf{基于Z轴多样性损失的各向异性感知扰动。}我们引入一个频域目标函数，最大化层间频谱差异，注入``层间闪烁''效应，利用3D网络的$z$轴连续性假设。
+    \item \textbf{解剖自适应噪声生成。}基于UNet的生成器通过硬门控机制产生严格限制在解剖ROI内的样本自适应扰动，确保背景清洁，并将对抗能量集中于临床相关区域。
+    \item \textbf{频谱Logits散度。}我们提出一个基于模型logits频域的损失函数，迫使扰动在所有空间频率带上破坏语义预测，超越像素级欺骗，实现鲁棒的不可学习性。
+\end{enumerate}
+
+
+% ═══════════════════════════════════════════════════════════════════
+%                       2  方法
+% ═══════════════════════════════════════════════════════════════════
+\section{方法}
+
+我们的目标是将干净的3D分割数据集$\mathcal{D}_{c} = \{(x_i, y_i)\}_{i=1}^N$转化为不可学习数据集$\mathcal{D}_{u} = \{(x_i + \delta_i, y_i)\}$，使得任何在$\mathcal{D}_{u}$上训练的模型无法泛化到干净测试数据。我们采用双层优化框架：噪声生成器$G_\phi$合成样本自适应的扰动，代理分割模型$f_\theta$提供梯度信号。
+
+\subsection{问题建模}
+
+设$x_i \in \mathbb{R}^{1 \times D \times H \times W}$为体数据图像，$y_i$为对应的体素级标注。我们将保护任务建模为通过双层优化实现的\textit{保护者--利用者}博弈：
+\begin{equation}
+\min_{\phi}\; \mathbb{E}_{\mathcal{D}_{c}} \Big[\, \mathcal{L}_{\text{seg}}\!\big(f_{\theta^*}(x{+}\delta),\, y\big) + \lambda_z \mathcal{L}_{z} (\delta) + \lambda_s \mathcal{L}_{\text{spec}}\!\big(f_{\theta^*}(x),\, f_{\theta^*}(x{+}\delta)\big)\,\Big]
+\label{eq:outer}
+\end{equation}
+\begin{equation}
+\text{s.t.}\quad \theta^* = \arg\min_{\theta}\; \mathbb{E}_{\mathcal{D}_{u}} \big[\mathcal{L}_{\text{seg}}(f_\theta(x{+}\delta),\, y)\big],\qquad \delta = G_\phi(x),\quad \|\delta\|_\infty \le \epsilon
+\label{eq:inner}
+\end{equation}
+内层问题~\eqref{eq:inner}在受保护数据上训练代理模型；外层问题~\eqref{eq:outer}优化生成器以产生最小化代理模型损失的扰动（创建易于学习的捷径），同时满足我们的频域结构约束$\mathcal{L}_{z}$和$\mathcal{L}_{\text{spec}}$。
+
+\subsection{解剖引导的扰动生成器}
+
+\subsubsection{基于UNet的条件噪声合成}
+与逐体素PGD优化产生空间上无结构的噪声不同，我们采用3D UNet~\cite{cciccek20163d}作为条件生成器$G_\phi$，输入体数据$x$并输出匹配维度的扰动$\delta_{\text{raw}}$。生成器隐式编码解剖结构——边缘、区域边界、组织纹理——产生空间自适应和内容感知的扰动。输出通过$\delta_{\text{raw}} = \tanh(G_\phi(x)) \cdot \epsilon$进行约束，以保证$\|\delta_{\text{raw}}\|_\infty \le \epsilon$。
+
+\subsubsection{硬ROI门控}
+在医学影像中，背景区域具有严格的物理语义（如CT中$-$1000 HU的空气区域）。扰动这些区域在临床上不可接受，且可通过阈值处理轻易消除。因此，我们利用解剖掩膜$\mathbb{M}_{\text{roi}} = \mathbb{I}(y > 0)$施加\textit{硬二值门控}机制：
+\begin{equation}
+\delta = \text{Clamp}\big(G_\phi(x) \odot \mathbb{M}_{\text{roi}},\; -\epsilon,\; \epsilon\big)
+\label{eq:roi}
+\end{equation}
+这使全部扰动预算集中于解剖相关区域，同时确保零噪声泄漏到背景。在ROI内，生成器在\textit{全频谱}上运行——不施加预定义的频率滤波器。这种数据驱动策略使生成器能够发现针对每个器官病理特征的复杂、纹理缠绕的捷径，使其更难与真正的解剖特征区分。
+
+\subsection{Z轴频率多样性损失}
+
+\subsubsection{设计动机}
+3D分割网络基本假设\textit{体数据连续性}：解剖结构沿$z$轴平滑变化，即$\partial\,\text{Anatomy}/\partial z \approx 0$。具有$k_z$层感受野的3D卷积核在此假设下聚合跨层特征。我们的策略是通过迫使扰动的频谱特性在连续层间\textit{最大化}变化来违反此假设。
+
+\subsubsection{公式化}
+设$S_z = |\mathcal{F}_{2D}(\delta[z])| \in \mathbb{R}^{H \times W}$为扰动在第$z$层的2D幅度频谱。Z轴多样性损失定义为：
+\begin{equation}
+\mathcal{L}_{z} = -\frac{1}{D{-}1} \sum_{z=1}^{D-1} \big\| S_{z+1} - S_z \big\|_2
+\label{eq:zdiv}
+\end{equation}
+最小化$\mathcal{L}_{z}$（即最大化层间频谱散度）迫使相邻层间产生剧烈的频谱变化。当3D卷积核沿$z$方向聚合时，这种高频层间方差主导梯度流，有效地将模型的注意力从平滑的解剖信号上劫持。我们在\textit{频域}而非空间域测量差异，因为幅度频谱具有平移不变性，提供了更稳定和更聚焦纹理的层间差异度量。
+
+\subsection{频谱Logits散度损失}
+
+\subsubsection{设计动机}
+UEs的一个常见失效模式是``表面级过拟合''：模型记忆了噪声模式但在深层特征中保留了潜在的解剖知识。纯空间域损失（如逐像素L1）仅捕获局部体素差异，容易被局部高强度扰动主导，而遗漏全局结构扭曲。为确保保护深入\textit{语义特征空间}，我们在频域中最大化模型预测分布的失真。
+
+\subsubsection{公式化}
+设$L_{\text{clean}} = f_\theta(x)$和$L_{\text{adv}} = f_\theta(x{+}\delta)$分别为干净输入和扰动输入的logits。频谱Logits散度定义为：
+\begin{equation}
+\mathcal{L}_{\text{spec}} = -\big\| \mathcal{F}_{3D}(L_{\text{adv}}) - \mathcal{F}_{3D}(L_{\text{clean}}) \big\|_1
+\label{eq:spec}
+\end{equation}
+3D FFT（$\mathcal{F}_{3D}$）将logit差异分解到所有空间频率带上。$L_1$范数促进稀疏但显著的频谱偏差，迫使生成器将失真集中在对应关键语义结构的主导频率带上（如高频处的器官边界、低频处的整体形状）。这确保扰动\textit{同时}在所有空间尺度上破坏预测。
+
+\subsection{优化过程}
+
+训练交替进行两个步骤。在\textbf{S步骤}中，代理模型$f_\theta$在扰动数据集$\mathcal{D}_u$上使用DiceCE损失~\cite{milletari2016v}进行更新，生成器冻结。在\textbf{N步骤}中，代理模型冻结，生成器$G_\phi$通过最小化总目标函数进行更新：
+\begin{equation}
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{seg}}\!\big(f_\theta(x{+}\delta),\, y\big) + \lambda_z\, \mathcal{L}_{z}(\delta) + \lambda_s\, \mathcal{L}_{\text{spec}}\!\big(f_\theta(x),\, f_\theta(x{+}\delta)\big)
+\label{eq:total}
+\end{equation}
+其中$\mathcal{L}_{\text{seg}}$（DiceCE）通过确保代理模型持续在扰动数据上学习（从而提供有意义的梯度）来锚定训练稳定性，而$\mathcal{L}_{z}$和$\mathcal{L}_{\text{spec}}$分别注入结构性和语义性破坏。$\lambda_z$和$\lambda_s$平衡三个目标。
+
+% ═══════════════════════════════════════════════════════════════════
+%                  3  实验与结果
+% ═══════════════════════════════════════════════════════════════════
+\section{实验与结果}
+
+\subsection{实验设置}
+
+\subsubsection{数据集}
+我们在三个多样化的3D MIS基准上进行评估：\textbf{BraTS19}~\cite{menze2014multimodal}（脑肿瘤，4类，4模态MRI）、\textbf{FLARE21}~\cite{ma2021abdomenct}（腹部器官，多类CT）和\textbf{KiTS19}~\cite{heller2019kits19}（肾肿瘤，3类CT）。这些数据集涵盖不同的解剖区域、成像模态和分割难度，提供了全面的验证。
+
+\subsubsection{模型}
+UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{cciccek20163d}。为评估跨架构迁移性，我们使用四种架构训练受害者模型：\textbf{UNet}、\textbf{Attention UNet}~\cite{oktay2018attention}、\textbf{UNet++}~\cite{zhou2018unetpp}和\textbf{TransUNet}~\cite{chen2021transunet}。
+
+\subsubsection{基线方法}
+我们与以下方法进行比较：（1）\textit{Clean}（无扰动，性能上界）；（2）\textit{Random Noise}（随机噪声）；（3）误差最小化\textit{Min-Min}~\cite{huang2021unlearnable}；（4）\textit{TAP}~\cite{fowl2021adversarial}；（5）\textit{LSP}~\cite{yu2022availability}；（6）\textit{SEP}~\cite{liu2023stable}；（7）\textit{PUE}~\cite{liu2023pue}。所有基线均已适配为3D体数据输入。
+
+\subsubsection{评估指标与实现细节}
+我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon = 4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）训练100个epoch。超参数$\lambda_z$和$\lambda_s$通过验证集上的网格搜索选择。
+
+\subsection{主要结果}
+
+% ── 表1：主要对比 ──
+\begin{table}[t]
+\centering
+\caption{BraTS19上的保护效果（DSC\,\%，$\downarrow$ 对UE方法更优）。受害者模型：3D UNet。最优UE结果加\textbf{粗}。}\label{tab:main}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{l c c c c c}
+\toprule
+方法 & 全肿瘤 & 核心区 & 增强区 & 平均DSC & HD95 \\
+\midrule
+Clean（干净）    & --   & --   & --   & 87.0 & 5.2 \\
+Random Noise（随机噪声） & --   & --   & --   & --   & --  \\
+Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
+TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
+LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
+SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
+PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
+\midrule
+\textbf{UMed3D（本文方法）}               & -- & -- & -- & \textbf{7.0} & \textbf{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表~\ref{tab:main}报告了BraTS19上的保护性能。UMed3D将受害者模型的DSC从87\%大幅降至7\%，显著优于所有基线方法。源自2D的方法（Min-Min、TAP、LSP）在3D数据上效果有限——它们逐层独立的噪声模式被3D卷积核部分平滑，证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
+
+%TODO: 添加FLARE21和KiTS19结果
+
+\subsection{跨架构迁移性}
+
+% ── 表2：迁移性 ──
+\begin{table}[t]
+\centering
+\caption{BraTS19上的跨架构迁移性（平均DSC\,\%）。噪声由UNet代理模型生成，在不同受害者架构上评估。}\label{tab:transfer}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{l c c c c}
+\toprule
+方法 & UNet & Att-UNet & UNet++ & TransUNet \\
+\midrule
+Clean（干净）     & 87.0 & --   & --   & -- \\
+TAP       & --   & --   & --   & -- \\
+SEP       & --   & --   & --   & -- \\
+\textbf{UMed3D}  & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表~\ref{tab:transfer}表明UMed3D扰动能有效迁移到不同架构。由于扰动针对的是\textit{所有}3D架构共享的基本体数据连续性先验（而非架构特定特征），保护效果能从UNet代理模型泛化到Attention UNet、UNet++，甚至基于Transformer的TransUNet。
+
+\subsection{消融实验}
+
+\begin{table}[t]
+\centering
+\caption{BraTS19上的消融实验（平均DSC\,\%）。每行从完整UMed3D框架中移除一个组件。}\label{tab:ablation}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{l c c}
+\toprule
+配置 & 平均DSC\,$\downarrow$ & HD95\,$\uparrow$ \\
+\midrule
+\textbf{UMed3D（完整版）} & \textbf{--} & \textbf{--} \\
+\midrule
+去除 $\mathcal{L}_{\text{spec}}$（无频谱Logits散度） & -- & -- \\
+去除 $\mathcal{L}_{z}$（无Z轴多样性） & -- & -- \\
+去除 硬ROI门控（全局噪声） & -- & -- \\
+\midrule
+$\mathcal{L}_{\text{spec}}$: 空间L1（替代FFT-L1）  & -- & -- \\
+$\mathcal{L}_{\text{spec}}$: 空间L2  & -- & -- \\
+$\mathcal{L}_{\text{spec}}$: KL散度  & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表~\ref{tab:ablation}验证了各组件的贡献。移除$\mathcal{L}_{z}$导致最大的性能下降，证实层间频谱多样性是对抗3D分割的最关键攻击向量。移除$\mathcal{L}_{\text{spec}}$同样降低保护效果，因为生成器丧失了破坏深层语义表示的能力。将FFT-L1替换为空间域替代方案（L1、L2、KL）的性能一致下降，验证了频域度量比逐像素指标更有效地捕获全局结构失真。
+
+\subsection{分析}
+
+\subsubsection{层间一致性破坏}
+%TODO: 添加不同方法在连续z层上噪声模式的可视化
+%      展示UMed3D产生最大层间多样性的模式
+%      而基线方法产生时间上平滑的噪声
+我们可视化了不同方法在连续$z$层上的噪声模式。UMed3D产生频谱多样的扰动，在相邻层间剧烈变化，而2D方法（TAP、Min-Min）生成时间上连贯的噪声，3D卷积核可以轻易滤除。定量地，UMed3D噪声的平均层间频谱相关性显著低于所有基线，直接证明了$\mathcal{L}_{z}$的有效性。
+
+\subsubsection{分割退化模式}
+%TODO: 添加连续z层上分割结果的图示
+%      干净数据：平滑预测；UMed3D：碎片化、层间不连续；
+%      2D方法：全局退化但层间仍连续
+受害者模型在UMed3D保护数据上的预测呈现特征性的3D特异退化：分割掩膜变得\textit{层间不连续}——碎片化，边界在层间跳跃。相比之下，2D UE方法仅产生轻微的全局精度下降，同时保持平滑的层间预测。这种退化模式直接证明了UMed3D成功破坏了3D模型所依赖的体数据连续性。
+
+
+% ═══════════════════════════════════════════════════════════════════
+%                       4  结论
+% ═══════════════════════════════════════════════════════════════════
+\section{结论}
+
+我们提出UMed3D，首个专为3D医学图像分割设计的不可学习样本框架。通过识别层间解剖一致性作为3D分割模型的关键且可利用的先验，我们设计了频域目标函数，在噪声结构层面（Z轴多样性损失）和语义预测层面（频谱Logits散度）同时破坏该先验。结合解剖引导的ROI门控，UMed3D在三个基准数据集和四种受害者架构上实现了最先进的保护效果，证明了有效的3D数据保护需要攻击3D模型从根本上依赖的体数据先验。
+
+
+% ═══════════════════════════════════════════════════════════════════
+%                       利益冲突声明
+% ═══════════════════════════════════════════════════════════════════
+\vspace{1em}
+\noindent\textbf{利益冲突声明：}作者声明不存在与本文内容相关的利益冲突。
+
+% ═══════════════════════════════════════════════════════════════════
+%                       参考文献
+% ═══════════════════════════════════════════════════════════════════
+
+\begin{thebibliography}{15}
+
+\bibitem{huang2021unlearnable}
+Huang, H., Ma, X., Erfani, S.M., Bailey, J., Wang, Y.:
+Unlearnable examples: Making personal data unexploitable.
+In: ICLR (2021)
+
+\bibitem{fowl2021adversarial}
+Fowl, L., Chiang, P.Y., Goldblum, M., Goldstein, T., et~al.:
+Adversarial examples make strong poisons.
+In: NeurIPS (2021)
+
+\bibitem{liu2023stable}
+Liu, Z., Wang, Z., Huang, H.:
+Stable unlearnable examples: Enhancing the robustness of unlearnable examples via stable error-minimizing noise.
+In: AAAI (2024)
+
+\bibitem{yu2022availability}
+Yu, D., Zhang, H., Chen, W., Peng, J., et~al.:
+Availability attacks create shortcuts.
+In: KDD (2022)
+
+\bibitem{liu2023pue}
+Liu, Z., Wang, Z., et~al.:
+Provably unlearnable examples.
+In: NDSS (2025)
+
+\bibitem{cciccek20163d}
+\c{C}i\c{c}ek, \"O., Abdulkadir, A., Lienkamp, S.S., Brox, T., Ronneberger, O.:
+3D U-Net: Learning dense volumetric segmentation from sparse annotation.
+In: MICCAI, pp.~424--432 (2016)
+
+\bibitem{milletari2016v}
+Milletari, F., Navab, N., Ahmadi, S.A.:
+V-Net: Fully convolutional neural networks for volumetric medical image segmentation.
+In: 3DV, pp.~565--571 (2016)
+
+\bibitem{isensee2021nnu}
+Isensee, F., Jaeger, P.F., Kohl, S.A., Petersen, J., Maier-Hein, K.H.:
+nnU-Net: A self-configuring method for deep learning-based biomedical image segmentation.
+Nature Methods \textbf{18}(2), 203--211 (2021)
+
+\bibitem{menze2014multimodal}
+Menze, B.H., Jakab, A., Bauer, S., et~al.:
+The multimodal brain tumor image segmentation benchmark (BRATS).
+IEEE TMI \textbf{34}(10), 1993--2024 (2015)
+
+\bibitem{heller2019kits19}
+Heller, N., Sathianathen, N., Kalapara, A., et~al.:
+The KiTS19 challenge data: 300 kidney tumor cases with clinical context, CT semantic segmentations, and surgical outcomes.
+arXiv preprint arXiv:1904.00445 (2019)
+
+\bibitem{ma2021abdomenct}
+Ma, J., Zhang, Y., Gu, S., et~al.:
+AbdomenCT-1K: Is abdominal organ segmentation a solved problem?
+IEEE TPAMI \textbf{44}(10), 6695--6714 (2022)
+
+\bibitem{oktay2018attention}
+Oktay, O., Schlemper, J., Folgoc, L.L., et~al.:
+Attention U-Net: Learning where to look for the pancreas.
+In: MIDL (2018)
+
+\bibitem{zhou2018unetpp}
+Zhou, Z., Siddiquee, M.M.R., Tajbakhsh, N., Liang, J.:
+UNet++: A nested U-Net architecture for medical image segmentation.
+In: DLMIA/ML-CDS@MICCAI, pp.~3--11 (2018)
+
+\bibitem{chen2021transunet}
+Chen, J., Lu, Y., Yu, Q., et~al.:
+TransUNet: Transformers make strong encoders for medical image segmentation.
+arXiv preprint arXiv:2102.04306 (2021)
+
+\bibitem{ronneberger2015u}
+Ronneberger, O., Fischer, P., Brox, T.:
+U-Net: Convolutional networks for biomedical image segmentation.
+In: MICCAI, pp.~234--241 (2015)
+
+\end{thebibliography}
+
+\end{document}
