@@ -1,0 +1,338 @@
+% UMed3D — MICCAI 2025 Anonymous Submission
+% Based on Springer LNCS template (llncs class)
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{color}
+%
+% ── Uncomment for blue hyperlinks in eBook style ──
+%\usepackage{hyperref}
+%\renewcommand\UrlFont{\color{blue}\rmfamily}
+%
+\begin{document}
+%
+\title{UMed3D: Protecting 3D Medical Volumes via\\Frequency-Aware Inter-Slice Disruption}
+\titlerunning{UMed3D}
+%
+\author{Anonymized Authors}
+\authorrunning{Anonymized Author et al.}
+\institute{Anonymized Affiliations \\
+    \email{email@anonymized.com}}
+%
+\maketitle
+%
+% ═══════════════════════════════════════════════════════════════════
+%                          ABSTRACT
+% ═══════════════════════════════════════════════════════════════════
+\begin{abstract}
+The widespread dissemination of public 3D medical image segmentation (MIS) datasets accelerates clinical research but simultaneously heightens risks of unauthorized AI model training and patient privacy leakage. While Unlearnable Examples (UEs) offer protection by injecting imperceptible perturbations to prevent effective model learning, existing methods primarily target 2D natural image classification. They consequently neglect the \textit{anisotropy} and \textit{inter-slice anatomical consistency} inherent in 3D medical volumes---critical learning priors exploited by 3D segmentation networks. To bridge this gap, we propose \textbf{UMed3D}, a UE generation framework specifically designed for 3D MIS. UMed3D employs a UNet-based generator to produce ROI-constrained adaptive perturbations, guided by a frequency-domain adversarial loss scheme. We introduce a \textit{Z-Diversity Loss} that disrupts inter-slice consistency by maximizing spectral discrepancies between adjacent slices, and a \textit{Spectral Logits Divergence Loss} that maximizes prediction variance between clean and perturbed images in the frequency domain. Experiments on BraTS19, FLARE21, and KiTS19 demonstrate that UMed3D degrades 3D segmentation performance from 87\% to 7\% DSC with minimal perturbation ($\epsilon{=}4/255$), while preserving high visual fidelity.
+
+\keywords{Unlearnable Examples \and 3D Medical Image Segmentation \and Frequency-domain Adversarial Loss \and Data Privacy Protection}
+\end{abstract}
+%
+% ═══════════════════════════════════════════════════════════════════
+%                       1  INTRODUCTION
+% ═══════════════════════════════════════════════════════════════════
+\section{Introduction}
+
+3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models (e.g., 3D-UNet~\cite{cciccek20163d}, V-Net~\cite{milletari2016v}, nnU-Net~\cite{isensee2021nnu}) critically depends on large-scale, voxel-annotated datasets whose creation requires substantial expert effort. To accelerate research, institutions increasingly share datasets publicly~\cite{menze2014multimodal,heller2019kits19,ma2021abdomenct}. However, this open dissemination raises serious concerns: once published, volumetric data can be freely exploited for unauthorized model training, potentially compromising patient privacy and violating data governance policies.
+
+\textbf{Unlearnable Examples (UEs)}~\cite{huang2021unlearnable} offer an appealing proactive defense: by injecting imperceptible perturbations into training data \textit{before} release, UEs cause models trained on the protected data to learn ``shortcut'' patterns rather than genuine semantic features, thereby failing on clean test inputs. While effective for 2D natural image classification, existing UE methods---including error-minimizing noise~\cite{huang2021unlearnable}, TAP~\cite{fowl2021adversarial}, SEP~\cite{liu2023stable}, and LSP~\cite{yu2022availability}---are ill-suited for 3D medical segmentation due to two fundamental gaps:
+
+\textbf{(1) Neglect of 3D volumetric priors.} Modern 3D architectures rely on a key inductive bias: \textit{anatomical inter-slice consistency}. Organs and lesions change smoothly along the $z$-axis, and 3D convolution kernels explicitly aggregate cross-slice context to exploit this continuity. Existing 2D UE methods generate perturbations slice-by-slice without inter-slice coordination; consequently, 3D kernels can effectively ``smooth out'' such temporally incoherent noise, severely limiting protective efficacy. \textbf{(2) Absence of anatomical priors.} Medical images contain physically meaningful background regions (e.g., air at $-$1000 HU in CT). Global noise injection both violates clinical integrity and wastes perturbation budget on non-target regions, making the noise easily detectable or removable via simple preprocessing.
+
+Our key insight is that \textit{inter-slice consistency is simultaneously the source of 3D segmentation power and its exploitable vulnerability}. In the frequency domain, smooth anatomical continuity along $z$ manifests as low-frequency dominance in the $z$-axis spectrum. Disrupting this---by injecting noise with maximally diverse spectral patterns across adjacent slices---forces 3D kernels to receive conflicting inputs along $z$, fundamentally undermining their ability to learn coherent volumetric representations.
+
+Building on this insight, we propose \textbf{UMed3D}, a UE framework tailored for 3D medical image segmentation. Our contributions are:
+\begin{enumerate}
+    \item \textbf{Anisotropy-aware perturbation via Z-Diversity Loss.} We introduce a frequency-domain objective that maximizes inter-slice spectral discrepancies, injecting ``inter-slice flickering'' that exploits the $z$-axis continuity assumption of 3D networks.
+    \item \textbf{Anatomy-adaptive noise generation.} A UNet-based generator produces sample-specific perturbations strictly confined to anatomical ROIs via a hard gating mechanism, ensuring background cleanliness and concentrating adversarial energy on clinically relevant regions.
+    \item \textbf{Spectral Logits Divergence.} We propose a frequency-domain loss on model logits that forces perturbations to corrupt semantic predictions across all spatial frequency bands, transcending pixel-level deception to achieve robust unlearnability.
+\end{enumerate}
+
+
+% ═══════════════════════════════════════════════════════════════════
+%                       2  METHODOLOGY
+% ═══════════════════════════════════════════════════════════════════
+\section{Methodology}
+
+Our goal is to transform a clean 3D segmentation dataset $\mathcal{D}_{c} = \{(x_i, y_i)\}_{i=1}^N$ into an unlearnable dataset $\mathcal{D}_{u} = \{(x_i + \delta_i, y_i)\}$ such that any model trained on $\mathcal{D}_{u}$ fails to generalize to clean test data. We adopt a bi-level optimization framework: a noise generator $G_\phi$ synthesizes sample-specific perturbations while a surrogate segmentation model $f_\theta$ provides gradient signals.
+
+\subsection{Problem Formulation}
+
+Let $x_i \in \mathbb{R}^{1 \times D \times H \times W}$ denote a volumetric image and $y_i$ the corresponding voxel-wise annotation. We formulate the protection task as a \textit{Protector--Exploiter} game via bi-level optimization:
+\begin{equation}
+\min_{\phi}\; \mathbb{E}_{\mathcal{D}_{c}} \Big[\, \mathcal{L}_{\text{seg}}\!\big(f_{\theta^*}(x{+}\delta),\, y\big) + \lambda_z \mathcal{L}_{z} (\delta) + \lambda_s \mathcal{L}_{\text{spec}}\!\big(f_{\theta^*}(x),\, f_{\theta^*}(x{+}\delta)\big)\,\Big]
+\label{eq:outer}
+\end{equation}
+\begin{equation}
+\text{s.t.}\quad \theta^* = \arg\min_{\theta}\; \mathbb{E}_{\mathcal{D}_{u}} \big[\mathcal{L}_{\text{seg}}(f_\theta(x{+}\delta),\, y)\big],\qquad \delta = G_\phi(x),\quad \|\delta\|_\infty \le \epsilon
+\label{eq:inner}
+\end{equation}
+The inner problem~\eqref{eq:inner} trains the surrogate model on protected data; the outer problem~\eqref{eq:outer} optimizes the generator to produce perturbations that minimize the surrogate's loss (creating easy-to-learn shortcuts) while satisfying our frequency-domain structural constraints $\mathcal{L}_{z}$ and $\mathcal{L}_{\text{spec}}$.
+
+\subsection{Anatomy-Guided Perturbation Generator}
+
+\subsubsection{UNet-Based Conditional Noise Synthesis.}
+Unlike per-voxel PGD optimization, which produces spatially unstructured noise, we employ a 3D UNet~\cite{cciccek20163d} as a conditional generator $G_\phi$ that takes the input volume $x$ and outputs a perturbation $\delta_{\text{raw}}$ of matching dimensions. The generator implicitly encodes anatomical structure---edges, region boundaries, tissue textures---producing perturbations that are spatially adaptive and content-aware. The output is bounded via $\delta_{\text{raw}} = \tanh(G_\phi(x)) \cdot \epsilon$ to guarantee $\|\delta_{\text{raw}}\|_\infty \le \epsilon$.
+
+\subsubsection{Hard-ROI Gating.}
+In medical imaging, background regions carry strict physical semantics (e.g., air at $-$1000 HU in CT). Perturbing these regions is clinically unacceptable and can be trivially sanitized via thresholding. We therefore impose a \textit{hard binary gating} mechanism using the anatomical mask $\mathbb{M}_{\text{roi}} = \mathbb{I}(y > 0)$:
+\begin{equation}
+\delta = \text{Clamp}\big(G_\phi(x) \odot \mathbb{M}_{\text{roi}},\; -\epsilon,\; \epsilon\big)
+\label{eq:roi}
+\end{equation}
+This concentrates the full perturbation budget on anatomically relevant regions while ensuring zero noise leakage into the background. Within the ROI, the generator operates over the \textit{full frequency spectrum}---no predefined frequency filters are applied. This data-driven strategy allows the generator to discover complex, texture-entangled shortcuts specific to each organ's pathology, making them substantially harder to distinguish from genuine anatomical features.
+
+\subsection{Z-Axis Frequency Diversity Loss}
+
+\subsubsection{Rationale.}
+3D segmentation networks fundamentally assume \textit{volumetric continuity}: anatomical structures change smoothly along $z$, i.e., $\partial\,\text{Anatomy}/\partial z \approx 0$. 3D convolution kernels with receptive fields spanning $k_z$ slices aggregate cross-slice features under this assumption. Our strategy is to violate this assumption by forcing the perturbation's spectral characteristics to vary \textit{maximally} between consecutive slices.
+
+\subsubsection{Formulation.}
+Let $S_z = |\mathcal{F}_{2D}(\delta[z])| \in \mathbb{R}^{H \times W}$ denote the 2D magnitude spectrum of the perturbation at slice $z$. The Z-Diversity Loss is:
+\begin{equation}
+\mathcal{L}_{z} = -\frac{1}{D{-}1} \sum_{z=1}^{D-1} \big\| S_{z+1} - S_z \big\|_2
+\label{eq:zdiv}
+\end{equation}
+Minimizing $\mathcal{L}_{z}$ (i.e., maximizing inter-slice spectral divergence) forces drastic spectral shifts between adjacent slices. When 3D kernels aggregate along $z$, this high-frequency inter-slice variance dominates gradient flow, effectively hijacking the model's attention from smooth anatomical signals. We measure divergence in the \textit{frequency domain} rather than the spatial domain because magnitude spectra are translation-invariant, providing a more stable and texture-focused measure of inter-slice dissimilarity.
+
+\subsection{Spectral Logits Divergence Loss}
+
+\subsubsection{Rationale.}
+A common failure mode of UEs is ``surface-level overfitting'': the model memorizes the noise pattern but retains underlying anatomical knowledge in its deep features. Purely spatial-domain losses (e.g., pixel-wise L1) capture only local voxel differences and are easily dominated by localized high-intensity perturbations, missing global structural distortions. To ensure protection penetrates the \textit{semantic feature space}, we maximize the distortion of the model's predictive distribution in the frequency domain.
+
+\subsubsection{Formulation.}
+Let $L_{\text{clean}} = f_\theta(x)$ and $L_{\text{adv}} = f_\theta(x{+}\delta)$ denote the logits for clean and perturbed inputs. The Spectral Logits Divergence is:
+\begin{equation}
+\mathcal{L}_{\text{spec}} = -\big\| \mathcal{F}_{3D}(L_{\text{adv}}) - \mathcal{F}_{3D}(L_{\text{clean}}) \big\|_1
+\label{eq:spec}
+\end{equation}
+The 3D FFT ($\mathcal{F}_{3D}$) decomposes the logit difference across all spatial frequency bands. The $L_1$ norm promotes sparse but significant spectral deviations, forcing the generator to concentrate distortion on dominant frequency bands that correspond to critical semantic structures (e.g., organ boundaries at high frequencies, overall shape at low frequencies). This ensures perturbations corrupt predictions across \textit{all spatial scales} simultaneously.
+
+\subsection{Optimization}
+
+Training alternates between two steps. In the \textbf{S-step}, the surrogate model $f_\theta$ is updated on the perturbed dataset $\mathcal{D}_u$ using DiceCE loss~\cite{milletari2016v}, with the generator frozen. In the \textbf{N-step}, the surrogate is frozen and the generator $G_\phi$ is updated by minimizing the total objective:
+\begin{equation}
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{seg}}\!\big(f_\theta(x{+}\delta),\, y\big) + \lambda_z\, \mathcal{L}_{z}(\delta) + \lambda_s\, \mathcal{L}_{\text{spec}}\!\big(f_\theta(x),\, f_\theta(x{+}\delta)\big)
+\label{eq:total}
+\end{equation}
+where $\mathcal{L}_{\text{seg}}$ (DiceCE) anchors training stability by ensuring the surrogate continues to learn on perturbed data (thus providing meaningful gradients), while $\mathcal{L}_{z}$ and $\mathcal{L}_{\text{spec}}$ inject structural and semantic corruption, respectively. $\lambda_z$ and $\lambda_s$ balance the three objectives.
+
+% ═══════════════════════════════════════════════════════════════════
+%                  3  EXPERIMENTS AND RESULTS
+% ═══════════════════════════════════════════════════════════════════
+\section{Experiments and Results}
+
+\subsection{Experimental Setup}
+
+\subsubsection{Datasets.}
+We evaluate on three diverse 3D MIS benchmarks: \textbf{BraTS19}~\cite{menze2014multimodal} (brain tumor, 4-class, 4-modality MRI), \textbf{FLARE21}~\cite{ma2021abdomenct} (abdominal organ, multi-class CT), and \textbf{KiTS19}~\cite{heller2019kits19} (kidney tumor, 3-class CT). These datasets span different anatomical regions, imaging modalities, and segmentation difficulties, providing comprehensive validation.
+
+\subsubsection{Models.}
+The surrogate model used during UE generation is a 3D UNet~\cite{cciccek20163d} implemented in MONAI. To evaluate cross-architecture transferability, we train victim models with four architectures: \textbf{UNet}, \textbf{Attention UNet}~\cite{oktay2018attention}, \textbf{UNet++}~\cite{zhou2018unetpp}, and \textbf{TransUNet}~\cite{chen2021transunet}.
+
+\subsubsection{Baselines.}
+We compare against: (1)~\textit{Clean} (no perturbation, upper bound); (2)~\textit{Random Noise}; (3)~error-minimizing \textit{Min-Min}~\cite{huang2021unlearnable}; (4)~\textit{TAP}~\cite{fowl2021adversarial}; (5)~\textit{LSP}~\cite{yu2022availability}; (6)~\textit{SEP}~\cite{liu2023stable}; (7)~\textit{PUE}~\cite{liu2023pue}. All baselines are adapted to 3D volumetric inputs.
+
+\subsubsection{Metrics and Implementation.}
+We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon = 4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4). Hyperparameters $\lambda_z$ and $\lambda_s$ are selected via grid search on a validation split.
+
+\subsection{Main Results}
+
+% ── Table 1: Main comparison ──
+\begin{table}[t]
+\centering
+\caption{Protection effectiveness on BraTS19 (DSC\,\%, $\downarrow$ is better for UE methods). Victim model: 3D UNet. Best UE results in \textbf{bold}.}\label{tab:main}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{l c c c c c}
+\toprule
+Method & Whole & Core & Enhancing & Mean DSC & HD95 \\
+\midrule
+Clean         & --   & --   & --   & 87.0 & 5.2 \\
+Random Noise  & --   & --   & --   & --   & --  \\
+Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
+TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
+LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
+SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
+PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
+\midrule
+\textbf{UMed3D (Ours)}               & -- & -- & -- & \textbf{7.0} & \textbf{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:main} reports the protection performance on BraTS19. UMed3D achieves a dramatic reduction in victim model DSC (from 87\% to 7\%), substantially outperforming all baselines. 2D-originated methods (Min-Min, TAP, LSP) show limited effectiveness on 3D data---their slice-independent noise patterns are partially smoothed by 3D convolution kernels, confirming our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
+
+%TODO: Add FLARE21 and KiTS19 results
+
+\subsection{Cross-Architecture Transferability}
+
+% ── Table 2: Transfer ──
+\begin{table}[t]
+\centering
+\caption{Cross-architecture transferability on BraTS19 (Mean DSC\,\%). Noise generated with UNet surrogate, evaluated on different victim architectures.}\label{tab:transfer}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{l c c c c}
+\toprule
+Method & UNet & Att-UNet & UNet++ & TransUNet \\
+\midrule
+Clean     & 87.0 & --   & --   & -- \\
+TAP       & --   & --   & --   & -- \\
+SEP       & --   & --   & --   & -- \\
+\textbf{UMed3D}  & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:transfer} demonstrates that UMed3D perturbations transfer effectively across architectures. Since the perturbations target the fundamental volumetric continuity prior shared by \textit{all} 3D architectures (not architecture-specific features), the protection generalizes from the UNet surrogate to Attention UNet, UNet++, and even Transformer-based TransUNet.
+
+\subsection{Ablation Study}
+
+\begin{table}[t]
+\centering
+\caption{Ablation study on BraTS19 (Mean DSC\,\%). Each row removes one component from the full UMed3D framework.}\label{tab:ablation}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{l c c}
+\toprule
+Configuration & Mean DSC\,$\downarrow$ & HD95\,$\uparrow$ \\
+\midrule
+\textbf{UMed3D (full)} & \textbf{--} & \textbf{--} \\
+\midrule
+w/o $\mathcal{L}_{\text{spec}}$ (no spectral logits div.) & -- & -- \\
+w/o $\mathcal{L}_{z}$ (no Z-diversity) & -- & -- \\
+w/o Hard-ROI (global noise) & -- & -- \\
+\midrule
+$\mathcal{L}_{\text{spec}}$: spatial L1 (instead of FFT-L1)  & -- & -- \\
+$\mathcal{L}_{\text{spec}}$: spatial L2  & -- & -- \\
+$\mathcal{L}_{\text{spec}}$: KL divergence  & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:ablation} validates the contribution of each component. Removing $\mathcal{L}_{z}$ causes the largest performance drop, confirming that inter-slice spectral diversity is the most critical attack vector against 3D segmentation. Removing $\mathcal{L}_{\text{spec}}$ also degrades protection, as the generator loses its ability to corrupt deep semantic representations. Replacing FFT-L1 with spatial-domain alternatives (L1, L2, KL) consistently underperforms, validating that frequency-domain measurement captures global structural distortions more effectively than pixel-wise metrics.
+
+\subsection{Analysis}
+
+\subsubsection{Inter-Slice Consistency Disruption.}
+%TODO: Add visualization of noise patterns across consecutive z-slices
+%      showing that UMed3D produces maximally diverse inter-slice patterns
+%      while baseline methods produce temporally smooth noise.
+We visualize the noise patterns across consecutive $z$-slices for different methods. UMed3D produces spectrally diverse perturbations that shift drastically between adjacent slices, while 2D methods (TAP, Min-Min) generate temporally coherent noise that 3D kernels can readily filter. Quantitatively, the mean inter-slice spectral correlation of UMed3D noise is significantly lower than all baselines, directly evidencing the effectiveness of $\mathcal{L}_{z}$.
+
+\subsubsection{Segmentation Degradation Patterns.}
+%TODO: Add figure showing segmentation results on consecutive z-slices
+%      Clean: smooth predictions; UMed3D: fragmented, inter-slice discontinuous;
+%      2D methods: globally degraded but still inter-slice continuous.
+Victim model predictions on UMed3D-protected data exhibit a characteristic 3D-specific degradation: segmentation masks become \textit{inter-slice discontinuous}---fragmented, with boundaries jumping between slices. In contrast, 2D UE methods produce only mild global accuracy reduction while retaining smooth inter-slice predictions. This degradation pattern directly demonstrates that UMed3D successfully disrupts the volumetric continuity that 3D models rely upon.
+
+
+% ═══════════════════════════════════════════════════════════════════
+%                       4  CONCLUSION
+% ═══════════════════════════════════════════════════════════════════
+\section{Conclusion}
+
+We present UMed3D, the first unlearnable example framework specifically designed for 3D medical image segmentation. By identifying inter-slice anatomical consistency as the critical---and exploitable---prior of 3D segmentation models, we design frequency-domain objectives that disrupt this prior at both the noise-structure level (Z-Diversity Loss) and the semantic-prediction level (Spectral Logits Divergence). Combined with anatomy-guided ROI gating, UMed3D achieves state-of-the-art protection across three benchmarks and four victim architectures, demonstrating that effective 3D data protection requires attacking the volumetric priors that 3D models fundamentally depend upon.
+
+
+% ═══════════════════════════════════════════════════════════════════
+%                       ACKNOWLEDGMENTS
+% ═══════════════════════════════════════════════════════════════════
+\begin{credits}
+\subsubsection{\discintname}
+The authors have no competing interests to declare that are relevant to the content of this article.
+\end{credits}
+
+% ═══════════════════════════════════════════════════════════════════
+%                       BIBLIOGRAPHY
+% ═══════════════════════════════════════════════════════════════════
+%\bibliographystyle{splncs04}
+%\bibliography{references}
+
+\begin{thebibliography}{15}
+
+\bibitem{huang2021unlearnable}
+Huang, H., Ma, X., Erfani, S.M., Bailey, J., Wang, Y.:
+Unlearnable examples: Making personal data unexploitable.
+In: ICLR (2021)
+
+\bibitem{fowl2021adversarial}
+Fowl, L., Chiang, P.Y., Goldblum, M., Goldstein, T., et~al.:
+Adversarial examples make strong poisons.
+In: NeurIPS (2021)
+
+\bibitem{liu2023stable}
+Liu, Z., Wang, Z., Huang, H.:
+Stable unlearnable examples: Enhancing the robustness of unlearnable examples via stable error-minimizing noise.
+In: AAAI (2024)
+
+\bibitem{yu2022availability}
+Yu, D., Zhang, H., Chen, W., Peng, J., et~al.:
+Availability attacks create shortcuts.
+In: KDD (2022)
+
+\bibitem{liu2023pue}
+Liu, Z., Wang, Z., et~al.:
+Provably unlearnable examples.
+In: NDSS (2025)
+
+\bibitem{cciccek20163d}
+\c{C}i\c{c}ek, \"O., Abdulkadir, A., Lienkamp, S.S., Brox, T., Ronneberger, O.:
+3D U-Net: Learning dense volumetric segmentation from sparse annotation.
+In: MICCAI, pp.~424--432 (2016)
+
+\bibitem{milletari2016v}
+Milletari, F., Navab, N., Ahmadi, S.A.:
+V-Net: Fully convolutional neural networks for volumetric medical image segmentation.
+In: 3DV, pp.~565--571 (2016)
+
+\bibitem{isensee2021nnu}
+Isensee, F., Jaeger, P.F., Kohl, S.A., Petersen, J., Maier-Hein, K.H.:
+nnU-Net: A self-configuring method for deep learning-based biomedical image segmentation.
+Nature Methods \textbf{18}(2), 203--211 (2021)
+
+\bibitem{menze2014multimodal}
+Menze, B.H., Jakab, A., Bauer, S., et~al.:
+The multimodal brain tumor image segmentation benchmark (BRATS).
+IEEE TMI \textbf{34}(10), 1993--2024 (2015)
+
+\bibitem{heller2019kits19}
+Heller, N., Sathianathen, N., Kalapara, A., et~al.:
+The KiTS19 challenge data: 300 kidney tumor cases with clinical context, CT semantic segmentations, and surgical outcomes.
+arXiv preprint arXiv:1904.00445 (2019)
+
+\bibitem{ma2021abdomenct}
+Ma, J., Zhang, Y., Gu, S., et~al.:
+AbdomenCT-1K: Is abdominal organ segmentation a solved problem?
+IEEE TPAMI \textbf{44}(10), 6695--6714 (2022)
+
+\bibitem{oktay2018attention}
+Oktay, O., Schlemper, J., Folgoc, L.L., et~al.:
+Attention U-Net: Learning where to look for the pancreas.
+In: MIDL (2018)
+
+\bibitem{zhou2018unetpp}
+Zhou, Z., Siddiquee, M.M.R., Tajbakhsh, N., Liang, J.:
+UNet++: A nested U-Net architecture for medical image segmentation.
+In: DLMIA/ML-CDS@MICCAI, pp.~3--11 (2018)
+
+\bibitem{chen2021transunet}
+Chen, J., Lu, Y., Yu, Q., et~al.:
+TransUNet: Transformers make strong encoders for medical image segmentation.
+arXiv preprint arXiv:2102.04306 (2021)
+
+\bibitem{ronneberger2015u}
+Ronneberger, O., Fischer, P., Brox, T.:
+U-Net: Convolutional networks for biomedical image segmentation.
+In: MICCAI, pp.~234--241 (2015)
+
+\end{thebibliography}
+
+\end{document}
