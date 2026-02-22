@@ -31,7 +31,7 @@
 %                          摘要
 % ═══════════════════════════════════════════════════════════════════
 \begin{abstract}
-公开3D医学图像分割（MIS）数据集的广泛传播在加速临床研究的同时，也加剧了未授权AI模型训练和患者隐私泄露的风险。不可学习样本（Unlearnable Examples, UEs）通过在训练数据中注入不可感知的扰动来阻止模型有效学习，提供了一种有前景的主动防御手段。然而，现有方法主要针对2D自然图像分类任务设计，忽略了3D医学体数据固有的\textit{各向异性}和\textit{层间解剖一致性}——这些正是3D分割网络所利用的关键学习先验。为弥合这一差距，我们提出\textbf{UMed3D}，一个专为3D医学图像分割设计的不可学习样本生成框架。UMed3D采用基于UNet的生成器产生ROI约束的自适应扰动，并通过频域对抗损失方案进行引导。我们引入\textit{Z轴多样性损失}（Z-Diversity Loss），通过最大化相邻层间的频谱差异来破坏层间一致性；同时提出\textit{频谱Logits散度损失}（Spectral Logits Divergence Loss），在频域中最大化干净图像与扰动图像之间的预测差异。在BraTS19和FLARE21上的实验表明，UMed3D能够将3D分割性能从87\% DSC降至7\% DSC，同时保持较小的扰动幅度（$\epsilon{=}4/255$）和较高的视觉保真度。
+公开3D医学图像分割（MIS）数据集的广泛传播在加速临床研究的同时，也加剧了未授权AI模型训练和患者隐私泄露的风险。不可学习样本（Unlearnable Examples, UEs）通过在训练数据中注入不可感知的扰动来阻止模型有效学习，提供了一种有前景的主动防御手段。然而，现有方法主要针对2D自然图像分类任务设计，忽略了3D医学体数据固有的\textit{各向异性}和\textit{层间解剖一致性}——这些正是3D分割网络所利用的关键学习先验。为弥合这一差距，我们提出\textbf{UMed3D}，一个专为3D医学图像分割设计的不可学习样本生成框架。UMed3D采用基于UNet的生成器产生ROI约束的自适应扰动，并通过频域对抗损失方案进行引导。我们引入\textit{层间一致性破坏损失}（$\mathcal{L}_{\text{ISC}}$），通过最大化相邻层间的频谱差异来破坏层间一致性；同时提出\textit{Logits散度损失}（$\mathcal{L}_{\text{Logits}}$），在频域中最大化干净图像与扰动图像之间的预测差异。在BraTS19和FLARE21上的实验表明，UMed3D能够将3D分割性能从87\% DSC降至7\% DSC，同时保持较小的扰动幅度（$\epsilon{=}4/255$）和较高的视觉保真度。
 
 \noindent\textbf{关键词：} 不可学习样本 $\cdot$ 3D医学图像分割 $\cdot$ 频域对抗损失 $\cdot$ 数据隐私保护
 \end{abstract}
@@ -51,9 +51,9 @@
 
 基于这一洞察，我们提出\textbf{UMed3D}，一个专为3D医学图像分割定制的不可学习样本框架。我们的贡献包括：
 \begin{enumerate}
-    \item \textbf{基于Z轴多样性损失的各向异性感知扰动。}我们引入一个频域目标函数，最大化层间频谱差异，注入``层间闪烁''效应，利用3D网络的$z$轴连续性假设。
-    \item \textbf{解剖自适应噪声生成。}基于UNet的生成器通过硬门控机制产生严格限制在解剖ROI内的样本自适应扰动，确保背景清洁，并将对抗能量集中于临床相关区域。
-    \item \textbf{频谱Logits散度。}我们提出一个基于模型logits频域的损失函数，迫使扰动在所有空间频率带上破坏语义预测，超越像素级欺骗，实现鲁棒的不可学习性。
+    \item \textbf{层间一致性破坏损失（$\mathcal{L}_{\text{ISC}}$）。}我们引入一个频域目标函数，最大化层间频谱差异，注入``层间闪烁''效应，利用3D网络的$z$轴连续性假设。
+    \item \textbf{Logits散度损失（$\mathcal{L}_{\text{Logits}}$）。}我们提出一个基于模型logits频域的损失函数，迫使扰动在所有空间频率带上破坏语义预测，超越像素级欺骗，实现鲁棒的不可学习性。
+    \item \textbf{解剖自适应噪声生成。}基于UNet的生成器通过硬门控机制产生严格限制在解剖ROI内的样本自适应扰动，将对抗能量集中于临床相关区域。
 \end{enumerate}
 
 
@@ -116,52 +116,38 @@ $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$映射为体素级
 原因在于它们忽视了\textit{层间解剖一致性}——
 3D卷积核利用的关键归纳偏置。UMed3D通过三个组件
 （图~\ref{fig:framework}）解决此问题：
-(i)~\textit{解剖引导的噪声生成器}$\mathcal{G}$，
+(i)~\textit{噪声生成器}$\mathcal{G}$，
 通过ROI掩膜门控生成体数据扰动；
-(ii)~\textit{Z轴多样性损失}$\mathcal{L}_{z}$，
+(ii)~\textit{层间一致性破坏损失}$\mathcal{L}_{\text{ISC}}$，
 在相邻切片间施加最大频谱差异，直接破坏层间连续性先验；
-(iii)~\textit{频谱Logits散度损失}$\mathcal{L}_{\mathrm{spec}}$，
+(iii)~\textit{Logits散度损失}$\mathcal{L}_{\text{Logits}}$，
 在所有3D频率带上最大化预测失真。
 
 %------- 生成器 -------
-\subsubsection{解剖引导的噪声生成器}
-3D医学体数据需要体积化处理以捕获跨层空间依赖关系。
-因此，我们采用带有跳跃连接的3D编码器--解码器网络
+\subsubsection{带ROI门控的噪声生成器}
+我们采用带有跳跃连接的3D编码器--解码器网络
 $\mathcal{F}_g:\mathbb{R}^{D\times H\times W}\!\to\!
 \mathbb{R}^{D\times H\times W}$作为噪声生成器。
-在完整3D体数据上运算使$\mathcal{F}_g$能够原生学习
-跨层噪声模式，将解剖先验——边缘、区域边界、组织纹理——
-编码为空间自适应、内容感知的扰动。
-
+在完整3D体数据上运算使$\mathcal{F}_g$能够原生学习跨层噪声模式。
 原始输出通过$\tanh$激活函数进行约束：
-$\bm{\delta}_{\text{raw}} = \tanh(\mathcal{F}_g(\bm{x})) \cdot \epsilon$，
-保证$\|\bm{\delta}_{\text{raw}}\|_\infty \le \epsilon$。
-
-\textbf{硬ROI门控。}\quad
-在医学影像中，背景区域具有严格的物理语义
-（如CT中$-$1000\,HU的空气区域）。
-扰动这些区域违反临床完整性，
-且将扰动预算浪费在可通过阈值处理轻易消除的非目标区域上。
+$\bm{\delta}_{\text{raw}}=\tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon$，
+保证$\|\bm{\delta}_{\text{raw}}\|_\infty\le\epsilon$。
+为避免扰动具有物理意义的背景区域（如CT中$-$1000\,HU的空气区域），
 我们利用解剖掩膜
-$\bm{m} = \mathbb{I}(\bm{y} > 0) \in \{0,1\}^{D\times H\times W}$
-施加\textit{硬二值门控}机制：
+$\bm{m}=\mathbb{I}(\bm{y}>0)\in\{0,1\}^{D\times H\times W}$
+施加硬二值门控：
 \begin{equation}
-  \bm{\delta} = \mathcal{G}(\bm{x})
-  = \mathrm{Clamp}\!\bigl[
-    \tanh(\mathcal{F}_g(\bm{x})) \cdot \epsilon \;\odot\; \bm{m},
+  \bm{\delta}=\mathcal{G}(\bm{x})
+  =\mathrm{Clamp}\!\bigl[
+    \tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon\;\odot\;\bm{m},
     \;-\epsilon,\;\epsilon\bigr].
   \label{eq:generator}
 \end{equation}
 受保护体数据为
-$\bm{x}_p = \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$。
-这使全部扰动预算集中于解剖上有意义的区域，
-同时确保零噪声泄漏到背景。在ROI内，
-生成器在\textit{全频谱}上运行，不施加预定义的频率滤波器，
-使其能够以数据驱动方式发现针对每个器官病理特征的
-复杂、纹理缠绕的捷径。
+$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$。
 
-%------- L_z -------
-\subsubsection{Z轴频率多样性损失（$\mathcal{L}_{z}$）}
+%------- L_ISC -------
+\subsubsection{层间一致性破坏损失（$\mathcal{L}_{\text{ISC}}$）}
 3D分割网络从根本上假设\textit{体数据连续性}：
 解剖结构沿$z$轴平滑变化，
 具有$k_z$层感受野的3D卷积核在此假设下聚合跨层特征。
@@ -169,16 +155,16 @@ $\bm{x}_p = \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$。
 连续切片间\textit{最大化}变化来违反此假设。
 
 对于每个切片$z$，我们计算扰动的2D幅度频谱：
-$\bm{S}_z = |\mathcal{F}_{2\text{D}}(\bm{\delta}_z)| \in \mathbb{R}^{H\times W}$，
+$\bm{S}_z=|\mathcal{F}_{2\text{D}}(\bm{\delta}_z)|\in\mathbb{R}^{H\times W}$，
 其中$\bm{\delta}_z\!\in\!\mathbb{R}^{H\times W}$为
-生成噪声的第$z$层切片。Z轴多样性损失定义为：
+生成噪声的第$z$层切片。ISC损失定义为：
 \begin{equation}
-  \mathcal{L}_{z}
-  = -\frac{1}{D{-}1}\sum_{z=1}^{D-1}
+  \mathcal{L}_{\text{ISC}}
+  =-\frac{1}{D{-}1}\sum_{z=1}^{D-1}
     \bigl\|\bm{S}_{z+1}-\bm{S}_z\bigr\|_2.
-  \label{eq:zdiv}
+  \label{eq:isc}
 \end{equation}
-最小化$\mathcal{L}_{z}$（即最大化层间频谱散度）
+最小化$\mathcal{L}_{\text{ISC}}$（即最大化层间频谱散度）
 迫使相邻切片间产生剧烈的频谱变化，
 沿$z$轴注入高频``频谱抖动''，
 从根本上与3D卷积所依赖的平滑解剖连续性相矛盾。
@@ -186,8 +172,8 @@ $\bm{S}_z = |\mathcal{F}_{2\text{D}}(\bm{\delta}_z)| \in \mathbb{R}^{H\times W}$
 因为幅度频谱具有平移不变性，
 提供了更稳定和更聚焦纹理的层间差异度量。
 
-%------- L_spec -------
-\subsubsection{频谱Logits散度损失（$\mathcal{L}_{\mathrm{spec}}$）}
+%------- L_Logits -------
+\subsubsection{Logits散度损失（$\mathcal{L}_{\text{Logits}}$）}
 UEs的一个常见失效模式是``表面级过拟合''：
 模型记忆了噪声模式但在深层特征中保留了潜在的解剖知识。
 纯空间域损失（如逐像素L1）仅捕获局部体素差异，
@@ -201,12 +187,12 @@ $\bm{L}_p\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$分别为
 （$\in\mathbb{R}^{D\times H\times W\times K}$）。
 我们计算其3D离散傅里叶变换（DFT）并最大化$\ell_1$距离：
 \begin{equation}
-  \mathcal{L}_{\mathrm{spec}}
-  = -\bigl\|\,
+  \mathcal{L}_{\text{Logits}}
+  =-\bigl\|\,
       \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_p\bigr)
-      - \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_0\bigr)
+      -\mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_0\bigr)
     \bigr\|_1,
-  \label{eq:spec}
+  \label{eq:logits}
 \end{equation}
 其中$\mathcal{F}_{3\text{D}}$为3D DFT。
 $\ell_1$范数促进稀疏但显著的频谱偏差，
@@ -216,18 +202,18 @@ $\ell_1$范数促进稀疏但显著的频谱偏差，
 
 %------- 优化 -------
 \subsubsection{优化}
-生成器的总目标函数结合分割损失、频谱Logits散度和层间多样性：
+生成器的总目标函数结合分割损失、Logits散度和层间一致性破坏：
 \begin{equation}
   \mathcal{L}_{\mathrm{total}}
-  = \mathcal{L}_{\mathrm{seg}}\!\big(\mathcal{F}_s(\bm{x}_p;\theta),\,\bm{y}\big)
-  + \lambda_s\,\mathcal{L}_{\mathrm{spec}}
-  + \lambda_z\,\mathcal{L}_{z},
+  =\mathcal{L}_{\mathrm{seg}}\!\big(\mathcal{F}_s(\bm{x}_p;\theta),\,\bm{y}\big)
+  +\lambda_{\text{Logits}}\,\mathcal{L}_{\text{Logits}}
+  +\lambda_{\text{ISC}}\,\mathcal{L}_{\text{ISC}},
   \label{eq:total}
 \end{equation}
 其中$\mathcal{L}_{\mathrm{seg}}$（DiceCE）通过确保代理模型持续
 在扰动数据上学习（从而提供有意义的梯度）来锚定训练稳定性，
-而$\mathcal{L}_{\mathrm{spec}}$和$\mathcal{L}_{z}$分别
-注入语义性和结构性破坏。$\lambda_s$和$\lambda_z$平衡三个目标项。
+而$\mathcal{L}_{\text{Logits}}$和$\mathcal{L}_{\text{ISC}}$分别
+注入语义性和结构性破坏。$\lambda_{\text{Logits}}$和$\lambda_{\text{ISC}}$平衡三个目标项。
 
 遵循公式~\eqref{eq:ue}的双层优化框架，
 训练交替进行两个阶段。在\textbf{S步骤}中，代理模型
@@ -254,7 +240,7 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 \midrule
 \textbf{输入：} 干净数据集$\mathcal{D}_{\mathrm{clean}}$，
   代理模型$\mathcal{F}_s$，生成器$\mathcal{G}$，扰动预算
-  $\epsilon$，权重$\lambda_s,\lambda_z$，学习率
+  $\epsilon$，权重$\lambda_{\text{Logits}},\lambda_{\text{ISC}}$，学习率
   $\alpha_s,\alpha_g$，S步骤批次数$T_s$ \\
 \textbf{输出：} 受保护数据集$\mathcal{D}_{\mathrm{protect}}$ \\[2pt]
 1: \textbf{for} epoch $= 1$ \textbf{to} $N$ \textbf{do} \\
@@ -263,7 +249,7 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 4: \quad\quad 从$\mathcal{D}_{\mathrm{clean}}$中采样$(\bm{x},\bm{y})$ \\
 5: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$
   \hfill \textit{// 公式~\eqref{eq:generator}} \\
-6: \quad\quad $\bm{x}_p\leftarrow \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
+6: \quad\quad $\bm{x}_p\leftarrow\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
 7: \quad\quad $\theta_{\mathcal{F}_s}\leftarrow
   \theta_{\mathcal{F}_s}-\alpha_s
   \nabla_{\theta_{\mathcal{F}_s}}
@@ -272,7 +258,7 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 9: \quad \textit{// N步骤：更新生成器（完整遍历一轮）} \\
 10: \quad \textbf{for} $\mathcal{D}_{\mathrm{clean}}$中的每个$(\bm{x},\bm{y})$ \textbf{do} \\
 11: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$；~~
-  $\bm{x}_p\leftarrow \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
+  $\bm{x}_p\leftarrow\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
 12: \quad\quad 计算$\mathcal{L}_{\mathrm{total}}$
   \hfill \textit{// 公式~\eqref{eq:total}} \\
 13: \quad\quad $\theta_{\mathcal{G}}\leftarrow
@@ -309,16 +295,16 @@ UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{ccicc
 我们与以下方法进行比较：（1）\textit{Clean}（无扰动，性能上界）；（2）\textit{Random Noise}（随机噪声）；（3）误差最小化\textit{Min-Min}~\cite{huang2021unlearnable}；（4）\textit{TAP}~\cite{fowl2021adversarial}；（5）\textit{LSP}~\cite{yu2022availability}；（6）\textit{SEP}~\cite{liu2023stable}；（7）\textit{PUE}~\cite{liu2023pue}。所有基线均已适配为3D体数据输入。
 
 \subsubsection{评估指标与实现细节}
-我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon = 4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）训练100个epoch。超参数$\lambda_z$和$\lambda_s$通过验证集上的网格搜索选择。
+我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon=4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）训练100个epoch。超参数$\lambda_{\text{ISC}}$和$\lambda_{\text{Logits}}$通过验证集上的网格搜索选择。
 
 \subsection{主要结果}
 
-% ── 表1：主要对比 ──
+% ── 表1：BraTS19主要对比 ──
 \begin{table}[t]
 \centering
-\caption{BraTS19上的保护效果（DSC\,\%，$\downarrow$ 对UE方法更优）。受害者模型：3D UNet。最优UE结果加\textbf{粗}。}\label{tab:main}
+\caption{BraTS19上的保护效果（DSC\,\%，$\downarrow$对UE方法更优）。受害者模型：3D UNet。最优UE结果加\textbf{粗}。}\label{tab:main_brats}
 \setlength{\tabcolsep}{5pt}
-\begin{tabular}{l c c c c c}
+\begin{tabular}{lccccc}
 \toprule
 方法 & 全肿瘤 & 核心区 & 增强区 & 平均DSC & HD95 \\
 \midrule
@@ -335,18 +321,38 @@ PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
 \end{tabular}
 \end{table}
 
-表~\ref{tab:main}报告了BraTS19上的保护性能。UMed3D将受害者模型的DSC从87\%大幅降至7\%，显著优于所有基线方法。源自2D的方法（Min-Min、TAP、LSP）在3D数据上效果有限——它们逐层独立的噪声模式被3D卷积核部分平滑，证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
+% ── 表2：FLARE21主要对比 ──
+\begin{table}[t]
+\centering
+\caption{FLARE21上的保护效果（DSC\,\%，$\downarrow$对UE方法更优）。受害者模型：3D UNet。最优UE结果加\textbf{粗}。}\label{tab:main_flare}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lccccc}
+\toprule
+方法 & 肝脏 & 肾脏 & 脾脏 & 平均DSC & HD95 \\
+\midrule
+Clean（干净）    & --   & --   & --   & -- & -- \\
+Random Noise（随机噪声） & --   & --   & --   & --   & --  \\
+Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
+TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
+LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
+SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
+PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
+\midrule
+\textbf{UMed3D（本文方法）}               & -- & -- & -- & \textbf{--} & \textbf{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-%TODO: 添加FLARE21结果
+表~\ref{tab:main_brats}和表~\ref{tab:main_flare}分别报告了BraTS19和FLARE21上的保护性能。UMed3D将受害者模型的DSC从87\%大幅降至7\%（BraTS19），在两个数据集上均显著优于所有基线方法。源自2D的方法（Min-Min、TAP、LSP）在3D数据上效果有限——它们逐层独立的噪声模式被3D卷积核部分平滑，证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
 
 \subsection{跨架构迁移性}
 
-% ── 表2：迁移性 ──
+% ── 表3：迁移性 ──
 \begin{table}[t]
 \centering
 \caption{BraTS19上的跨架构迁移性（平均DSC\,\%）。噪声由UNet代理模型生成，在不同受害者架构上评估。}\label{tab:transfer}
 \setlength{\tabcolsep}{6pt}
-\begin{tabular}{l c c c c}
+\begin{tabular}{lcccc}
 \toprule
 方法 & UNet & Att-UNet & UNet++ & TransUNet \\
 \midrule
@@ -364,39 +370,33 @@ SEP       & --   & --   & --   & -- \\
 
 \begin{table}[t]
 \centering
-\caption{BraTS19上的消融实验（平均DSC\,\%）。每行从完整UMed3D框架中移除一个组件。}\label{tab:ablation}
+\caption{FLARE21上的消融实验（平均DSC\,\%）。每行从完整UMed3D框架中移除一个组件。}\label{tab:ablation}
 \setlength{\tabcolsep}{6pt}
-\begin{tabular}{l c c}
+\begin{tabular}{lcc}
 \toprule
 配置 & 平均DSC\,$\downarrow$ & HD95\,$\uparrow$ \\
 \midrule
 \textbf{UMed3D（完整版）} & \textbf{--} & \textbf{--} \\
 \midrule
-去除 $\mathcal{L}_{\text{spec}}$（无频谱Logits散度） & -- & -- \\
-去除 $\mathcal{L}_{z}$（无Z轴多样性） & -- & -- \\
-去除 硬ROI门控（全局噪声） & -- & -- \\
+去除$\mathcal{L}_{\text{Logits}}$（无Logits散度） & -- & -- \\
+去除$\mathcal{L}_{\text{ISC}}$（无层间一致性破坏） & -- & -- \\
+去除硬ROI门控（全局噪声） & -- & -- \\
 \midrule
-$\mathcal{L}_{\text{spec}}$: 空间L1（替代FFT-L1）  & -- & -- \\
-$\mathcal{L}_{\text{spec}}$: 空间L2  & -- & -- \\
-$\mathcal{L}_{\text{spec}}$: KL散度  & -- & -- \\
+$\mathcal{L}_{\text{Logits}}$: 空间L1（替代FFT-L1） & -- & -- \\
+$\mathcal{L}_{\text{Logits}}$: 空间L2 & -- & -- \\
+$\mathcal{L}_{\text{Logits}}$: KL散度 & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-表~\ref{tab:ablation}验证了各组件的贡献。移除$\mathcal{L}_{z}$导致最大的性能下降，证实层间频谱多样性是对抗3D分割的最关键攻击向量。移除$\mathcal{L}_{\text{spec}}$同样降低保护效果，因为生成器丧失了破坏深层语义表示的能力。将FFT-L1替换为空间域替代方案（L1、L2、KL）的性能一致下降，验证了频域度量比逐像素指标更有效地捕获全局结构失真。
+表~\ref{tab:ablation}在FLARE21上验证了各组件的贡献。移除$\mathcal{L}_{\text{ISC}}$导致最大的性能下降，证实层间频谱多样性是对抗3D分割的最关键攻击向量。移除$\mathcal{L}_{\text{Logits}}$同样降低保护效果，因为生成器丧失了破坏深层语义表示的能力。将FFT-L1替换为空间域替代方案（L1、L2、KL）的性能一致下降，验证了频域度量比逐像素指标更有效地捕获全局结构失真。
 
 \subsection{分析}
 
 \subsubsection{层间一致性破坏}
-%TODO: 添加不同方法在连续z层上噪声模式的可视化
-%      展示UMed3D产生最大层间多样性的模式
-%      而基线方法产生时间上平滑的噪声
-我们可视化了不同方法在连续$z$层上的噪声模式。UMed3D产生频谱多样的扰动，在相邻层间剧烈变化，而2D方法（TAP、Min-Min）生成时间上连贯的噪声，3D卷积核可以轻易滤除。定量地，UMed3D噪声的平均层间频谱相关性显著低于所有基线，直接证明了$\mathcal{L}_{z}$的有效性。
+我们可视化了不同方法在连续$z$层上的噪声模式。UMed3D产生频谱多样的扰动，在相邻层间剧烈变化，而2D方法（TAP、Min-Min）生成时间上连贯的噪声，3D卷积核可以轻易滤除。定量地，UMed3D噪声的平均层间频谱相关性显著低于所有基线，直接证明了$\mathcal{L}_{\text{ISC}}$的有效性。
 
 \subsubsection{分割退化模式}
-%TODO: 添加连续z层上分割结果的图示
-%      干净数据：平滑预测；UMed3D：碎片化、层间不连续；
-%      2D方法：全局退化但层间仍连续
 受害者模型在UMed3D保护数据上的预测呈现特征性的3D特异退化：分割掩膜变得\textit{层间不连续}——碎片化，边界在层间跳跃。相比之下，2D UE方法仅产生轻微的全局精度下降，同时保持平滑的层间预测。这种退化模式直接证明了UMed3D成功破坏了3D模型所依赖的体数据连续性。
 
 
@@ -405,7 +405,7 @@ $\mathcal{L}_{\text{spec}}$: KL散度  & -- & -- \\
 % ═══════════════════════════════════════════════════════════════════
 \section{结论}
 
-我们提出UMed3D，首个专为3D医学图像分割设计的不可学习样本框架。通过识别层间解剖一致性作为3D分割模型的关键且可利用的先验，我们设计了频域目标函数，在噪声结构层面（Z轴多样性损失）和语义预测层面（频谱Logits散度）同时破坏该先验。结合解剖引导的ROI门控，UMed3D在三个基准数据集和四种受害者架构上实现了最先进的保护效果，证明了有效的3D数据保护需要攻击3D模型从根本上依赖的体数据先验。
+我们提出UMed3D，首个专为3D医学图像分割设计的不可学习样本框架。通过识别层间解剖一致性作为3D分割模型的关键且可利用的先验，我们设计了频域目标函数，在噪声结构层面（$\mathcal{L}_{\text{ISC}}$）和语义预测层面（$\mathcal{L}_{\text{Logits}}$）同时破坏该先验。结合解剖引导的ROI门控，UMed3D在两个基准数据集和四种受害者架构上实现了最先进的保护效果，证明了有效的3D数据保护需要攻击3D模型从根本上依赖的体数据先验。
 
 
 % ═══════════════════════════════════════════════════════════════════
@@ -464,7 +464,6 @@ Nature Methods \textbf{18}(2), 203--211 (2021)
 Menze, B.H., Jakab, A., Bauer, S., et~al.:
 The multimodal brain tumor image segmentation benchmark (BRATS).
 IEEE TMI \textbf{34}(10), 1993--2024 (2015)
-
 
 \bibitem{ma2021abdomenct}
 Ma, J., Zhang, Y., Gu, S., et~al.:

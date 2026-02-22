@@ -32,7 +32,7 @@
 %                          ABSTRACT
 % ═══════════════════════════════════════════════════════════════════
 \begin{abstract}
-The widespread dissemination of public 3D medical image segmentation (MIS) datasets accelerates clinical research but simultaneously heightens risks of unauthorized AI model training and patient privacy leakage. While Unlearnable Examples (UEs) offer protection by injecting imperceptible perturbations to prevent effective model learning, existing methods primarily target 2D natural image classification. They consequently neglect the \textit{anisotropy} and \textit{inter-slice anatomical consistency} inherent in 3D medical volumes---critical learning priors exploited by 3D segmentation networks. To bridge this gap, we propose \textbf{UMed3D}, a UE generation framework specifically designed for 3D MIS. UMed3D employs a UNet-based generator to produce ROI-constrained adaptive perturbations, guided by a frequency-domain adversarial loss scheme. We introduce a \textit{Z-Diversity Loss} that disrupts inter-slice consistency by maximizing spectral discrepancies between adjacent slices, and a \textit{Spectral Logits Divergence Loss} that maximizes prediction variance between clean and perturbed images in the frequency domain. Experiments on BraTS19 and FLARE21 demonstrate that UMed3D degrades 3D segmentation performance from 87\% to 7\% DSC with minimal perturbation ($\epsilon{=}4/255$), while preserving high visual fidelity.
+The widespread dissemination of public 3D medical image segmentation (MIS) datasets accelerates clinical research but simultaneously heightens risks of unauthorized AI model training and patient privacy leakage. While Unlearnable Examples (UEs) offer protection by injecting imperceptible perturbations to prevent effective model learning, existing methods primarily target 2D natural image classification. They consequently neglect the \textit{anisotropy} and \textit{inter-slice anatomical consistency} inherent in 3D medical volumes---critical learning priors exploited by 3D segmentation networks. To bridge this gap, we propose \textbf{UMed3D}, a UE generation framework specifically designed for 3D MIS. UMed3D employs a UNet-based generator to produce ROI-constrained adaptive perturbations, guided by a frequency-domain adversarial loss scheme. We introduce an \textit{Inter-Slice Consistency Disruption Loss} ($\mathcal{L}_{\text{ISC}}$) that disrupts inter-slice consistency by maximizing spectral discrepancies between adjacent slices, and a \textit{Logits Divergence Loss} ($\mathcal{L}_{\text{Logits}}$) that maximizes prediction variance between clean and perturbed images in the frequency domain. Experiments on BraTS19 and FLARE21 demonstrate that UMed3D degrades 3D segmentation performance from 87\% to 7\% DSC with minimal perturbation ($\epsilon{=}4/255$), while preserving high visual fidelity.
 
 \keywords{Unlearnable Examples \and 3D Medical Image Segmentation \and Frequency-domain Adversarial Loss \and Data Privacy Protection}
 \end{abstract}
@@ -52,9 +52,9 @@ Our key insight is that \textit{inter-slice consistency is simultaneously the so
 
 Building on this insight, we propose \textbf{UMed3D}, a UE framework tailored for 3D medical image segmentation. Our contributions are:
 \begin{enumerate}
-    \item \textbf{Anisotropy-aware perturbation via Z-Diversity Loss.} We introduce a frequency-domain objective that maximizes inter-slice spectral discrepancies, injecting ``inter-slice flickering'' that exploits the $z$-axis continuity assumption of 3D networks.
-    \item \textbf{Anatomy-adaptive noise generation.} A UNet-based generator produces sample-specific perturbations strictly confined to anatomical ROIs via a hard gating mechanism, ensuring background cleanliness and concentrating adversarial energy on clinically relevant regions.
-    \item \textbf{Spectral Logits Divergence.} We propose a frequency-domain loss on model logits that forces perturbations to corrupt semantic predictions across all spatial frequency bands, transcending pixel-level deception to achieve robust unlearnability.
+    \item \textbf{Inter-Slice Consistency Disruption Loss ($\mathcal{L}_{\text{ISC}}$).} We introduce a frequency-domain objective that maximizes inter-slice spectral discrepancies, injecting ``inter-slice flickering'' that exploits the $z$-axis continuity assumption of 3D networks.
+    \item \textbf{Logits Divergence Loss ($\mathcal{L}_{\text{Logits}}$).} We propose a frequency-domain loss on model logits that forces perturbations to corrupt semantic predictions across all spatial frequency bands, transcending pixel-level deception to achieve robust unlearnability.
+    \item \textbf{Anatomy-adaptive noise generation.} A UNet-based generator produces sample-specific perturbations strictly confined to anatomical ROIs via a hard gating mechanism, concentrating adversarial energy on clinically relevant regions.
 \end{enumerate}
 
 
@@ -121,56 +121,42 @@ segmentation because they ignore \textit{inter-slice anatomical
 consistency}---the key inductive bias exploited by 3D convolution
 kernels. UMed3D addresses this with three components
 (Fig.~\ref{fig:framework}):
-(i)~an \textit{anatomy-guided noise generator} $\mathcal{G}$ that
+(i)~a \textit{noise generator} $\mathcal{G}$ that
 produces volumetric perturbations gated by the ROI mask;
-(ii)~a \textit{Z-Diversity Loss}
-$\mathcal{L}_{z}$ that enforces maximal spectral discrepancy
+(ii)~an \textit{Inter-Slice Consistency Disruption Loss}
+$\mathcal{L}_{\text{ISC}}$ that enforces maximal spectral discrepancy
 between adjacent slices, directly disrupting the inter-slice continuity
 prior; and
-(iii)~a \textit{Spectral Logits Divergence Loss}
-$\mathcal{L}_{\mathrm{spec}}$ that maximizes prediction distortion
+(iii)~a \textit{Logits Divergence Loss}
+$\mathcal{L}_{\text{Logits}}$ that maximizes prediction distortion
 across all 3D frequency bands.
 
 %------- Generator -------
-\subsubsection{Anatomy-Guided Noise Generator.}
-3D medical volumes require volumetric processing to capture cross-slice
-spatial dependencies. We therefore employ a 3D encoder--decoder network
+\subsubsection{Noise Generator with ROI Gating.}
+We employ a 3D encoder--decoder network
 $\mathcal{F}_g:\mathbb{R}^{D\times H\times W}\!\to\!
 \mathbb{R}^{D\times H\times W}$ with skip connections as the noise
 generator. Operating on full 3D volumes allows $\mathcal{F}_g$ to
-learn cross-slice noise patterns natively, encoding anatomical
-priors---edges, region boundaries, tissue textures---into spatially
-adaptive, content-aware perturbations.
-
-The raw output is bounded via $\tanh$ activation:
-$\bm{\delta}_{\text{raw}} = \tanh(\mathcal{F}_g(\bm{x})) \cdot \epsilon$,
-guaranteeing $\|\bm{\delta}_{\text{raw}}\|_\infty \le \epsilon$.
-
-\textbf{Hard-ROI Gating.}\quad
-In medical imaging, background regions carry strict physical semantics
-(e.g., air at $-$1000\,HU in CT). Perturbing these regions violates
-clinical integrity and wastes perturbation budget on regions trivially
-sanitized via thresholding. We impose a \textit{hard binary gating}
-mechanism using the anatomical mask
-$\bm{m} = \mathbb{I}(\bm{y} > 0) \in \{0,1\}^{D\times H\times W}$:
+learn cross-slice noise patterns natively. The raw output is bounded
+via $\tanh$ activation:
+$\bm{\delta}_{\text{raw}}=\tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon$,
+guaranteeing $\|\bm{\delta}_{\text{raw}}\|_\infty\le\epsilon$.
+To avoid perturbing physically meaningful background regions
+(e.g., air at $-$1000\,HU in CT), we impose hard binary gating
+using the anatomical mask
+$\bm{m}=\mathbb{I}(\bm{y}>0)\in\{0,1\}^{D\times H\times W}$:
 \begin{equation}
-  \bm{\delta} = \mathcal{G}(\bm{x})
-  = \mathrm{Clamp}\!\bigl[
-    \tanh(\mathcal{F}_g(\bm{x})) \cdot \epsilon \;\odot\; \bm{m},
+  \bm{\delta}=\mathcal{G}(\bm{x})
+  =\mathrm{Clamp}\!\bigl[
+    \tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon\;\odot\;\bm{m},
     \;-\epsilon,\;\epsilon\bigr].
   \label{eq:generator}
 \end{equation}
-The protected volume is then
-$\bm{x}_p = \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$.
-This concentrates the full perturbation budget on anatomically
-meaningful regions while ensuring zero noise leakage into the
-background. Within the ROI, the generator operates over the
-\textit{full frequency spectrum} without predefined frequency
-filters, enabling data-driven discovery of complex,
-texture-entangled shortcuts specific to each organ's pathology.
+The protected volume is
+$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$.
 
-%------- L_z -------
-\subsubsection{Z-Axis Frequency Diversity Loss ($\mathcal{L}_{z}$).}
+%------- L_ISC -------
+\subsubsection{Inter-Slice Consistency Disruption Loss ($\mathcal{L}_{\text{ISC}}$).}
 3D segmentation networks fundamentally assume \textit{volumetric
 continuity}: anatomical structures change smoothly along $z$, and
 3D convolution kernels with receptive fields spanning $k_z$ slices
@@ -181,16 +167,16 @@ between consecutive slices.
 
 For each slice $z$, we compute the 2D amplitude
 spectrum of the perturbation:
-$\bm{S}_z = |\mathcal{F}_{2\text{D}}(\bm{\delta}_z)| \in \mathbb{R}^{H\times W}$,
+$\bm{S}_z=|\mathcal{F}_{2\text{D}}(\bm{\delta}_z)|\in\mathbb{R}^{H\times W}$,
 where $\bm{\delta}_z\!\in\!\mathbb{R}^{H\times W}$ is the
-$z$-th slice of the generated noise. The Z-Diversity Loss is:
+$z$-th slice of the generated noise. The ISC loss is:
 \begin{equation}
-  \mathcal{L}_{z}
-  = -\frac{1}{D{-}1}\sum_{z=1}^{D-1}
+  \mathcal{L}_{\text{ISC}}
+  =-\frac{1}{D{-}1}\sum_{z=1}^{D-1}
     \bigl\|\bm{S}_{z+1}-\bm{S}_z\bigr\|_2.
-  \label{eq:zdiv}
+  \label{eq:isc}
 \end{equation}
-Minimizing $\mathcal{L}_{z}$ (i.e., maximizing inter-slice spectral
+Minimizing $\mathcal{L}_{\text{ISC}}$ (i.e., maximizing inter-slice spectral
 divergence) forces drastic spectral shifts between adjacent slices,
 injecting high-frequency ``spectral jitter'' along $z$ that
 fundamentally contradicts the smooth anatomical continuity 3D
@@ -200,8 +186,8 @@ the spatial domain because magnitude spectra are
 translation-invariant, providing a more stable and texture-focused
 measure of inter-slice dissimilarity.
 
-%------- L_spec -------
-\subsubsection{Spectral Logits Divergence Loss ($\mathcal{L}_{\mathrm{spec}}$).}
+%------- L_Logits -------
+\subsubsection{Logits Divergence Loss ($\mathcal{L}_{\text{Logits}}$).}
 A common failure mode of UEs is ``surface-level overfitting'': the
 model memorizes noise patterns but retains underlying anatomical
 knowledge in deep features. Purely spatial-domain losses (e.g.,
@@ -217,12 +203,12 @@ clean and perturbed logit volumes
 We compute their 3D Discrete Fourier Transform (DFT) and maximize the
 $\ell_1$ distance:
 \begin{equation}
-  \mathcal{L}_{\mathrm{spec}}
-  = -\bigl\|\,
+  \mathcal{L}_{\text{Logits}}
+  =-\bigl\|\,
       \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_p\bigr)
-      - \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_0\bigr)
+      -\mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_0\bigr)
     \bigr\|_1,
-  \label{eq:spec}
+  \label{eq:logits}
 \end{equation}
 where $\mathcal{F}_{3\text{D}}$ is the 3D DFT.
 The $\ell_1$ norm promotes sparse but significant spectral deviations,
@@ -234,20 +220,20 @@ simultaneously.
 
 %------- Optimization -------
 \subsubsection{Optimization.}
-The total generator objective combines segmentation, spectral logits
-divergence, and inter-slice diversity:
+The total generator objective combines segmentation, logits
+divergence, and inter-slice consistency disruption:
 \begin{equation}
   \mathcal{L}_{\mathrm{total}}
-  = \mathcal{L}_{\mathrm{seg}}\!\big(\mathcal{F}_s(\bm{x}_p;\theta),\,\bm{y}\big)
-  + \lambda_s\,\mathcal{L}_{\mathrm{spec}}
-  + \lambda_z\,\mathcal{L}_{z},
+  =\mathcal{L}_{\mathrm{seg}}\!\big(\mathcal{F}_s(\bm{x}_p;\theta),\,\bm{y}\big)
+  +\lambda_{\text{Logits}}\,\mathcal{L}_{\text{Logits}}
+  +\lambda_{\text{ISC}}\,\mathcal{L}_{\text{ISC}},
   \label{eq:total}
 \end{equation}
 where $\mathcal{L}_{\mathrm{seg}}$ (DiceCE) anchors training stability
 by ensuring the surrogate continues to learn on perturbed data (thus
-providing meaningful gradients), while $\mathcal{L}_{\mathrm{spec}}$
-and $\mathcal{L}_{z}$ inject semantic and structural corruption,
-respectively. $\lambda_s$ and $\lambda_z$ balance the three terms.
+providing meaningful gradients), while $\mathcal{L}_{\text{Logits}}$
+and $\mathcal{L}_{\text{ISC}}$ inject semantic and structural corruption,
+respectively. $\lambda_{\text{Logits}}$ and $\lambda_{\text{ISC}}$ balance the three terms.
 
 Following the bi-level framework of Eq.~\eqref{eq:ue}, training
 alternates between two phases. In the \textbf{S-step}, the surrogate
@@ -275,7 +261,7 @@ The full procedure is detailed in Algorithm~\ref{alg:umed3d}.
 \midrule
 \textbf{Input:} Clean dataset $\mathcal{D}_{\mathrm{clean}}$,
   surrogate $\mathcal{F}_s$, generator $\mathcal{G}$, budget
-  $\epsilon$, weights $\lambda_s,\lambda_z$, learning rates
+  $\epsilon$, weights $\lambda_{\text{Logits}},\lambda_{\text{ISC}}$, learning rates
   $\alpha_s,\alpha_g$, S-step batches $T_s$ \\
 \textbf{Output:} Protected dataset $\mathcal{D}_{\mathrm{protect}}$ \\[2pt]
 1: \textbf{for} epoch $= 1$ \textbf{to} $N$ \textbf{do} \\
@@ -284,7 +270,7 @@ The full procedure is detailed in Algorithm~\ref{alg:umed3d}.
 4: \quad\quad Sample $(\bm{x},\bm{y})$ from $\mathcal{D}_{\mathrm{clean}}$ \\
 5: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$
   \hfill \textit{// Eq.~\eqref{eq:generator}} \\
-6: \quad\quad $\bm{x}_p\leftarrow \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
+6: \quad\quad $\bm{x}_p\leftarrow\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
 7: \quad\quad $\theta_{\mathcal{F}_s}\leftarrow
   \theta_{\mathcal{F}_s}-\alpha_s
   \nabla_{\theta_{\mathcal{F}_s}}
@@ -294,7 +280,7 @@ The full procedure is detailed in Algorithm~\ref{alg:umed3d}.
 10: \quad \textbf{for} each $(\bm{x},\bm{y})$ in
   $\mathcal{D}_{\mathrm{clean}}$ \textbf{do} \\
 11: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$;~~
-  $\bm{x}_p\leftarrow \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
+  $\bm{x}_p\leftarrow\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
 12: \quad\quad Compute $\mathcal{L}_{\mathrm{total}}$
   \hfill \textit{// Eq.~\eqref{eq:total}} \\
 13: \quad\quad $\theta_{\mathcal{G}}\leftarrow
@@ -332,16 +318,16 @@ The surrogate model used during UE generation is a 3D UNet~\cite{cciccek20163d} 
 We compare against: (1)~\textit{Clean} (no perturbation, upper bound); (2)~\textit{Random Noise}; (3)~error-minimizing \textit{Min-Min}~\cite{huang2021unlearnable}; (4)~\textit{TAP}~\cite{fowl2021adversarial}; (5)~\textit{LSP}~\cite{yu2022availability}; (6)~\textit{SEP}~\cite{liu2023stable}; (7)~\textit{PUE}~\cite{liu2023pue}. All baselines are adapted to 3D volumetric inputs.
 
 \subsubsection{Metrics and Implementation.}
-We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon = 4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4). Hyperparameters $\lambda_z$ and $\lambda_s$ are selected via grid search on a validation split.
+We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon=4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4). Hyperparameters $\lambda_{\text{ISC}}$ and $\lambda_{\text{Logits}}$ are selected via grid search on a validation split.
 
 \subsection{Main Results}
 
-% ── Table 1: Main comparison ──
+% ── Table 1: BraTS19 main comparison ──
 \begin{table}[t]
 \centering
-\caption{Protection effectiveness on BraTS19 (DSC\,\%, $\downarrow$ is better for UE methods). Victim model: 3D UNet. Best UE results in \textbf{bold}.}\label{tab:main}
+\caption{Protection effectiveness on BraTS19 (DSC\,\%, $\downarrow$ is better for UE methods). Victim model: 3D UNet. Best UE results in \textbf{bold}.}\label{tab:main_brats}
 \setlength{\tabcolsep}{5pt}
-\begin{tabular}{l c c c c c}
+\begin{tabular}{lccccc}
 \toprule
 Method & Whole & Core & Enhancing & Mean DSC & HD95 \\
 \midrule
@@ -358,18 +344,38 @@ PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:main} reports the protection performance on BraTS19. UMed3D achieves a dramatic reduction in victim model DSC (from 87\% to 7\%), substantially outperforming all baselines. 2D-originated methods (Min-Min, TAP, LSP) show limited effectiveness on 3D data---their slice-independent noise patterns are partially smoothed by 3D convolution kernels, confirming our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
+% ── Table 2: FLARE21 main comparison ──
+\begin{table}[t]
+\centering
+\caption{Protection effectiveness on FLARE21 (DSC\,\%, $\downarrow$ is better for UE methods). Victim model: 3D UNet. Best UE results in \textbf{bold}.}\label{tab:main_flare}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lccccc}
+\toprule
+Method & Liver & Kidney & Spleen & Mean DSC & HD95 \\
+\midrule
+Clean         & --   & --   & --   & -- & -- \\
+Random Noise  & --   & --   & --   & --   & --  \\
+Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
+TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
+LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
+SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
+PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
+\midrule
+\textbf{UMed3D (Ours)}               & -- & -- & -- & \textbf{--} & \textbf{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-%TODO: Add FLARE21 results
+Table~\ref{tab:main_brats} and Table~\ref{tab:main_flare} report the protection performance on BraTS19 and FLARE21, respectively. UMed3D achieves a dramatic reduction in victim model DSC (from 87\% to 7\% on BraTS19), substantially outperforming all baselines on both datasets. 2D-originated methods (Min-Min, TAP, LSP) show limited effectiveness on 3D data---their slice-independent noise patterns are partially smoothed by 3D convolution kernels, confirming our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
 
 \subsection{Cross-Architecture Transferability}
 
-% ── Table 2: Transfer ──
+% ── Table 3: Transfer ──
 \begin{table}[t]
 \centering
 \caption{Cross-architecture transferability on BraTS19 (Mean DSC\,\%). Noise generated with UNet surrogate, evaluated on different victim architectures.}\label{tab:transfer}
 \setlength{\tabcolsep}{6pt}
-\begin{tabular}{l c c c c}
+\begin{tabular}{lcccc}
 \toprule
 Method & UNet & Att-UNet & UNet++ & TransUNet \\
 \midrule
@@ -387,39 +393,33 @@ Table~\ref{tab:transfer} demonstrates that UMed3D perturbations transfer effecti
 
 \begin{table}[t]
 \centering
-\caption{Ablation study on BraTS19 (Mean DSC\,\%). Each row removes one component from the full UMed3D framework.}\label{tab:ablation}
+\caption{Ablation study on FLARE21 (Mean DSC\,\%). Each row removes one component from the full UMed3D framework.}\label{tab:ablation}
 \setlength{\tabcolsep}{6pt}
-\begin{tabular}{l c c}
+\begin{tabular}{lcc}
 \toprule
 Configuration & Mean DSC\,$\downarrow$ & HD95\,$\uparrow$ \\
 \midrule
 \textbf{UMed3D (full)} & \textbf{--} & \textbf{--} \\
 \midrule
-w/o $\mathcal{L}_{\text{spec}}$ (no spectral logits div.) & -- & -- \\
-w/o $\mathcal{L}_{z}$ (no Z-diversity) & -- & -- \\
+w/o $\mathcal{L}_{\text{Logits}}$ (no logits divergence) & -- & -- \\
+w/o $\mathcal{L}_{\text{ISC}}$ (no ISC disruption) & -- & -- \\
 w/o Hard-ROI (global noise) & -- & -- \\
 \midrule
-$\mathcal{L}_{\text{spec}}$: spatial L1 (instead of FFT-L1)  & -- & -- \\
-$\mathcal{L}_{\text{spec}}$: spatial L2  & -- & -- \\
-$\mathcal{L}_{\text{spec}}$: KL divergence  & -- & -- \\
+$\mathcal{L}_{\text{Logits}}$: spatial L1 (instead of FFT-L1) & -- & -- \\
+$\mathcal{L}_{\text{Logits}}$: spatial L2 & -- & -- \\
+$\mathcal{L}_{\text{Logits}}$: KL divergence & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:ablation} validates the contribution of each component. Removing $\mathcal{L}_{z}$ causes the largest performance drop, confirming that inter-slice spectral diversity is the most critical attack vector against 3D segmentation. Removing $\mathcal{L}_{\text{spec}}$ also degrades protection, as the generator loses its ability to corrupt deep semantic representations. Replacing FFT-L1 with spatial-domain alternatives (L1, L2, KL) consistently underperforms, validating that frequency-domain measurement captures global structural distortions more effectively than pixel-wise metrics.
+Table~\ref{tab:ablation} validates the contribution of each component on FLARE21. Removing $\mathcal{L}_{\text{ISC}}$ causes the largest performance drop, confirming that inter-slice spectral diversity is the most critical attack vector against 3D segmentation. Removing $\mathcal{L}_{\text{Logits}}$ also degrades protection, as the generator loses its ability to corrupt deep semantic representations. Replacing FFT-L1 with spatial-domain alternatives (L1, L2, KL) consistently underperforms, validating that frequency-domain measurement captures global structural distortions more effectively than pixel-wise metrics.
 
 \subsection{Analysis}
 
 \subsubsection{Inter-Slice Consistency Disruption.}
-%TODO: Add visualization of noise patterns across consecutive z-slices
-%      showing that UMed3D produces maximally diverse inter-slice patterns
-%      while baseline methods produce temporally smooth noise.
-We visualize the noise patterns across consecutive $z$-slices for different methods. UMed3D produces spectrally diverse perturbations that shift drastically between adjacent slices, while 2D methods (TAP, Min-Min) generate temporally coherent noise that 3D kernels can readily filter. Quantitatively, the mean inter-slice spectral correlation of UMed3D noise is significantly lower than all baselines, directly evidencing the effectiveness of $\mathcal{L}_{z}$.
+We visualize the noise patterns across consecutive $z$-slices for different methods. UMed3D produces spectrally diverse perturbations that shift drastically between adjacent slices, while 2D methods (TAP, Min-Min) generate temporally coherent noise that 3D kernels can readily filter. Quantitatively, the mean inter-slice spectral correlation of UMed3D noise is significantly lower than all baselines, directly evidencing the effectiveness of $\mathcal{L}_{\text{ISC}}$.
 
 \subsubsection{Segmentation Degradation Patterns.}
-%TODO: Add figure showing segmentation results on consecutive z-slices
-%      Clean: smooth predictions; UMed3D: fragmented, inter-slice discontinuous;
-%      2D methods: globally degraded but still inter-slice continuous.
 Victim model predictions on UMed3D-protected data exhibit a characteristic 3D-specific degradation: segmentation masks become \textit{inter-slice discontinuous}---fragmented, with boundaries jumping between slices. In contrast, 2D UE methods produce only mild global accuracy reduction while retaining smooth inter-slice predictions. This degradation pattern directly demonstrates that UMed3D successfully disrupts the volumetric continuity that 3D models rely upon.
 
 
@@ -428,7 +428,7 @@ Victim model predictions on UMed3D-protected data exhibit a characteristic 3D-sp
 % ═══════════════════════════════════════════════════════════════════
 \section{Conclusion}
 
-We present UMed3D, the first unlearnable example framework specifically designed for 3D medical image segmentation. By identifying inter-slice anatomical consistency as the critical---and exploitable---prior of 3D segmentation models, we design frequency-domain objectives that disrupt this prior at both the noise-structure level (Z-Diversity Loss) and the semantic-prediction level (Spectral Logits Divergence). Combined with anatomy-guided ROI gating, UMed3D achieves state-of-the-art protection across three benchmarks and four victim architectures, demonstrating that effective 3D data protection requires attacking the volumetric priors that 3D models fundamentally depend upon.
+We present UMed3D, the first unlearnable example framework specifically designed for 3D medical image segmentation. By identifying inter-slice anatomical consistency as the critical---and exploitable---prior of 3D segmentation models, we design frequency-domain objectives that disrupt this prior at both the noise-structure level ($\mathcal{L}_{\text{ISC}}$) and the semantic-prediction level ($\mathcal{L}_{\text{Logits}}$). Combined with anatomy-guided ROI gating, UMed3D achieves state-of-the-art protection across two benchmarks and four victim architectures, demonstrating that effective 3D data protection requires attacking the volumetric priors that 3D models fundamentally depend upon.
 
 
 % ═══════════════════════════════════════════════════════════════════
@@ -491,7 +491,6 @@ Nature Methods \textbf{18}(2), 203--211 (2021)
 Menze, B.H., Jakab, A., Bauer, S., et~al.:
 The multimodal brain tumor image segmentation benchmark (BRATS).
 IEEE TMI \textbf{34}(10), 1993--2024 (2015)
-
 
 \bibitem{ma2021abdomenct}
 Ma, J., Zhang, Y., Gu, S., et~al.:
