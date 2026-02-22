@@ -63,68 +63,257 @@ Building on this insight, we propose \textbf{UMed3D}, a UE framework tailored fo
 % ═══════════════════════════════════════════════════════════════════
 \section{Methodology}
 
-Our goal is to transform a clean 3D segmentation dataset $\mathcal{D}_{c} = \{(x_i, y_i)\}_{i=1}^N$ into an unlearnable dataset $\mathcal{D}_{u} = \{(x_i + \delta_i, y_i)\}$ such that any model trained on $\mathcal{D}_{u}$ fails to generalize to clean test data. We adopt a bi-level optimization framework: a noise generator $G_\phi$ synthesizes sample-specific perturbations while a surrogate segmentation model $f_\theta$ provides gradient signals.
+%-------------------------------------------------------------
+\subsection{Preliminary}
+\label{sec:preliminary}
 
-\subsection{Problem Formulation}
-
-Let $x_i \in \mathbb{R}^{1 \times D \times H \times W}$ denote a volumetric image and $y_i$ the corresponding voxel-wise annotation. We formulate the protection task as a \textit{Protector--Exploiter} game via bi-level optimization:
+\textbf{3D Medical Image Segmentation.}\quad
+A 3D segmentation network $\mathcal{F}(\cdot\,;\theta)$ maps a volumetric
+input $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$ to a voxel-wise
+label map $\bm{y}\!\in\!\{0,1\}^{D\times H\times W\times K}$, where
+$D$ is the number of slices and $K$ the number of classes.
+Training minimizes:
 \begin{equation}
-\min_{\phi}\; \mathbb{E}_{\mathcal{D}_{c}} \Big[\, \mathcal{L}_{\text{seg}}\!\big(f_{\theta^*}(x{+}\delta),\, y\big) + \lambda_z \mathcal{L}_{z} (\delta) + \lambda_s \mathcal{L}_{\text{spec}}\!\big(f_{\theta^*}(x),\, f_{\theta^*}(x{+}\delta)\big)\,\Big]
-\label{eq:outer}
+  \arg\min_{\theta}\;
+  \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
+  \bigl[\mathcal{L}_{\mathrm{seg}}\!\bigl(
+    \mathcal{F}(\bm{x};\theta),\,\bm{y}\bigr)\bigr],
+  \label{eq:seg}
 \end{equation}
+where $\mathcal{L}_{\mathrm{seg}}=\mathcal{L}_{\mathrm{ce}}+\mathcal{L}_{\mathrm{dice}}$
+combines cross-entropy and Dice losses.
+
+\textbf{Unlearnable Examples.}\quad
+UEs add an imperceptible perturbation $\bm{\delta}$ to each
+training sample so that models trained on the perturbed dataset
+$\mathcal{D}_{\mathrm{protect}}$ fail to generalize to clean test data.
+The error-minimizing (EM) formulation~\cite{huang2021unlearnable} solves
+a bi-level optimization:
 \begin{equation}
-\text{s.t.}\quad \theta^* = \arg\min_{\theta}\; \mathbb{E}_{\mathcal{D}_{u}} \big[\mathcal{L}_{\text{seg}}(f_\theta(x{+}\delta),\, y)\big],\qquad \delta = G_\phi(x),\quad \|\delta\|_\infty \le \epsilon
-\label{eq:inner}
+  \min_{\theta}\;
+  \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
+  \Bigl[\min_{\|\bm{\delta}\|_\infty\le\epsilon}
+  \mathcal{L}_{\mathrm{seg}}\!\bigl(
+    \mathcal{F}_s(\bm{x}+\bm{\delta};\theta),\,\bm{y}
+  \bigr)\Bigr],
+  \label{eq:ue}
 \end{equation}
-The inner problem~\eqref{eq:inner} trains the surrogate model on protected data; the outer problem~\eqref{eq:outer} optimizes the generator to produce perturbations that minimize the surrogate's loss (creating easy-to-learn shortcuts) while satisfying our frequency-domain structural constraints $\mathcal{L}_{z}$ and $\mathcal{L}_{\text{spec}}$.
+where $\mathcal{F}_s$ is a surrogate model and $\epsilon$ bounds the
+$\ell_\infty$ perturbation budget.
 
-\subsection{Anatomy-Guided Perturbation Generator}
+\textbf{Threat Model.}\quad
+The \textit{data protector} has access to the clean dataset
+$\mathcal{D}_{\mathrm{clean}}$ and publishes a protected version
+$\mathcal{D}_{\mathrm{protect}}$. The \textit{data exploiter} trains
+an arbitrary 3D segmentation architecture on
+$\mathcal{D}_{\mathrm{protect}}$ and evaluates on held-out clean test
+data. The protector uses a single surrogate model for perturbation
+generation, and aims to minimize the exploiter's test-time
+performance while keeping perturbations imperceptible.
 
-\subsubsection{UNet-Based Conditional Noise Synthesis.}
-Unlike per-voxel PGD optimization, which produces spatially unstructured noise, we employ a 3D UNet~\cite{cciccek20163d} as a conditional generator $G_\phi$ that takes the input volume $x$ and outputs a perturbation $\delta_{\text{raw}}$ of matching dimensions. The generator implicitly encodes anatomical structure---edges, region boundaries, tissue textures---producing perturbations that are spatially adaptive and content-aware. The output is bounded via $\delta_{\text{raw}} = \tanh(G_\phi(x)) \cdot \epsilon$ to guarantee $\|\delta_{\text{raw}}\|_\infty \le \epsilon$.
+%-------------------------------------------------------------
+\subsection{UMed3D Framework}
+\label{sec:umed3d}
 
-\subsubsection{Hard-ROI Gating.}
-In medical imaging, background regions carry strict physical semantics (e.g., air at $-$1000 HU in CT). Perturbing these regions is clinically unacceptable and can be trivially sanitized via thresholding. We therefore impose a \textit{hard binary gating} mechanism using the anatomical mask $\mathbb{M}_{\text{roi}} = \mathbb{I}(y > 0)$:
+\textbf{Overview.}\quad
+As discussed in Sec.~1, existing UEs fail in 3D medical
+segmentation because they ignore \textit{inter-slice anatomical
+consistency}---the key inductive bias exploited by 3D convolution
+kernels. UMed3D addresses this with three components
+(Fig.~\ref{fig:framework}):
+(i)~an \textit{anatomy-guided noise generator} $\mathcal{G}$ that
+produces volumetric perturbations gated by the ROI mask;
+(ii)~a \textit{Z-Diversity Loss}
+$\mathcal{L}_{z}$ that enforces maximal spectral discrepancy
+between adjacent slices, directly disrupting the inter-slice continuity
+prior; and
+(iii)~a \textit{Spectral Logits Divergence Loss}
+$\mathcal{L}_{\mathrm{spec}}$ that maximizes prediction distortion
+across all 3D frequency bands.
+
+%------- Generator -------
+\subsubsection{Anatomy-Guided Noise Generator.}
+3D medical volumes require volumetric processing to capture cross-slice
+spatial dependencies. We therefore employ a 3D encoder--decoder network
+$\mathcal{F}_g:\mathbb{R}^{D\times H\times W}\!\to\!
+\mathbb{R}^{D\times H\times W}$ with skip connections as the noise
+generator. Operating on full 3D volumes allows $\mathcal{F}_g$ to
+learn cross-slice noise patterns natively, encoding anatomical
+priors---edges, region boundaries, tissue textures---into spatially
+adaptive, content-aware perturbations.
+
+The raw output is bounded via $\tanh$ activation:
+$\bm{\delta}_{\text{raw}} = \tanh(\mathcal{F}_g(\bm{x})) \cdot \epsilon$,
+guaranteeing $\|\bm{\delta}_{\text{raw}}\|_\infty \le \epsilon$.
+
+\textbf{Hard-ROI Gating.}\quad
+In medical imaging, background regions carry strict physical semantics
+(e.g., air at $-$1000\,HU in CT). Perturbing these regions violates
+clinical integrity and wastes perturbation budget on regions trivially
+sanitized via thresholding. We impose a \textit{hard binary gating}
+mechanism using the anatomical mask
+$\bm{m} = \mathbb{I}(\bm{y} > 0) \in \{0,1\}^{D\times H\times W}$:
 \begin{equation}
-\delta = \text{Clamp}\big(G_\phi(x) \odot \mathbb{M}_{\text{roi}},\; -\epsilon,\; \epsilon\big)
-\label{eq:roi}
+  \bm{\delta} = \mathcal{G}(\bm{x})
+  = \mathrm{Clamp}\!\bigl[
+    \tanh(\mathcal{F}_g(\bm{x})) \cdot \epsilon \;\odot\; \bm{m},
+    \;-\epsilon,\;\epsilon\bigr].
+  \label{eq:generator}
 \end{equation}
-This concentrates the full perturbation budget on anatomically relevant regions while ensuring zero noise leakage into the background. Within the ROI, the generator operates over the \textit{full frequency spectrum}---no predefined frequency filters are applied. This data-driven strategy allows the generator to discover complex, texture-entangled shortcuts specific to each organ's pathology, making them substantially harder to distinguish from genuine anatomical features.
+The protected volume is then
+$\bm{x}_p = \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$.
+This concentrates the full perturbation budget on anatomically
+meaningful regions while ensuring zero noise leakage into the
+background. Within the ROI, the generator operates over the
+\textit{full frequency spectrum} without predefined frequency
+filters, enabling data-driven discovery of complex,
+texture-entangled shortcuts specific to each organ's pathology.
 
-\subsection{Z-Axis Frequency Diversity Loss}
+%------- L_z -------
+\subsubsection{Z-Axis Frequency Diversity Loss ($\mathcal{L}_{z}$).}
+3D segmentation networks fundamentally assume \textit{volumetric
+continuity}: anatomical structures change smoothly along $z$, and
+3D convolution kernels with receptive fields spanning $k_z$ slices
+aggregate cross-slice features under this assumption.
+Our strategy is to violate this assumption by forcing the
+perturbation's spectral characteristics to vary \textit{maximally}
+between consecutive slices.
 
-\subsubsection{Rationale.}
-3D segmentation networks fundamentally assume \textit{volumetric continuity}: anatomical structures change smoothly along $z$, i.e., $\partial\,\text{Anatomy}/\partial z \approx 0$. 3D convolution kernels with receptive fields spanning $k_z$ slices aggregate cross-slice features under this assumption. Our strategy is to violate this assumption by forcing the perturbation's spectral characteristics to vary \textit{maximally} between consecutive slices.
-
-\subsubsection{Formulation.}
-Let $S_z = |\mathcal{F}_{2D}(\delta[z])| \in \mathbb{R}^{H \times W}$ denote the 2D magnitude spectrum of the perturbation at slice $z$. The Z-Diversity Loss is:
+For each slice $z$, we compute the 2D amplitude
+spectrum of the perturbation:
+$\bm{S}_z = |\mathcal{F}_{2\text{D}}(\bm{\delta}_z)| \in \mathbb{R}^{H\times W}$,
+where $\bm{\delta}_z\!\in\!\mathbb{R}^{H\times W}$ is the
+$z$-th slice of the generated noise. The Z-Diversity Loss is:
 \begin{equation}
-\mathcal{L}_{z} = -\frac{1}{D{-}1} \sum_{z=1}^{D-1} \big\| S_{z+1} - S_z \big\|_2
-\label{eq:zdiv}
+  \mathcal{L}_{z}
+  = -\frac{1}{D{-}1}\sum_{z=1}^{D-1}
+    \bigl\|\bm{S}_{z+1}-\bm{S}_z\bigr\|_2.
+  \label{eq:zdiv}
 \end{equation}
-Minimizing $\mathcal{L}_{z}$ (i.e., maximizing inter-slice spectral divergence) forces drastic spectral shifts between adjacent slices. When 3D kernels aggregate along $z$, this high-frequency inter-slice variance dominates gradient flow, effectively hijacking the model's attention from smooth anatomical signals. We measure divergence in the \textit{frequency domain} rather than the spatial domain because magnitude spectra are translation-invariant, providing a more stable and texture-focused measure of inter-slice dissimilarity.
+Minimizing $\mathcal{L}_{z}$ (i.e., maximizing inter-slice spectral
+divergence) forces drastic spectral shifts between adjacent slices,
+injecting high-frequency ``spectral jitter'' along $z$ that
+fundamentally contradicts the smooth anatomical continuity 3D
+convolutions rely on.
+We measure divergence in the \textit{frequency domain} rather than
+the spatial domain because magnitude spectra are
+translation-invariant, providing a more stable and texture-focused
+measure of inter-slice dissimilarity.
 
-\subsection{Spectral Logits Divergence Loss}
+%------- L_spec -------
+\subsubsection{Spectral Logits Divergence Loss ($\mathcal{L}_{\mathrm{spec}}$).}
+A common failure mode of UEs is ``surface-level overfitting'': the
+model memorizes noise patterns but retains underlying anatomical
+knowledge in deep features. Purely spatial-domain losses (e.g.,
+pixel-wise L1) capture only local voxel differences and miss global
+structural distortions. To ensure protection penetrates the
+\textit{semantic feature space}, we maximize the distortion of model
+predictions in the frequency domain.
 
-\subsubsection{Rationale.}
-A common failure mode of UEs is ``surface-level overfitting'': the model memorizes the noise pattern but retains underlying anatomical knowledge in its deep features. Purely spatial-domain losses (e.g., pixel-wise L1) capture only local voxel differences and are easily dominated by localized high-intensity perturbations, missing global structural distortions. To ensure protection penetrates the \textit{semantic feature space}, we maximize the distortion of the model's predictive distribution in the frequency domain.
-
-\subsubsection{Formulation.}
-Let $L_{\text{clean}} = f_\theta(x)$ and $L_{\text{adv}} = f_\theta(x{+}\delta)$ denote the logits for clean and perturbed inputs. The Spectral Logits Divergence is:
+Let $\bm{L}_0\!=\!\mathcal{F}_s(\bm{x};\theta)$ and
+$\bm{L}_p\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$ denote the
+clean and perturbed logit volumes
+($\in\mathbb{R}^{D\times H\times W\times K}$), respectively.
+We compute their 3D Discrete Fourier Transform (DFT) and maximize the
+$\ell_1$ distance:
 \begin{equation}
-\mathcal{L}_{\text{spec}} = -\big\| \mathcal{F}_{3D}(L_{\text{adv}}) - \mathcal{F}_{3D}(L_{\text{clean}}) \big\|_1
-\label{eq:spec}
+  \mathcal{L}_{\mathrm{spec}}
+  = -\bigl\|\,
+      \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_p\bigr)
+      - \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_0\bigr)
+    \bigr\|_1,
+  \label{eq:spec}
 \end{equation}
-The 3D FFT ($\mathcal{F}_{3D}$) decomposes the logit difference across all spatial frequency bands. The $L_1$ norm promotes sparse but significant spectral deviations, forcing the generator to concentrate distortion on dominant frequency bands that correspond to critical semantic structures (e.g., organ boundaries at high frequencies, overall shape at low frequencies). This ensures perturbations corrupt predictions across \textit{all spatial scales} simultaneously.
+where $\mathcal{F}_{3\text{D}}$ is the 3D DFT.
+The $\ell_1$ norm promotes sparse but significant spectral deviations,
+forcing the generator to concentrate distortion on dominant frequency
+bands that correspond to critical semantic structures---organ boundaries
+at high frequencies, overall shape at low frequencies---ensuring
+perturbations corrupt predictions across \textit{all spatial scales}
+simultaneously.
 
-\subsection{Optimization}
-
-Training alternates between two steps. In the \textbf{S-step}, the surrogate model $f_\theta$ is updated on the perturbed dataset $\mathcal{D}_u$ using DiceCE loss~\cite{milletari2016v}, with the generator frozen. In the \textbf{N-step}, the surrogate is frozen and the generator $G_\phi$ is updated by minimizing the total objective:
+%------- Optimization -------
+\subsubsection{Optimization.}
+The total generator objective combines segmentation, spectral logits
+divergence, and inter-slice diversity:
 \begin{equation}
-\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{seg}}\!\big(f_\theta(x{+}\delta),\, y\big) + \lambda_z\, \mathcal{L}_{z}(\delta) + \lambda_s\, \mathcal{L}_{\text{spec}}\!\big(f_\theta(x),\, f_\theta(x{+}\delta)\big)
-\label{eq:total}
+  \mathcal{L}_{\mathrm{total}}
+  = \mathcal{L}_{\mathrm{seg}}\!\big(\mathcal{F}_s(\bm{x}_p;\theta),\,\bm{y}\big)
+  + \lambda_s\,\mathcal{L}_{\mathrm{spec}}
+  + \lambda_z\,\mathcal{L}_{z},
+  \label{eq:total}
 \end{equation}
-where $\mathcal{L}_{\text{seg}}$ (DiceCE) anchors training stability by ensuring the surrogate continues to learn on perturbed data (thus providing meaningful gradients), while $\mathcal{L}_{z}$ and $\mathcal{L}_{\text{spec}}$ inject structural and semantic corruption, respectively. $\lambda_z$ and $\lambda_s$ balance the three objectives.
+where $\mathcal{L}_{\mathrm{seg}}$ (DiceCE) anchors training stability
+by ensuring the surrogate continues to learn on perturbed data (thus
+providing meaningful gradients), while $\mathcal{L}_{\mathrm{spec}}$
+and $\mathcal{L}_{z}$ inject semantic and structural corruption,
+respectively. $\lambda_s$ and $\lambda_z$ balance the three terms.
+
+Following the bi-level framework of Eq.~\eqref{eq:ue}, training
+alternates between two phases. In the \textbf{S-step}, the surrogate
+$\mathcal{F}_s$ is updated for a fixed number of batches on the
+perturbed data using $\mathcal{L}_{\mathrm{seg}}$, with the generator
+frozen. In the \textbf{N-step}, the surrogate is frozen and the
+generator $\mathcal{G}$ is updated over the full training set by
+minimizing $\mathcal{L}_{\mathrm{total}}$:
+\begin{equation}
+  \min_{\theta_{\mathcal{F}_s}}\;
+  \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
+  \!\Bigl[\min_{\theta_{\mathcal{G}}}
+    \mathcal{L}_{\mathrm{total}}\Bigr].
+  \label{eq:bilevel}
+\end{equation}
+The full procedure is detailed in Algorithm~\ref{alg:umed3d}.
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.95\linewidth}}
+\toprule
+\textbf{Algorithm 1:} UMed3D Training Procedure \\
+\midrule
+\textbf{Input:} Clean dataset $\mathcal{D}_{\mathrm{clean}}$,
+  surrogate $\mathcal{F}_s$, generator $\mathcal{G}$, budget
+  $\epsilon$, weights $\lambda_s,\lambda_z$, learning rates
+  $\alpha_s,\alpha_g$, S-step batches $T_s$ \\
+\textbf{Output:} Protected dataset $\mathcal{D}_{\mathrm{protect}}$ \\[2pt]
+1: \textbf{for} epoch $= 1$ \textbf{to} $N$ \textbf{do} \\
+2: \quad \textit{// S-step: update surrogate (fixed $T_s$ batches)} \\
+3: \quad \textbf{for} $t = 1$ \textbf{to} $T_s$ \textbf{do} \\
+4: \quad\quad Sample $(\bm{x},\bm{y})$ from $\mathcal{D}_{\mathrm{clean}}$ \\
+5: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$
+  \hfill \textit{// Eq.~\eqref{eq:generator}} \\
+6: \quad\quad $\bm{x}_p\leftarrow \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
+7: \quad\quad $\theta_{\mathcal{F}_s}\leftarrow
+  \theta_{\mathcal{F}_s}-\alpha_s
+  \nabla_{\theta_{\mathcal{F}_s}}
+  \mathcal{L}_{\mathrm{seg}}(\mathcal{F}_s(\bm{x}_p),\bm{y})$ \\
+8: \quad \textbf{end for} \\
+9: \quad \textit{// N-step: update generator (full epoch)} \\
+10: \quad \textbf{for} each $(\bm{x},\bm{y})$ in
+  $\mathcal{D}_{\mathrm{clean}}$ \textbf{do} \\
+11: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$;~~
+  $\bm{x}_p\leftarrow \mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
+12: \quad\quad Compute $\mathcal{L}_{\mathrm{total}}$
+  \hfill \textit{// Eq.~\eqref{eq:total}} \\
+13: \quad\quad $\theta_{\mathcal{G}}\leftarrow
+  \theta_{\mathcal{G}}-\alpha_g\nabla_{\theta_{\mathcal{G}}}
+  \mathcal{L}_{\mathrm{total}}$ \\
+14: \quad \textbf{end for} \\
+15: \textbf{end for} \\
+16: \textbf{for} each $(\bm{x},\bm{y})$ in
+  $\mathcal{D}_{\mathrm{clean}}$ \textbf{do} \\
+17: \quad $\mathcal{D}_{\mathrm{protect}}\leftarrow
+  \mathcal{D}_{\mathrm{protect}}\cup
+  \{(\mathrm{Clamp}_{[0,1]}[\bm{x}+\mathcal{G}(\bm{x})],
+  \;\bm{y})\}$ \\
+18: \textbf{end for} \\
+19: \textbf{return} $\mathcal{D}_{\mathrm{protect}}$ \\
+\bottomrule
+\end{tabular}
+\label{alg:umed3d}
+\end{table}
 
 % ═══════════════════════════════════════════════════════════════════
 %                  3  EXPERIMENTS AND RESULTS
