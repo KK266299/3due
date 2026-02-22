@@ -32,7 +32,7 @@
 %                          ABSTRACT
 % ═══════════════════════════════════════════════════════════════════
 \begin{abstract}
-The widespread dissemination of public 3D medical image segmentation (MIS) datasets accelerates clinical research but simultaneously heightens risks of unauthorized AI model training and patient privacy leakage. While Unlearnable Examples (UEs) offer protection by injecting imperceptible perturbations to prevent effective model learning, existing methods primarily target 2D natural image classification. They consequently neglect the \textit{anisotropy} and \textit{inter-slice anatomical consistency} inherent in 3D medical volumes---critical learning priors exploited by 3D segmentation networks. To bridge this gap, we propose \textbf{UMed3D}, a UE generation framework specifically designed for 3D MIS. UMed3D employs a UNet-based generator to produce ROI-constrained adaptive perturbations, guided by a frequency-domain adversarial loss scheme. We introduce a \textit{Z-Diversity Loss} that disrupts inter-slice consistency by maximizing spectral discrepancies between adjacent slices, and a \textit{Spectral Logits Divergence Loss} that maximizes prediction variance between clean and perturbed images in the frequency domain. Experiments on BraTS19, FLARE21, and KiTS19 demonstrate that UMed3D degrades 3D segmentation performance from 87\% to 7\% DSC with minimal perturbation ($\epsilon{=}4/255$), while preserving high visual fidelity.
+The widespread dissemination of public 3D medical image segmentation (MIS) datasets accelerates clinical research but simultaneously heightens risks of unauthorized AI model training and patient privacy leakage. While Unlearnable Examples (UEs) offer protection by injecting imperceptible perturbations to prevent effective model learning, existing methods primarily target 2D natural image classification. They consequently neglect the \textit{anisotropy} and \textit{inter-slice anatomical consistency} inherent in 3D medical volumes---critical learning priors exploited by 3D segmentation networks. To bridge this gap, we propose \textbf{UMed3D}, a UE generation framework specifically designed for 3D MIS. UMed3D employs a UNet-based generator to produce ROI-constrained adaptive perturbations, guided by a frequency-domain adversarial loss scheme. We introduce a \textit{Z-Diversity Loss} that disrupts inter-slice consistency by maximizing spectral discrepancies between adjacent slices, and a \textit{Spectral Logits Divergence Loss} that maximizes prediction variance between clean and perturbed images in the frequency domain. Experiments on BraTS19 and FLARE21 demonstrate that UMed3D degrades 3D segmentation performance from 87\% to 7\% DSC with minimal perturbation ($\epsilon{=}4/255$), while preserving high visual fidelity.
 
 \keywords{Unlearnable Examples \and 3D Medical Image Segmentation \and Frequency-domain Adversarial Loss \and Data Privacy Protection}
 \end{abstract}
@@ -42,7 +42,7 @@ The widespread dissemination of public 3D medical image segmentation (MIS) datas
 % ═══════════════════════════════════════════════════════════════════
 \section{Introduction}
 
-3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models (e.g., 3D-UNet~\cite{cciccek20163d}, V-Net~\cite{milletari2016v}, nnU-Net~\cite{isensee2021nnu}) critically depends on large-scale, voxel-annotated datasets whose creation requires substantial expert effort. To accelerate research, institutions increasingly share datasets publicly~\cite{menze2014multimodal,heller2019kits19,ma2021abdomenct}. However, this open dissemination raises serious concerns: once published, volumetric data can be freely exploited for unauthorized model training, potentially compromising patient privacy and violating data governance policies.
+3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models (e.g., 3D-UNet~\cite{cciccek20163d}, V-Net~\cite{milletari2016v}, nnU-Net~\cite{isensee2021nnu}) critically depends on large-scale, voxel-annotated datasets whose creation requires substantial expert effort. To accelerate research, institutions increasingly share datasets publicly~\cite{menze2014multimodal,ma2021abdomenct}. However, this open dissemination raises serious concerns: once published, volumetric data can be freely exploited for unauthorized model training, potentially compromising patient privacy and violating data governance policies.
 
 \textbf{Unlearnable Examples (UEs)}~\cite{huang2021unlearnable} offer an appealing proactive defense: by injecting imperceptible perturbations into training data \textit{before} release, UEs cause models trained on the protected data to learn ``shortcut'' patterns rather than genuine semantic features, thereby failing on clean test inputs. While effective for 2D natural image classification, existing UE methods---including error-minimizing noise~\cite{huang2021unlearnable}, TAP~\cite{fowl2021adversarial}, SEP~\cite{liu2023stable}, and LSP~\cite{yu2022availability}---are ill-suited for 3D medical segmentation due to two fundamental gaps:
 
@@ -323,7 +323,7 @@ The full procedure is detailed in Algorithm~\ref{alg:umed3d}.
 \subsection{Experimental Setup}
 
 \subsubsection{Datasets.}
-We evaluate on three diverse 3D MIS benchmarks: \textbf{BraTS19}~\cite{menze2014multimodal} (brain tumor, 4-class, 4-modality MRI), \textbf{FLARE21}~\cite{ma2021abdomenct} (abdominal organ, multi-class CT), and \textbf{KiTS19}~\cite{heller2019kits19} (kidney tumor, 3-class CT). These datasets span different anatomical regions, imaging modalities, and segmentation difficulties, providing comprehensive validation.
+We evaluate on two diverse 3D MIS benchmarks: \textbf{BraTS19}~\cite{menze2014multimodal} (brain tumor, 4-class, 4-modality MRI) and \textbf{FLARE21}~\cite{ma2021abdomenct} (abdominal organ, multi-class CT). These datasets span different anatomical regions, imaging modalities, and segmentation difficulties, providing comprehensive validation.
 
 \subsubsection{Models.}
 The surrogate model used during UE generation is a 3D UNet~\cite{cciccek20163d} implemented in MONAI. To evaluate cross-architecture transferability, we train victim models with four architectures: \textbf{UNet}, \textbf{Attention UNet}~\cite{oktay2018attention}, \textbf{UNet++}~\cite{zhou2018unetpp}, and \textbf{TransUNet}~\cite{chen2021transunet}.
@@ -360,7 +360,7 @@ PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
 
 Table~\ref{tab:main} reports the protection performance on BraTS19. UMed3D achieves a dramatic reduction in victim model DSC (from 87\% to 7\%), substantially outperforming all baselines. 2D-originated methods (Min-Min, TAP, LSP) show limited effectiveness on 3D data---their slice-independent noise patterns are partially smoothed by 3D convolution kernels, confirming our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
 
-%TODO: Add FLARE21 and KiTS19 results
+%TODO: Add FLARE21 results
 
 \subsection{Cross-Architecture Transferability}
 
@@ -492,10 +492,6 @@ Menze, B.H., Jakab, A., Bauer, S., et~al.:
 The multimodal brain tumor image segmentation benchmark (BRATS).
 IEEE TMI \textbf{34}(10), 1993--2024 (2015)
 
-\bibitem{heller2019kits19}
-Heller, N., Sathianathen, N., Kalapara, A., et~al.:
-The KiTS19 challenge data: 300 kidney tumor cases with clinical context, CT semantic segmentations, and surgical outcomes.
-arXiv preprint arXiv:1904.00445 (2019)
 
 \bibitem{ma2021abdomenct}
 Ma, J., Zhang, Y., Gu, S., et~al.:

@@ -31,7 +31,7 @@
 %                          摘要
 % ═══════════════════════════════════════════════════════════════════
 \begin{abstract}
-公开3D医学图像分割（MIS）数据集的广泛传播在加速临床研究的同时，也加剧了未授权AI模型训练和患者隐私泄露的风险。不可学习样本（Unlearnable Examples, UEs）通过在训练数据中注入不可感知的扰动来阻止模型有效学习，提供了一种有前景的主动防御手段。然而，现有方法主要针对2D自然图像分类任务设计，忽略了3D医学体数据固有的\textit{各向异性}和\textit{层间解剖一致性}——这些正是3D分割网络所利用的关键学习先验。为弥合这一差距，我们提出\textbf{UMed3D}，一个专为3D医学图像分割设计的不可学习样本生成框架。UMed3D采用基于UNet的生成器产生ROI约束的自适应扰动，并通过频域对抗损失方案进行引导。我们引入\textit{Z轴多样性损失}（Z-Diversity Loss），通过最大化相邻层间的频谱差异来破坏层间一致性；同时提出\textit{频谱Logits散度损失}（Spectral Logits Divergence Loss），在频域中最大化干净图像与扰动图像之间的预测差异。在BraTS19、FLARE21和KiTS19上的实验表明，UMed3D能够将3D分割性能从87\% DSC降至7\% DSC，同时保持较小的扰动幅度（$\epsilon{=}4/255$）和较高的视觉保真度。
+公开3D医学图像分割（MIS）数据集的广泛传播在加速临床研究的同时，也加剧了未授权AI模型训练和患者隐私泄露的风险。不可学习样本（Unlearnable Examples, UEs）通过在训练数据中注入不可感知的扰动来阻止模型有效学习，提供了一种有前景的主动防御手段。然而，现有方法主要针对2D自然图像分类任务设计，忽略了3D医学体数据固有的\textit{各向异性}和\textit{层间解剖一致性}——这些正是3D分割网络所利用的关键学习先验。为弥合这一差距，我们提出\textbf{UMed3D}，一个专为3D医学图像分割设计的不可学习样本生成框架。UMed3D采用基于UNet的生成器产生ROI约束的自适应扰动，并通过频域对抗损失方案进行引导。我们引入\textit{Z轴多样性损失}（Z-Diversity Loss），通过最大化相邻层间的频谱差异来破坏层间一致性；同时提出\textit{频谱Logits散度损失}（Spectral Logits Divergence Loss），在频域中最大化干净图像与扰动图像之间的预测差异。在BraTS19和FLARE21上的实验表明，UMed3D能够将3D分割性能从87\% DSC降至7\% DSC，同时保持较小的扰动幅度（$\epsilon{=}4/255$）和较高的视觉保真度。
 
 \noindent\textbf{关键词：} 不可学习样本 $\cdot$ 3D医学图像分割 $\cdot$ 频域对抗损失 $\cdot$ 数据隐私保护
 \end{abstract}
@@ -41,7 +41,7 @@
 % ═══════════════════════════════════════════════════════════════════
 \section{引言}
 
-3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。为加速研究，越来越多的机构选择公开共享数据集~\cite{menze2014multimodal,heller2019kits19,ma2021abdomenct}。然而，这种开放式传播引发了严重隐忧：一旦发布，体数据可被自由利用于未授权的模型训练，可能侵犯患者隐私并违反数据治理政策。
+3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。为加速研究，越来越多的机构选择公开共享数据集~\cite{menze2014multimodal,ma2021abdomenct}。然而，这种开放式传播引发了严重隐忧：一旦发布，体数据可被自由利用于未授权的模型训练，可能侵犯患者隐私并违反数据治理政策。
 
 \textbf{不可学习样本（UEs）}~\cite{huang2021unlearnable}提供了一种有吸引力的主动防御方案：在数据\textit{发布之前}注入不可感知的扰动，使得在受保护数据上训练的模型学习到``捷径''模式而非真正的语义特征，从而在干净测试数据上失效。虽然UEs对2D自然图像分类有效，但现有方法——包括误差最小化噪声~\cite{huang2021unlearnable}、TAP~\cite{fowl2021adversarial}、SEP~\cite{liu2023stable}和LSP~\cite{yu2022availability}——因两个根本性差距而不适用于3D医学分割：
 
@@ -300,7 +300,7 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 \subsection{实验设置}
 
 \subsubsection{数据集}
-我们在三个多样化的3D MIS基准上进行评估：\textbf{BraTS19}~\cite{menze2014multimodal}（脑肿瘤，4类，4模态MRI）、\textbf{FLARE21}~\cite{ma2021abdomenct}（腹部器官，多类CT）和\textbf{KiTS19}~\cite{heller2019kits19}（肾肿瘤，3类CT）。这些数据集涵盖不同的解剖区域、成像模态和分割难度，提供了全面的验证。
+我们在两个多样化的3D MIS基准上进行评估：\textbf{BraTS19}~\cite{menze2014multimodal}（脑肿瘤，4类，4模态MRI）和\textbf{FLARE21}~\cite{ma2021abdomenct}（腹部器官，多类CT）。这些数据集涵盖不同的解剖区域、成像模态和分割难度，提供了全面的验证。
 
 \subsubsection{模型}
 UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{cciccek20163d}。为评估跨架构迁移性，我们使用四种架构训练受害者模型：\textbf{UNet}、\textbf{Attention UNet}~\cite{oktay2018attention}、\textbf{UNet++}~\cite{zhou2018unetpp}和\textbf{TransUNet}~\cite{chen2021transunet}。
@@ -337,7 +337,7 @@ PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
 
 表~\ref{tab:main}报告了BraTS19上的保护性能。UMed3D将受害者模型的DSC从87\%大幅降至7\%，显著优于所有基线方法。源自2D的方法（Min-Min、TAP、LSP）在3D数据上效果有限——它们逐层独立的噪声模式被3D卷积核部分平滑，证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
 
-%TODO: 添加FLARE21和KiTS19结果
+%TODO: 添加FLARE21结果
 
 \subsection{跨架构迁移性}
 
@@ -465,10 +465,6 @@ Menze, B.H., Jakab, A., Bauer, S., et~al.:
 The multimodal brain tumor image segmentation benchmark (BRATS).
 IEEE TMI \textbf{34}(10), 1993--2024 (2015)
 
-\bibitem{heller2019kits19}
-Heller, N., Sathianathen, N., Kalapara, A., et~al.:
-The KiTS19 challenge data: 300 kidney tumor cases with clinical context, CT semantic segmentations, and surgical outcomes.
-arXiv preprint arXiv:1904.00445 (2019)
 
 \bibitem{ma2021abdomenct}
 Ma, J., Zhang, Y., Gu, S., et~al.:
