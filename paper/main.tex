@@ -119,8 +119,7 @@ performance while keeping perturbations imperceptible.
 As discussed in Sec.~1, existing UEs fail in 3D medical
 segmentation because they ignore \textit{inter-slice anatomical
 consistency}---the key inductive bias exploited by 3D convolution
-kernels. UMed3D addresses this with three components
-(Fig.~\ref{fig:framework}):
+kernels. UMed3D addresses this with three components:
 (i)~a 3D encoder--decoder noise generator $\mathcal{G}$ that
 produces volumetric perturbations bounded by $\tanh$ and gated by
 an ROI mask $\bm{m}=\mathbb{I}(\bm{y}>0)$ to concentrate
@@ -236,7 +235,7 @@ minimizing $\mathcal{L}_{\mathrm{total}}$:
     \mathcal{L}_{\mathrm{total}}\Bigr].
   \label{eq:bilevel}
 \end{equation}
-The full procedure is detailed in Algorithm~\ref{alg:umed3d}.
+The full procedure is detailed in Algorithm~1.
 
 \begin{table}[t]
 \centering
@@ -285,7 +284,6 @@ The full procedure is detailed in Algorithm~\ref{alg:umed3d}.
 19: \textbf{return} $\mathcal{D}_{\mathrm{protect}}$ \\
 \bottomrule
 \end{tabular}
-\label{alg:umed3d}
 \end{table}
 
 % ═══════════════════════════════════════════════════════════════════
@@ -469,11 +467,6 @@ In: DLMIA/ML-CDS@MICCAI, pp.~3--11 (2018)
 Chen, J., Lu, Y., Yu, Q., et~al.:
 TransUNet: Transformers make strong encoders for medical image segmentation.
 arXiv preprint arXiv:2102.04306 (2021)
-
-\bibitem{ronneberger2015u}
-Ronneberger, O., Fischer, P., Brox, T.:
-U-Net: Convolutional networks for biomedical image segmentation.
-In: MICCAI, pp.~234--241 (2015)
 
 \bibitem{hatamizadeh2022unetr}
 Hatamizadeh, A., Tang, Y., Nath, V., Yang, D., Myronenko, A., Landman, B., Roth, H.R., Xu, D.:

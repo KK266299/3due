@@ -114,8 +114,7 @@ $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$映射为体素级
 \textbf{概述。}\quad
 如第1节所述，现有UEs方法在3D医学分割中失效，
 原因在于它们忽视了\textit{层间解剖一致性}——
-3D卷积核利用的关键归纳偏置。UMed3D通过三个组件
-（图~\ref{fig:framework}）解决此问题：
+3D卷积核利用的关键归纳偏置。UMed3D通过三个组件解决此问题：
 (i)~3D编码器--解码器噪声生成器$\mathcal{G}$，
 输出经$\tanh$约束并通过ROI掩膜$\bm{m}=\mathbb{I}(\bm{y}>0)$
 门控，将扰动预算集中于解剖有意义的区域：
@@ -215,7 +214,7 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
     \mathcal{L}_{\mathrm{total}}\Bigr].
   \label{eq:bilevel}
 \end{equation}
-完整流程详见算法~\ref{alg:umed3d}。
+完整流程详见算法~1。
 
 \begin{table}[t]
 \centering
@@ -262,7 +261,6 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 19: \textbf{return} $\mathcal{D}_{\mathrm{protect}}$ \\
 \bottomrule
 \end{tabular}
-\label{alg:umed3d}
 \end{table}
 
 % ═══════════════════════════════════════════════════════════════════
@@ -442,11 +440,6 @@ In: DLMIA/ML-CDS@MICCAI, pp.~3--11 (2018)
 Chen, J., Lu, Y., Yu, Q., et~al.:
 TransUNet: Transformers make strong encoders for medical image segmentation.
 arXiv preprint arXiv:2102.04306 (2021)
-
-\bibitem{ronneberger2015u}
-Ronneberger, O., Fischer, P., Brox, T.:
-U-Net: Convolutional networks for biomedical image segmentation.
-In: MICCAI, pp.~234--241 (2015)
 
 \bibitem{hatamizadeh2022unetr}
 Hatamizadeh, A., Tang, Y., Nath, V., Yang, D., Myronenko, A., Landman, B., Roth, H.R., Xu, D.:
