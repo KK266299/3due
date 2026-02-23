@@ -302,10 +302,10 @@ We evaluate on two diverse 3D MIS benchmarks: \textbf{BraTS19}~\cite{menze2014mu
 The surrogate model used during UE generation is a 3D UNet~\cite{cciccek20163d} implemented in MONAI. To evaluate cross-architecture transferability, we train victim models with four architectures: \textbf{UNet}, \textbf{Attention UNet}~\cite{oktay2018attention}, \textbf{UNet++}~\cite{zhou2018unetpp}, and \textbf{TransUNet}~\cite{chen2021transunet}.
 
 \subsubsection{Baselines.}
-We compare against: (1)~\textit{Clean} (no perturbation, upper bound); (2)~\textit{Random Noise}; (3)~error-minimizing \textit{Min-Min}~\cite{huang2021unlearnable}; (4)~\textit{TAP}~\cite{fowl2021adversarial}; (5)~\textit{LSP}~\cite{yu2022availability}; (6)~\textit{SEP}~\cite{liu2023stable}; (7)~\textit{PUE}~\cite{liu2023pue}. All baselines are adapted to 3D volumetric inputs.
+We compare against: (1)~\textit{Clean} (no perturbation, upper bound); (2)~\textit{Random Noise}; (3)~error-minimizing \textit{Min-Min}~\cite{huang2021unlearnable}; (4)~\textit{TAP}~\cite{fowl2021adversarial}; (5)~\textit{LSP}~\cite{yu2022availability}; (6)~\textit{SEP}~\cite{liu2023stable}. All baselines are adapted to 3D volumetric inputs.
 
 \subsubsection{Metrics and Implementation.}
-We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon=4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4). The loss weights are set to $\lambda_{\text{ISC}}=0.2$ and $\lambda_{\text{Logits}}=0.05$.
+We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon=4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4) on a single NVIDIA RTX 5090 GPU. The loss weights are set to $\lambda_{\text{ISC}}=0.2$ and $\lambda_{\text{Logits}}=0.05$.
 
 \subsection{Main Results}
 
@@ -326,7 +326,6 @@ Min-Min~\cite{huang2021unlearnable} & -- & -- & -- & -- \\
 TAP~\cite{fowl2021adversarial}      & -- & -- & -- & -- \\
 LSP~\cite{yu2022availability}       & -- & -- & -- & -- \\
 SEP~\cite{liu2023stable}            & -- & -- & -- & -- \\
-PUE~\cite{liu2023pue}               & -- & -- & -- & -- \\
 \midrule
 \textbf{UMed3D (Ours)} & \textbf{7.0} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \bottomrule
@@ -430,10 +429,6 @@ Yu, D., Zhang, H., Chen, W., Peng, J., et~al.:
 Availability attacks create shortcuts.
 In: KDD (2022)
 
-\bibitem{liu2023pue}
-Liu, Z., Wang, Z., et~al.:
-Provably unlearnable examples.
-In: NDSS (2025)
 
 \bibitem{cciccek20163d}
 \c{C}i\c{c}ek, \"O., Abdulkadir, A., Lienkamp, S.S., Brox, T., Ronneberger, O.:

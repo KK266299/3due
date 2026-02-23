@@ -279,10 +279,10 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{cciccek20163d}。为评估跨架构迁移性，我们使用四种架构训练受害者模型：\textbf{UNet}、\textbf{Attention UNet}~\cite{oktay2018attention}、\textbf{UNet++}~\cite{zhou2018unetpp}和\textbf{TransUNet}~\cite{chen2021transunet}。
 
 \subsubsection{基线方法}
-我们与以下方法进行比较：（1）\textit{Clean}（无扰动，性能上界）；（2）\textit{Random Noise}（随机噪声）；（3）误差最小化\textit{Min-Min}~\cite{huang2021unlearnable}；（4）\textit{TAP}~\cite{fowl2021adversarial}；（5）\textit{LSP}~\cite{yu2022availability}；（6）\textit{SEP}~\cite{liu2023stable}；（7）\textit{PUE}~\cite{liu2023pue}。所有基线均已适配为3D体数据输入。
+我们与以下方法进行比较：（1）\textit{Clean}（无扰动，性能上界）；（2）\textit{Random Noise}（随机噪声）；（3）误差最小化\textit{Min-Min}~\cite{huang2021unlearnable}；（4）\textit{TAP}~\cite{fowl2021adversarial}；（5）\textit{LSP}~\cite{yu2022availability}；（6）\textit{SEP}~\cite{liu2023stable}。所有基线均已适配为3D体数据输入。
 
 \subsubsection{评估指标与实现细节}
-我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon=4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）训练100个epoch。损失权重设置为$\lambda_{\text{ISC}}=0.2$，$\lambda_{\text{Logits}}=0.05$。
+我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon=4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）在单块NVIDIA RTX 5090 GPU上训练100个epoch。损失权重设置为$\lambda_{\text{ISC}}=0.2$，$\lambda_{\text{Logits}}=0.05$。
 
 \subsection{主要结果}
 
@@ -303,7 +303,6 @@ Min-Min~\cite{huang2021unlearnable} & -- & -- & -- & -- \\
 TAP~\cite{fowl2021adversarial}      & -- & -- & -- & -- \\
 LSP~\cite{yu2022availability}       & -- & -- & -- & -- \\
 SEP~\cite{liu2023stable}            & -- & -- & -- & -- \\
-PUE~\cite{liu2023pue}               & -- & -- & -- & -- \\
 \midrule
 \textbf{UMed3D（本文方法）} & \textbf{7.0} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \bottomrule
@@ -403,10 +402,6 @@ Yu, D., Zhang, H., Chen, W., Peng, J., et~al.:
 Availability attacks create shortcuts.
 In: KDD (2022)
 
-\bibitem{liu2023pue}
-Liu, Z., Wang, Z., et~al.:
-Provably unlearnable examples.
-In: NDSS (2025)
 
 \bibitem{cciccek20163d}
 \c{C}i\c{c}ek, \"O., Abdulkadir, A., Lienkamp, S.S., Brox, T., Ronneberger, O.:
