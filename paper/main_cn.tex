@@ -41,7 +41,7 @@
 % ═══════════════════════════════════════════════════════════════════
 \section{引言}
 
-3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}、UNETR~\cite{hatamizadeh2022unetr}、SwinUNETR~\cite{tang2022swinunetr}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。为加速研究，越来越多的机构选择公开共享数据集~\cite{menze2014multimodal,ma2021abdomenct}。然而，这种开放式传播引发了严重隐忧：一旦发布，体数据可被自由利用于未授权的模型训练，可能侵犯患者隐私并违反数据治理政策~\cite{kaissis2021end}。
+3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}、UNETR~\cite{hatamizadeh2022unetr}、SwinUNETR~\cite{tang2022swinunetr}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。为加速研究，越来越多的机构通过TCIA、PubMed等公共平台共享数据集~\cite{menze2014multimodal,ma2021abdomenct}，其使用许可通常限定于教育可视化和学术基准测试。然而，一旦发布，体数据可被自由下载并挪用于未授权的模型训练——这不仅违反了原始数据使用协议，也直接违反了GDPR等法规的规定：为特定目的（如诊断或教学）收集的数据，未经明确同意不得用于其他用途~\cite{kaissis2021end}。
 
 \textbf{不可学习样本（UEs）}~\cite{huang2021unlearnable}提供了一种有吸引力的主动防御方案：在数据\textit{发布之前}注入不可感知的扰动，使得在受保护数据上训练的模型学习到``捷径''模式而非真正的语义特征，从而在干净测试数据上失效。虽然UEs对2D自然图像分类有效，但现有方法——包括误差最小化噪声~\cite{huang2021unlearnable}、TAP~\cite{fowl2021adversarial}、SEP~\cite{liu2023stable}、LSP~\cite{yu2022availability}、RUE~\cite{fu2022robust}和CUDA~\cite{sadasivan2023cuda}——因两个根本性差距而不适用于3D医学分割：
 
