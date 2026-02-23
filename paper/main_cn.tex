@@ -116,35 +116,22 @@ $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$映射为体素级
 原因在于它们忽视了\textit{层间解剖一致性}——
 3D卷积核利用的关键归纳偏置。UMed3D通过三个组件
 （图~\ref{fig:framework}）解决此问题：
-(i)~\textit{噪声生成器}$\mathcal{G}$，
-通过ROI掩膜门控生成体数据扰动；
-(ii)~\textit{层间一致性破坏损失}$\mathcal{L}_{\text{ISC}}$，
-在相邻切片间施加最大频谱差异，直接破坏层间连续性先验；
-(iii)~\textit{Logits散度损失}$\mathcal{L}_{\text{Logits}}$，
-在所有3D频率带上最大化预测失真。
-
-%------- 生成器 -------
-\subsubsection{带ROI门控的噪声生成器}
-我们采用带有跳跃连接的3D编码器--解码器网络
-$\mathcal{F}_g:\mathbb{R}^{D\times H\times W}\!\to\!
-\mathbb{R}^{D\times H\times W}$作为噪声生成器。
-在完整3D体数据上运算使$\mathcal{F}_g$能够原生学习跨层噪声模式。
-原始输出通过$\tanh$激活函数进行约束：
-$\bm{\delta}_{\text{raw}}=\tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon$，
-保证$\|\bm{\delta}_{\text{raw}}\|_\infty\le\epsilon$。
-为避免扰动具有物理意义的背景区域（如CT中$-$1000\,HU的空气区域），
-我们利用解剖掩膜
-$\bm{m}=\mathbb{I}(\bm{y}>0)\in\{0,1\}^{D\times H\times W}$
-施加硬二值门控：
+(i)~3D编码器--解码器噪声生成器$\mathcal{G}$，
+输出经$\tanh$约束并通过ROI掩膜$\bm{m}=\mathbb{I}(\bm{y}>0)$
+门控，将扰动预算集中于解剖有意义的区域：
 \begin{equation}
   \bm{\delta}=\mathcal{G}(\bm{x})
   =\mathrm{Clamp}\!\bigl[
     \tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon\;\odot\;\bm{m},
-    \;-\epsilon,\;\epsilon\bigr].
+    \;-\epsilon,\;\epsilon\bigr],
   \label{eq:generator}
 \end{equation}
 受保护体数据为
-$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$。
+$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$；
+(ii)~\textit{层间一致性破坏损失}$\mathcal{L}_{\text{ISC}}$，
+在相邻切片间施加最大频谱差异，直接破坏层间连续性先验；
+(iii)~\textit{Logits散度损失}$\mathcal{L}_{\text{Logits}}$，
+在所有3D频率带上最大化预测失真。
 
 %------- L_ISC -------
 \subsubsection{层间一致性破坏损失（$\mathcal{L}_{\text{ISC}}$）}
@@ -295,55 +282,35 @@ UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{ccicc
 我们与以下方法进行比较：（1）\textit{Clean}（无扰动，性能上界）；（2）\textit{Random Noise}（随机噪声）；（3）误差最小化\textit{Min-Min}~\cite{huang2021unlearnable}；（4）\textit{TAP}~\cite{fowl2021adversarial}；（5）\textit{LSP}~\cite{yu2022availability}；（6）\textit{SEP}~\cite{liu2023stable}；（7）\textit{PUE}~\cite{liu2023pue}。所有基线均已适配为3D体数据输入。
 
 \subsubsection{评估指标与实现细节}
-我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon=4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）训练100个epoch。超参数$\lambda_{\text{ISC}}$和$\lambda_{\text{Logits}}$通过验证集上的网格搜索选择。
+我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon=4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）训练100个epoch。损失权重设置为$\lambda_{\text{ISC}}=0.2$，$\lambda_{\text{Logits}}=0.05$。
 
 \subsection{主要结果}
 
-% ── 表1：BraTS19主要对比 ──
+% ── 表1：主要对比（两个数据集合并） ──
 \begin{table}[t]
 \centering
-\caption{BraTS19上的保护效果（DSC\,\%，$\downarrow$对UE方法更优）。受害者模型：3D UNet。最优UE结果加\textbf{粗}。}\label{tab:main_brats}
-\setlength{\tabcolsep}{5pt}
-\begin{tabular}{lccccc}
+\caption{保护效果（平均DSC\,\%\,$\downarrow$ / HD95\,mm\,$\uparrow$）。受害者模型：3D UNet。最优UE结果加\textbf{粗}。}\label{tab:main}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
 \toprule
-方法 & 全肿瘤 & 核心区 & 增强区 & 平均DSC & HD95 \\
+\multirow{2}{*}{方法} & \multicolumn{2}{c}{BraTS19} & \multicolumn{2}{c}{FLARE21} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & DSC & HD95 & DSC & HD95 \\
 \midrule
-Clean（干净）    & --   & --   & --   & 87.0 & 5.2 \\
-Random Noise（随机噪声） & --   & --   & --   & --   & --  \\
-Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
-TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
-LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
-SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
-PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
+Clean（干净）    & 87.0 & 5.2 & -- & -- \\
+Random Noise（随机噪声） & -- & -- & -- & -- \\
+Min-Min~\cite{huang2021unlearnable} & -- & -- & -- & -- \\
+TAP~\cite{fowl2021adversarial}      & -- & -- & -- & -- \\
+LSP~\cite{yu2022availability}       & -- & -- & -- & -- \\
+SEP~\cite{liu2023stable}            & -- & -- & -- & -- \\
+PUE~\cite{liu2023pue}               & -- & -- & -- & -- \\
 \midrule
-\textbf{UMed3D（本文方法）}               & -- & -- & -- & \textbf{7.0} & \textbf{--} \\
+\textbf{UMed3D（本文方法）} & \textbf{7.0} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-% ── 表2：FLARE21主要对比 ──
-\begin{table}[t]
-\centering
-\caption{FLARE21上的保护效果（DSC\,\%，$\downarrow$对UE方法更优）。受害者模型：3D UNet。最优UE结果加\textbf{粗}。}\label{tab:main_flare}
-\setlength{\tabcolsep}{5pt}
-\begin{tabular}{lccccc}
-\toprule
-方法 & 肝脏 & 肾脏 & 脾脏 & 平均DSC & HD95 \\
-\midrule
-Clean（干净）    & --   & --   & --   & -- & -- \\
-Random Noise（随机噪声） & --   & --   & --   & --   & --  \\
-Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
-TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
-LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
-SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
-PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
-\midrule
-\textbf{UMed3D（本文方法）}               & -- & -- & -- & \textbf{--} & \textbf{--} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-表~\ref{tab:main_brats}和表~\ref{tab:main_flare}分别报告了BraTS19和FLARE21上的保护性能。UMed3D将受害者模型的DSC从87\%大幅降至7\%（BraTS19），在两个数据集上均显著优于所有基线方法。源自2D的方法（Min-Min、TAP、LSP）在3D数据上效果有限——它们逐层独立的噪声模式被3D卷积核部分平滑，证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
+表~\ref{tab:main}报告了两个基准数据集上的保护性能。UMed3D将受害者模型的DSC从87\%大幅降至7\%（BraTS19），在两个数据集上均显著优于所有基线方法。源自2D的方法（Min-Min、TAP、LSP）在3D数据上效果有限——它们逐层独立的噪声模式被3D卷积核部分平滑，证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
 
 \subsection{跨架构迁移性}
 
@@ -381,15 +348,11 @@ SEP       & --   & --   & --   & -- \\
 去除$\mathcal{L}_{\text{Logits}}$（无Logits散度） & -- & -- \\
 去除$\mathcal{L}_{\text{ISC}}$（无层间一致性破坏） & -- & -- \\
 去除硬ROI门控（全局噪声） & -- & -- \\
-\midrule
-$\mathcal{L}_{\text{Logits}}$: 空间L1（替代FFT-L1） & -- & -- \\
-$\mathcal{L}_{\text{Logits}}$: 空间L2 & -- & -- \\
-$\mathcal{L}_{\text{Logits}}$: KL散度 & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-表~\ref{tab:ablation}在FLARE21上验证了各组件的贡献。移除$\mathcal{L}_{\text{ISC}}$导致最大的性能下降，证实层间频谱多样性是对抗3D分割的最关键攻击向量。移除$\mathcal{L}_{\text{Logits}}$同样降低保护效果，因为生成器丧失了破坏深层语义表示的能力。将FFT-L1替换为空间域替代方案（L1、L2、KL）的性能一致下降，验证了频域度量比逐像素指标更有效地捕获全局结构失真。
+表~\ref{tab:ablation}在FLARE21上验证了各组件的贡献。移除$\mathcal{L}_{\text{ISC}}$导致最大的性能下降，证实层间频谱多样性是对抗3D分割的最关键攻击向量。移除$\mathcal{L}_{\text{Logits}}$同样降低保护效果，因为生成器丧失了破坏深层语义表示的能力。去除硬ROI门控（即施加全局噪声）将扰动预算浪费在背景区域，降低了保护效果。
 
 \subsection{分析}
 

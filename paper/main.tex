@@ -121,8 +121,19 @@ segmentation because they ignore \textit{inter-slice anatomical
 consistency}---the key inductive bias exploited by 3D convolution
 kernels. UMed3D addresses this with three components
 (Fig.~\ref{fig:framework}):
-(i)~a \textit{noise generator} $\mathcal{G}$ that
-produces volumetric perturbations gated by the ROI mask;
+(i)~a 3D encoder--decoder noise generator $\mathcal{G}$ that
+produces volumetric perturbations bounded by $\tanh$ and gated by
+an ROI mask $\bm{m}=\mathbb{I}(\bm{y}>0)$ to concentrate
+perturbation budget on anatomically meaningful regions:
+\begin{equation}
+  \bm{\delta}=\mathcal{G}(\bm{x})
+  =\mathrm{Clamp}\!\bigl[
+    \tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon\;\odot\;\bm{m},
+    \;-\epsilon,\;\epsilon\bigr],
+  \label{eq:generator}
+\end{equation}
+with the protected volume
+$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$;
 (ii)~an \textit{Inter-Slice Consistency Disruption Loss}
 $\mathcal{L}_{\text{ISC}}$ that enforces maximal spectral discrepancy
 between adjacent slices, directly disrupting the inter-slice continuity
@@ -130,30 +141,6 @@ prior; and
 (iii)~a \textit{Logits Divergence Loss}
 $\mathcal{L}_{\text{Logits}}$ that maximizes prediction distortion
 across all 3D frequency bands.
-
-%------- Generator -------
-\subsubsection{Noise Generator with ROI Gating.}
-We employ a 3D encoder--decoder network
-$\mathcal{F}_g:\mathbb{R}^{D\times H\times W}\!\to\!
-\mathbb{R}^{D\times H\times W}$ with skip connections as the noise
-generator. Operating on full 3D volumes allows $\mathcal{F}_g$ to
-learn cross-slice noise patterns natively. The raw output is bounded
-via $\tanh$ activation:
-$\bm{\delta}_{\text{raw}}=\tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon$,
-guaranteeing $\|\bm{\delta}_{\text{raw}}\|_\infty\le\epsilon$.
-To avoid perturbing physically meaningful background regions
-(e.g., air at $-$1000\,HU in CT), we impose hard binary gating
-using the anatomical mask
-$\bm{m}=\mathbb{I}(\bm{y}>0)\in\{0,1\}^{D\times H\times W}$:
-\begin{equation}
-  \bm{\delta}=\mathcal{G}(\bm{x})
-  =\mathrm{Clamp}\!\bigl[
-    \tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon\;\odot\;\bm{m},
-    \;-\epsilon,\;\epsilon\bigr].
-  \label{eq:generator}
-\end{equation}
-The protected volume is
-$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$.
 
 %------- L_ISC -------
 \subsubsection{Inter-Slice Consistency Disruption Loss ($\mathcal{L}_{\text{ISC}}$).}
@@ -318,55 +305,35 @@ The surrogate model used during UE generation is a 3D UNet~\cite{cciccek20163d} 
 We compare against: (1)~\textit{Clean} (no perturbation, upper bound); (2)~\textit{Random Noise}; (3)~error-minimizing \textit{Min-Min}~\cite{huang2021unlearnable}; (4)~\textit{TAP}~\cite{fowl2021adversarial}; (5)~\textit{LSP}~\cite{yu2022availability}; (6)~\textit{SEP}~\cite{liu2023stable}; (7)~\textit{PUE}~\cite{liu2023pue}. All baselines are adapted to 3D volumetric inputs.
 
 \subsubsection{Metrics and Implementation.}
-We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon=4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4). Hyperparameters $\lambda_{\text{ISC}}$ and $\lambda_{\text{Logits}}$ are selected via grid search on a validation split.
+We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon=4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4). The loss weights are set to $\lambda_{\text{ISC}}=0.2$ and $\lambda_{\text{Logits}}=0.05$.
 
 \subsection{Main Results}
 
-% ── Table 1: BraTS19 main comparison ──
+% ── Table 1: Main comparison on both datasets ──
 \begin{table}[t]
 \centering
-\caption{Protection effectiveness on BraTS19 (DSC\,\%, $\downarrow$ is better for UE methods). Victim model: 3D UNet. Best UE results in \textbf{bold}.}\label{tab:main_brats}
-\setlength{\tabcolsep}{5pt}
-\begin{tabular}{lccccc}
+\caption{Protection effectiveness (Mean DSC\,\%\,$\downarrow$ / HD95\,mm\,$\uparrow$). Victim model: 3D UNet. Best UE results in \textbf{bold}.}\label{tab:main}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
 \toprule
-Method & Whole & Core & Enhancing & Mean DSC & HD95 \\
+\multirow{2}{*}{Method} & \multicolumn{2}{c}{BraTS19} & \multicolumn{2}{c}{FLARE21} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & DSC & HD95 & DSC & HD95 \\
 \midrule
-Clean         & --   & --   & --   & 87.0 & 5.2 \\
-Random Noise  & --   & --   & --   & --   & --  \\
-Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
-TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
-LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
-SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
-PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
+Clean         & 87.0 & 5.2 & -- & -- \\
+Random Noise  & --   & --  & -- & -- \\
+Min-Min~\cite{huang2021unlearnable} & -- & -- & -- & -- \\
+TAP~\cite{fowl2021adversarial}      & -- & -- & -- & -- \\
+LSP~\cite{yu2022availability}       & -- & -- & -- & -- \\
+SEP~\cite{liu2023stable}            & -- & -- & -- & -- \\
+PUE~\cite{liu2023pue}               & -- & -- & -- & -- \\
 \midrule
-\textbf{UMed3D (Ours)}               & -- & -- & -- & \textbf{7.0} & \textbf{--} \\
+\textbf{UMed3D (Ours)} & \textbf{7.0} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-% ── Table 2: FLARE21 main comparison ──
-\begin{table}[t]
-\centering
-\caption{Protection effectiveness on FLARE21 (DSC\,\%, $\downarrow$ is better for UE methods). Victim model: 3D UNet. Best UE results in \textbf{bold}.}\label{tab:main_flare}
-\setlength{\tabcolsep}{5pt}
-\begin{tabular}{lccccc}
-\toprule
-Method & Liver & Kidney & Spleen & Mean DSC & HD95 \\
-\midrule
-Clean         & --   & --   & --   & -- & -- \\
-Random Noise  & --   & --   & --   & --   & --  \\
-Min-Min~\cite{huang2021unlearnable}  & -- & -- & -- & -- & -- \\
-TAP~\cite{fowl2021adversarial}       & -- & -- & -- & -- & -- \\
-LSP~\cite{yu2022availability}        & -- & -- & -- & -- & -- \\
-SEP~\cite{liu2023stable}             & -- & -- & -- & -- & -- \\
-PUE~\cite{liu2023pue}                & -- & -- & -- & -- & -- \\
-\midrule
-\textbf{UMed3D (Ours)}               & -- & -- & -- & \textbf{--} & \textbf{--} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Table~\ref{tab:main_brats} and Table~\ref{tab:main_flare} report the protection performance on BraTS19 and FLARE21, respectively. UMed3D achieves a dramatic reduction in victim model DSC (from 87\% to 7\% on BraTS19), substantially outperforming all baselines on both datasets. 2D-originated methods (Min-Min, TAP, LSP) show limited effectiveness on 3D data---their slice-independent noise patterns are partially smoothed by 3D convolution kernels, confirming our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
+Table~\ref{tab:main} reports the protection performance on both benchmarks. UMed3D achieves a dramatic reduction in victim model DSC (from 87\% to 7\% on BraTS19), substantially outperforming all baselines on both datasets. 2D-originated methods (Min-Min, TAP, LSP) show limited effectiveness on 3D data---their slice-independent noise patterns are partially smoothed by 3D convolution kernels, confirming our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
 
 \subsection{Cross-Architecture Transferability}
 
@@ -404,15 +371,11 @@ Configuration & Mean DSC\,$\downarrow$ & HD95\,$\uparrow$ \\
 w/o $\mathcal{L}_{\text{Logits}}$ (no logits divergence) & -- & -- \\
 w/o $\mathcal{L}_{\text{ISC}}$ (no ISC disruption) & -- & -- \\
 w/o Hard-ROI (global noise) & -- & -- \\
-\midrule
-$\mathcal{L}_{\text{Logits}}$: spatial L1 (instead of FFT-L1) & -- & -- \\
-$\mathcal{L}_{\text{Logits}}$: spatial L2 & -- & -- \\
-$\mathcal{L}_{\text{Logits}}$: KL divergence & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:ablation} validates the contribution of each component on FLARE21. Removing $\mathcal{L}_{\text{ISC}}$ causes the largest performance drop, confirming that inter-slice spectral diversity is the most critical attack vector against 3D segmentation. Removing $\mathcal{L}_{\text{Logits}}$ also degrades protection, as the generator loses its ability to corrupt deep semantic representations. Replacing FFT-L1 with spatial-domain alternatives (L1, L2, KL) consistently underperforms, validating that frequency-domain measurement captures global structural distortions more effectively than pixel-wise metrics.
+Table~\ref{tab:ablation} validates the contribution of each component on FLARE21. Removing $\mathcal{L}_{\text{ISC}}$ causes the largest performance drop, confirming that inter-slice spectral diversity is the most critical attack vector against 3D segmentation. Removing $\mathcal{L}_{\text{Logits}}$ also degrades protection, as the generator loses its ability to corrupt deep semantic representations. Disabling Hard-ROI gating (i.e., applying global noise) wastes perturbation budget on background regions, reducing protection effectiveness.
 
 \subsection{Analysis}
 
