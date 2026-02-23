@@ -41,9 +41,9 @@
 % ═══════════════════════════════════════════════════════════════════
 \section{引言}
 
-3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。为加速研究，越来越多的机构选择公开共享数据集~\cite{menze2014multimodal,ma2021abdomenct}。然而，这种开放式传播引发了严重隐忧：一旦发布，体数据可被自由利用于未授权的模型训练，可能侵犯患者隐私并违反数据治理政策。
+3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}、UNETR~\cite{hatamizadeh2022unetr}、SwinUNETR~\cite{tang2022swinunetr}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。为加速研究，越来越多的机构选择公开共享数据集~\cite{menze2014multimodal,ma2021abdomenct}。然而，这种开放式传播引发了严重隐忧：一旦发布，体数据可被自由利用于未授权的模型训练，可能侵犯患者隐私并违反数据治理政策~\cite{kaissis2021end}。
 
-\textbf{不可学习样本（UEs）}~\cite{huang2021unlearnable}提供了一种有吸引力的主动防御方案：在数据\textit{发布之前}注入不可感知的扰动，使得在受保护数据上训练的模型学习到``捷径''模式而非真正的语义特征，从而在干净测试数据上失效。虽然UEs对2D自然图像分类有效，但现有方法——包括误差最小化噪声~\cite{huang2021unlearnable}、TAP~\cite{fowl2021adversarial}、SEP~\cite{liu2023stable}和LSP~\cite{yu2022availability}——因两个根本性差距而不适用于3D医学分割：
+\textbf{不可学习样本（UEs）}~\cite{huang2021unlearnable}提供了一种有吸引力的主动防御方案：在数据\textit{发布之前}注入不可感知的扰动，使得在受保护数据上训练的模型学习到``捷径''模式而非真正的语义特征，从而在干净测试数据上失效。虽然UEs对2D自然图像分类有效，但现有方法——包括误差最小化噪声~\cite{huang2021unlearnable}、TAP~\cite{fowl2021adversarial}、SEP~\cite{liu2023stable}、LSP~\cite{yu2022availability}、RUE~\cite{fu2022robust}和CUDA~\cite{sadasivan2023cuda}——因两个根本性差距而不适用于3D医学分割：
 
 \textbf{（1）忽视3D体数据先验。}现代3D架构依赖一个关键归纳偏置：\textit{解剖层间一致性}。器官和病变沿$z$轴平滑变化，3D卷积核显式地聚合跨层上下文以利用这种连续性。现有2D UE方法逐层生成扰动而无层间协调；因此，3D卷积核能有效地``平滑掉''这种时间上不连贯的噪声，严重限制了保护效果。\textbf{（2）缺乏解剖先验。}医学图像包含具有物理意义的背景区域（如CT中$-$1000 HU的空气区域）。全局噪声注入既违反临床完整性，又在非目标区域浪费扰动预算，使噪声易于通过简单预处理被检测或移除。
 
@@ -156,7 +156,7 @@ $\bm{S}_z=|\mathcal{F}_{2\text{D}}(\bm{\delta}_z)|\in\mathbb{R}^{H\times W}$，
 沿$z$轴注入高频``频谱抖动''，
 从根本上与3D卷积所依赖的平滑解剖连续性相矛盾。
 我们在\textit{频域}而非空间域测量差异，
-因为幅度频谱具有平移不变性，
+因为幅度频谱具有平移不变性~\cite{yin2019fourier}，
 提供了更稳定和更聚焦纹理的层间差异度量。
 
 %------- L_Logits -------
@@ -166,7 +166,7 @@ UEs的一个常见失效模式是``表面级过拟合''：
 纯空间域损失（如逐像素L1）仅捕获局部体素差异，
 而遗漏全局结构失真。
 为确保保护深入\textit{语义特征空间}，
-我们在频域中最大化模型预测的失真。
+我们在频域中最大化模型预测的失真~\cite{wang2020high}。
 
 设$\bm{L}_0\!=\!\mathcal{F}_s(\bm{x};\theta)$和
 $\bm{L}_p\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$分别为
@@ -380,7 +380,7 @@ SEP       & --   & --   & --   & -- \\
 %                       参考文献
 % ═══════════════════════════════════════════════════════════════════
 
-\begin{thebibliography}{15}
+\begin{thebibliography}{20}
 
 \bibitem{huang2021unlearnable}
 Huang, H., Ma, X., Erfani, S.M., Bailey, J., Wang, Y.:
@@ -447,6 +447,41 @@ arXiv preprint arXiv:2102.04306 (2021)
 Ronneberger, O., Fischer, P., Brox, T.:
 U-Net: Convolutional networks for biomedical image segmentation.
 In: MICCAI, pp.~234--241 (2015)
+
+\bibitem{hatamizadeh2022unetr}
+Hatamizadeh, A., Tang, Y., Nath, V., Yang, D., Myronenko, A., Landman, B., Roth, H.R., Xu, D.:
+UNETR: Transformers for 3D medical image segmentation.
+In: WACV, pp.~574--584 (2022)
+
+\bibitem{tang2022swinunetr}
+Tang, Y., Yang, D., Li, W., Roth, H.R., Landman, B., Xu, D., Nath, V., Hatamizadeh, A.:
+Self-supervised pre-training of swin transformers for 3D medical image analysis.
+In: CVPR, pp.~20730--20740 (2022)
+
+\bibitem{kaissis2021end}
+Kaissis, G.A., Makowski, M.R., R\"{u}ckert, D., Braren, R.F.:
+Secure, privacy-preserving and federated machine learning in medical imaging.
+Nature Machine Intelligence \textbf{2}(6), 305--311 (2020)
+
+\bibitem{fu2022robust}
+Fu, S., He, F., Liu, Y., Shen, L., Tao, D.:
+Robust unlearnable examples: Protecting data privacy against adversarial learning.
+In: ICLR (2022)
+
+\bibitem{sadasivan2023cuda}
+Sadasivan, V.S., Souri, M., Ilber, A., Kakavand, S., Shafahi, A., Goldstein, T.:
+CUDA: Convolution-based unlearnable datasets.
+In: CVPR, pp.~3862--3871 (2023)
+
+\bibitem{yin2019fourier}
+Yin, D., Lopes, R.G., Shlens, J., Cubuk, E.D., Gilmer, J.:
+A Fourier perspective on model robustness in computer vision.
+In: NeurIPS, pp.~13255--13265 (2019)
+
+\bibitem{wang2020high}
+Wang, H., Wu, X., Huang, Z., Xing, E.P.:
+High-frequency component helps explain the generalization of convolutional neural networks.
+In: CVPR, pp.~8684--8694 (2020)
 
 \end{thebibliography}
 

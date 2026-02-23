@@ -42,9 +42,9 @@ The widespread dissemination of public 3D medical image segmentation (MIS) datas
 % ═══════════════════════════════════════════════════════════════════
 \section{Introduction}
 
-3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models (e.g., 3D-UNet~\cite{cciccek20163d}, V-Net~\cite{milletari2016v}, nnU-Net~\cite{isensee2021nnu}) critically depends on large-scale, voxel-annotated datasets whose creation requires substantial expert effort. To accelerate research, institutions increasingly share datasets publicly~\cite{menze2014multimodal,ma2021abdomenct}. However, this open dissemination raises serious concerns: once published, volumetric data can be freely exploited for unauthorized model training, potentially compromising patient privacy and violating data governance policies.
+3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models (e.g., 3D-UNet~\cite{cciccek20163d}, V-Net~\cite{milletari2016v}, nnU-Net~\cite{isensee2021nnu}, UNETR~\cite{hatamizadeh2022unetr}, SwinUNETR~\cite{tang2022swinunetr}) critically depends on large-scale, voxel-annotated datasets whose creation requires substantial expert effort. To accelerate research, institutions increasingly share datasets publicly~\cite{menze2014multimodal,ma2021abdomenct}. However, this open dissemination raises serious concerns: once published, volumetric data can be freely exploited for unauthorized model training, potentially compromising patient privacy and violating data governance policies~\cite{kaissis2021end}.
 
-\textbf{Unlearnable Examples (UEs)}~\cite{huang2021unlearnable} offer an appealing proactive defense: by injecting imperceptible perturbations into training data \textit{before} release, UEs cause models trained on the protected data to learn ``shortcut'' patterns rather than genuine semantic features, thereby failing on clean test inputs. While effective for 2D natural image classification, existing UE methods---including error-minimizing noise~\cite{huang2021unlearnable}, TAP~\cite{fowl2021adversarial}, SEP~\cite{liu2023stable}, and LSP~\cite{yu2022availability}---are ill-suited for 3D medical segmentation due to two fundamental gaps:
+\textbf{Unlearnable Examples (UEs)}~\cite{huang2021unlearnable} offer an appealing proactive defense: by injecting imperceptible perturbations into training data \textit{before} release, UEs cause models trained on the protected data to learn ``shortcut'' patterns rather than genuine semantic features, thereby failing on clean test inputs. While effective for 2D natural image classification, existing UE methods---including error-minimizing noise~\cite{huang2021unlearnable}, TAP~\cite{fowl2021adversarial}, SEP~\cite{liu2023stable}, LSP~\cite{yu2022availability}, RUE~\cite{fu2022robust}, and CUDA~\cite{sadasivan2023cuda}---are ill-suited for 3D medical segmentation due to two fundamental gaps:
 
 \textbf{(1) Neglect of 3D volumetric priors.} Modern 3D architectures rely on a key inductive bias: \textit{anatomical inter-slice consistency}. Organs and lesions change smoothly along the $z$-axis, and 3D convolution kernels explicitly aggregate cross-slice context to exploit this continuity. Existing 2D UE methods generate perturbations slice-by-slice without inter-slice coordination; consequently, 3D kernels can effectively ``smooth out'' such temporally incoherent noise, severely limiting protective efficacy. \textbf{(2) Absence of anatomical priors.} Medical images contain physically meaningful background regions (e.g., air at $-$1000 HU in CT). Global noise injection both violates clinical integrity and wastes perturbation budget on non-target regions, making the noise easily detectable or removable via simple preprocessing.
 
@@ -170,8 +170,8 @@ fundamentally contradicts the smooth anatomical continuity 3D
 convolutions rely on.
 We measure divergence in the \textit{frequency domain} rather than
 the spatial domain because magnitude spectra are
-translation-invariant, providing a more stable and texture-focused
-measure of inter-slice dissimilarity.
+translation-invariant~\cite{yin2019fourier}, providing a more stable
+and texture-focused measure of inter-slice dissimilarity.
 
 %------- L_Logits -------
 \subsubsection{Logits Divergence Loss ($\mathcal{L}_{\text{Logits}}$).}
@@ -181,7 +181,7 @@ knowledge in deep features. Purely spatial-domain losses (e.g.,
 pixel-wise L1) capture only local voxel differences and miss global
 structural distortions. To ensure protection penetrates the
 \textit{semantic feature space}, we maximize the distortion of model
-predictions in the frequency domain.
+predictions in the frequency domain~\cite{wang2020high}.
 
 Let $\bm{L}_0\!=\!\mathcal{F}_s(\bm{x};\theta)$ and
 $\bm{L}_p\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$ denote the
@@ -407,7 +407,7 @@ The authors have no competing interests to declare that are relevant to the cont
 %\bibliographystyle{splncs04}
 %\bibliography{references}
 
-\begin{thebibliography}{15}
+\begin{thebibliography}{20}
 
 \bibitem{huang2021unlearnable}
 Huang, H., Ma, X., Erfani, S.M., Bailey, J., Wang, Y.:
@@ -474,6 +474,41 @@ arXiv preprint arXiv:2102.04306 (2021)
 Ronneberger, O., Fischer, P., Brox, T.:
 U-Net: Convolutional networks for biomedical image segmentation.
 In: MICCAI, pp.~234--241 (2015)
+
+\bibitem{hatamizadeh2022unetr}
+Hatamizadeh, A., Tang, Y., Nath, V., Yang, D., Myronenko, A., Landman, B., Roth, H.R., Xu, D.:
+UNETR: Transformers for 3D medical image segmentation.
+In: WACV, pp.~574--584 (2022)
+
+\bibitem{tang2022swinunetr}
+Tang, Y., Yang, D., Li, W., Roth, H.R., Landman, B., Xu, D., Nath, V., Hatamizadeh, A.:
+Self-supervised pre-training of swin transformers for 3D medical image analysis.
+In: CVPR, pp.~20730--20740 (2022)
+
+\bibitem{kaissis2021end}
+Kaissis, G.A., Makowski, M.R., R\"{u}ckert, D., Braren, R.F.:
+Secure, privacy-preserving and federated machine learning in medical imaging.
+Nature Machine Intelligence \textbf{2}(6), 305--311 (2020)
+
+\bibitem{fu2022robust}
+Fu, S., He, F., Liu, Y., Shen, L., Tao, D.:
+Robust unlearnable examples: Protecting data privacy against adversarial learning.
+In: ICLR (2022)
+
+\bibitem{sadasivan2023cuda}
+Sadasivan, V.S., Souri, M., Ilber, A., Kakavand, S., Shafahi, A., Goldstein, T.:
+CUDA: Convolution-based unlearnable datasets.
+In: CVPR, pp.~3862--3871 (2023)
+
+\bibitem{yin2019fourier}
+Yin, D., Lopes, R.G., Shlens, J., Cubuk, E.D., Gilmer, J.:
+A Fourier perspective on model robustness in computer vision.
+In: NeurIPS, pp.~13255--13265 (2019)
+
+\bibitem{wang2020high}
+Wang, H., Wu, X., Huang, Z., Xing, E.P.:
+High-frequency component helps explain the generalization of convolutional neural networks.
+In: CVPR, pp.~8684--8694 (2020)
 
 \end{thebibliography}
 
