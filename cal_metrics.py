@@ -36,6 +36,9 @@ from tqdm import tqdm
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import src.models      # noqa: F401  — 触发 @register_model 装饰器
+import src.datasets    # noqa: F401  — 触发 @register_dataset_builder 装饰器
+
 from src.registry import get_dataset_builder, get_model
 from src.utils.config import get_config
 
