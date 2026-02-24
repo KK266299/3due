@@ -42,13 +42,6 @@ The widespread dissemination of public 3D medical image segmentation (MIS) datas
 % ═══════════════════════════════════════════════════════════════════
 \section{Introduction}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\linewidth]{fig/motivation.pdf}
-\caption{Motivation of 3DMedUE. \textbf{Left:} A 3D segmentation model trained on clean data achieves accurate predictions on clean test volumes. \textbf{Right:} The same model trained on 3DMedUE-protected data fails to generalize to clean test data, producing degraded segmentation.}
-\label{fig:motivation}
-\end{figure}
-
 3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models~\cite{cciccek20163d,milletari2016v,isensee2021nnu,hatamizadeh2022unetr,tang2022swinunetr} critically depends on large-scale, voxel-annotated datasets whose creation requires substantial expert effort. Institutions increasingly share datasets through public repositories such as TCIA and PubMed-linked archives~\cite{menze2014multimodal,ma2021abdomenct} to facilitate collaborative research, typically under licenses that restrict usage to educational visualization and academic benchmarking so as to protect patient privacy and data ownership.
  However, once published, volumetric data can be freely downloaded and repurposed for unauthorized model training. Such misuse violates both the original data-use agreements and privacy regulations such as the GDPR, which mandates that data collected for specific purposes shall not be repurposed without explicit consent~\cite{kaissis2021end}.
 
@@ -56,7 +49,14 @@ To counter such risks, Unlearnable Examples (UEs)~\cite{huang2021unlearnable} of
 
 Existing 2D UE methods neglect the volumetric priors unique to 3D data. Modern 3D segmentation architectures rely on a key inductive bias: \textit{anatomical inter-slice consistency}~\cite{isensee2021nnu,dong2022mnet}. Organs and lesions vary smoothly along the $z$-axis, and 3D convolution kernels explicitly aggregate cross-slice context to exploit this continuity. The importance of this prior is evidenced by a well-established empirical finding: under severe anisotropy, where large inter-slice spacing naturally disrupts volumetric continuity, 2D models consistently outperform their 3D counterparts~\cite{isensee2021nnu,dong2022mnet}. Although voxel spacing is an intrinsic acquisition parameter that cannot be altered post hoc, this observation reveals that inter-slice consistency is the decisive factor governing 3D segmentation performance. This further suggests that deliberately disrupting the cross-slice aggregation process of 3D convolutions---by injecting inter-slice incoherent perturbations along the $z$-axis---can directly undermine the very inductive bias these models depend on, thereby providing a principled attack vector against 3D architectures.
 
-Our key insight is that \textit{inter-slice consistency is simultaneously the source of 3D segmentation power and its exploitable vulnerability}. In the frequency domain, smooth anatomical continuity along $z$ manifests as low-frequency dominance in the $z$-axis spectrum. Disrupting this by injecting noise with maximally diverse spectral patterns across adjacent slices, which forces 3D kernels to receive conflicting inputs along $z$, fundamentally undermining their ability to learn coherent volumetric representations.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{fig/motivation.pdf}
+\caption{Motivation of 3DMedUE. \textbf{Left:} A model trained on clean data learns coherent volumetric representations and segments accurately on clean test volumes. \textbf{Right:} 3DMedUE disrupts inter-slice consistency by injecting spectrally diverse perturbations across adjacent slices; a model trained on such protected data fails to aggregate cross-slice features, producing severely degraded segmentation on clean test inputs.}
+\label{fig:motivation}
+\end{figure}
+
+As illustrated in Fig.~\ref{fig:motivation}, our key insight is that \textit{inter-slice consistency is simultaneously the source of 3D segmentation power and its exploitable vulnerability}. In the frequency domain, smooth anatomical continuity along $z$ manifests as low-frequency dominance in the $z$-axis spectrum. Disrupting this by injecting noise with maximally diverse spectral patterns across adjacent slices, which forces 3D kernels to receive conflicting inputs along $z$, fundamentally undermining their ability to learn coherent volumetric representations.
 
 Building on this insight, we propose \textbf{3DMedUE}, a UE framework tailored for 3D medical image segmentation. 3DMedUE comprises two core modules: (i)~an \textit{inter-slice consistency disruption} module that maximizes spectral discrepancies between adjacent slices in the frequency domain, injecting ``inter-slice flickering'' that directly undermines the $z$-axis continuity assumption of 3D convolutions; and (ii)~a \textit{frequency-domain logits divergence} module that drives perturbed model logits away from their clean counterparts across all spatial frequency bands, achieving robust semantic corruption beyond pixel-level deception.
 
