@@ -144,8 +144,8 @@ def compute_volume_psnr(original: torch.Tensor, noisy: torch.Tensor) -> float:
         PSNR 值 (dB)
     """
     # 添加 batch 维度 -> [1, C, D, H, W]
-    orig_batch = original.unsqueeze(0).float()
-    noisy_batch = noisy.unsqueeze(0).float()
+    orig_batch = original.unsqueeze(0).float().contiguous()
+    noisy_batch = noisy.unsqueeze(0).float().contiguous()
     psnr_val = compute_psnr(orig_batch, noisy_batch, data_range=1.0)
     return float(psnr_val.item())
 
@@ -165,8 +165,8 @@ def compute_volume_ssim(original: torch.Tensor, noisy: torch.Tensor) -> float:
     ssim_vals = []
     for d in range(D):
         # 取出单个 slice: [C, H, W] -> [1, C, H, W]
-        orig_slice = original[:, d, :, :].unsqueeze(0).float()
-        noisy_slice = noisy[:, d, :, :].unsqueeze(0).float()
+        orig_slice = original[:, d, :, :].unsqueeze(0).float().contiguous()
+        noisy_slice = noisy[:, d, :, :].unsqueeze(0).float().contiguous()
         val = compute_ssim(orig_slice, noisy_slice, data_range=1.0, size_average=True)
         ssim_vals.append(float(val.item()))
     return float(np.mean(ssim_vals))
@@ -189,8 +189,8 @@ def compute_per_slice_metrics(
     C, D, H, W = original.shape
     results = []
     for d in range(D):
-        orig_slice = original[:, d, :, :].unsqueeze(0).float()
-        noisy_slice = noisy[:, d, :, :].unsqueeze(0).float()
+        orig_slice = original[:, d, :, :].unsqueeze(0).float().contiguous()
+        noisy_slice = noisy[:, d, :, :].unsqueeze(0).float().contiguous()
 
         psnr_val = compute_psnr(orig_slice, noisy_slice, data_range=1.0)
         ssim_val = compute_ssim(orig_slice, noisy_slice, data_range=1.0, size_average=True)
