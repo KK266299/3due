@@ -141,9 +141,8 @@ exploited by 3D models. As illustrated in Fig.~\ref{fig:method},
 (i)~\textit{Inter-Slice Consistency Disruption} maximizes spectral
 discrepancy between adjacent slices to break the inter-slice continuity
 prior;
-(ii)~\textit{Logits Divergence} maximizes prediction distortion in the
-3D frequency domain to corrupt semantic features across all spatial
-scales.
+(ii)~\textit{Logits Divergence} maximizes the $\ell_1$ distance between
+clean and perturbed logits to corrupt semantic predictions.
 
 %------- L_ISC -------
 \subsubsection{Inter-Slice Consistency Disruption Loss ($\mathcal{L}_{\text{ISC}}$).}
@@ -180,33 +179,24 @@ and texture-focused measure of inter-slice dissimilarity.
 \subsubsection{Logits Divergence Loss ($\mathcal{L}_{\text{Logits}}$).}
 A common failure mode of UEs is ``surface-level overfitting'': the
 model memorizes noise patterns but retains underlying anatomical
-knowledge in deep features. Purely spatial-domain losses (e.g.,
-pixel-wise L1) capture only local voxel differences and miss global
-structural distortions. To ensure protection penetrates the
-\textit{semantic feature space}, we maximize the distortion of model
-predictions in the frequency domain~\cite{wang2020high}.
+knowledge in deep features. To ensure protection penetrates the
+\textit{semantic feature space}, we directly maximize the distortion
+of model predictions.
 
 Let $\bm{L}_0\!=\!\mathcal{F}_s(\bm{x};\theta)$ and
 $\bm{L}_p\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$ denote the
 clean and perturbed logit volumes
 ($\in\mathbb{R}^{D\times H\times W\times K}$), respectively.
-We compute their 3D Discrete Fourier Transform (DFT) and maximize the
-$\ell_1$ distance:
+We maximize the $\ell_1$ distance between them:
 \begin{equation}
   \mathcal{L}_{\text{Logits}}
-  =-\bigl\|\,
-      \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_p\bigr)
-      -\mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_0\bigr)
-    \bigr\|_1,
+  =-\bigl\|\,\bm{L}_p - \bm{L}_0\bigr\|_1,
   \label{eq:logits}
 \end{equation}
-where $\mathcal{F}_{3\text{D}}$ is the 3D DFT.
-The $\ell_1$ norm promotes sparse but significant spectral deviations,
-forcing the generator to concentrate distortion on dominant frequency
-bands that correspond to critical semantic structures (organ boundaries
-at high frequencies, overall shape at low frequencies), ensuring
-perturbations corrupt predictions across \textit{all spatial scales}
-simultaneously.
+The $\ell_1$ norm promotes sparse but significant deviations,
+forcing the generator to concentrate distortion on voxels
+corresponding to critical semantic structures, ensuring
+perturbations corrupt predictions across the entire volume.
 
 %------- Optimization -------
 \subsubsection{Optimization.}
