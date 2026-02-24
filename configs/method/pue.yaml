@@ -17,7 +17,7 @@ training:
   model_save_freq: 10
   epochs: 3
   batch_size: 64
-  num_workers: 0
+  num_workers: 2
   sampler:
     name: pk
     p: 32  # every batch 32 different patients
@@ -46,12 +46,17 @@ ue:
     U_train: 4                  # surrogate_step 内每步采样次数（均值loss再反传）
     U_noise: 8                  # noise_step 内每步采样次数（均值梯度再PGD）
 
+  # —— AMP (Mixed Precision) ——
+  # 对 3D UNet 有显著加速（~2x），推荐在 GPU 上始终开启
+  amp:
+    enabled: false              # 命令行可用 ue.amp.enabled=true 覆盖
+
   algorithm:
     kind: training_based
     name: pue
     params:
       epsilon: 0.0313725        # 8/255 (ℓ∞ 半径)
-      noise_step: 10            # N-step 内层 PGD 步数
+      noise_step: 10            # N-step 内层 PGD 步数（3D 建议 1-3，默认 10 来自 2D 论文）
       step_size: 0.0039215      # 1/255
       surrogate_step: 20        # S-step 每 epoch 多少个 batch
 
