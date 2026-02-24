@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-计算分割模型在干净测试集上的 HD95 和 Dice 指标。
+计算分割模型在干净测试集上的 Dice / IoU / HD95 / ASD 指标。
 
 支持的数据集：
   - brats19_seg: BraTS19 脑肿瘤分割 (4ch, 4class, regions: ET/TC/WT)
@@ -43,7 +43,7 @@ from src.registry import get_dataset_builder, get_model
 from src.utils.config import get_config
 
 # ─── MONAI metrics ───────────────────────────────────────────────
-from monai.metrics import DiceMetric, HausdorffDistanceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric, MeanIoU, SurfaceDistanceMetric
 
 
 # ======================================================================
@@ -206,7 +206,7 @@ def compute_metrics(
     device: torch.device,
 ) -> Tuple[Dict[str, float], List[Dict[str, object]]]:
     """
-    在测试集上逐样本推理，计算 HD95 和 Dice。
+    在测试集上逐样本推理，计算 Dice / IoU / HD95 / ASD。
 
     Returns:
         summary: 汇总指标 dict
@@ -222,9 +222,20 @@ def compute_metrics(
         reduction="none",
         get_not_nans=True,
     )
+    iou_metric = MeanIoU(
+        include_background=True,
+        reduction="none",
+        get_not_nans=True,
+    )
     hd95_metric = HausdorffDistanceMetric(
         include_background=True,
         percentile=95,
+        reduction="none",
+        get_not_nans=True,
+    )
+    asd_metric = SurfaceDistanceMetric(
+        include_background=True,
+        symmetric=True,
         reduction="none",
         get_not_nans=True,
     )
@@ -251,64 +262,80 @@ def compute_metrics(
 
         # 累积 metrics
         dice_metric(y_pred=p_reg, y=y_reg)
+        iou_metric(y_pred=p_reg, y=y_reg)
         hd95_metric(y_pred=p_reg, y=y_reg)
+        asd_metric(y_pred=p_reg, y=y_reg)
 
-        # 单样本结果
+        # 单样本结果（汇总后再填数值）
         row = {"case_id": case_id, "index": idx}
-        # 取最后累积的一条（index = idx）
-        # MONAI 在 __call__ 时会 append，aggregate 时返回所有累积的结果
-        # 这里暂时存 case_id，汇总后再填
         per_sample_results.append(row)
 
-    # ---- Aggregate Dice ----
+    # ---- Aggregate ----
     dice_vals, dice_nans = dice_metric.aggregate()
     dice_vals = dice_vals.view(-1, n_regions)
     dice_nans = dice_nans.view(-1, n_regions)
 
-    # ---- Aggregate HD95 ----
+    iou_vals, iou_nans = iou_metric.aggregate()
+    iou_vals = iou_vals.view(-1, n_regions)
+    iou_nans = iou_nans.view(-1, n_regions)
+
     hd95_vals, hd95_nans = hd95_metric.aggregate()
     hd95_vals = hd95_vals.view(-1, n_regions)
     hd95_nans = hd95_nans.view(-1, n_regions)
 
+    asd_vals, asd_nans = asd_metric.aggregate()
+    asd_vals = asd_vals.view(-1, n_regions)
+    asd_nans = asd_nans.view(-1, n_regions)
+
     # 填充 per-sample 数据
     for i, row in enumerate(per_sample_results):
         for r, rn in enumerate(region_names):
-            d_val = float(dice_vals[i, r].item()) if dice_nans[i, r] > 0 else float("nan")
-            h_val = float(hd95_vals[i, r].item()) if hd95_nans[i, r] > 0 else float("nan")
-            row[f"dice_{rn}"] = d_val
-            row[f"hd95_{rn}"] = h_val
+            row[f"dice_{rn}"] = float(dice_vals[i, r].item()) if dice_nans[i, r] > 0 else float("nan")
+            row[f"iou_{rn}"]  = float(iou_vals[i, r].item())  if iou_nans[i, r]  > 0 else float("nan")
+            row[f"hd95_{rn}"] = float(hd95_vals[i, r].item()) if hd95_nans[i, r] > 0 else float("nan")
+            row[f"asd_{rn}"]  = float(asd_vals[i, r].item())  if asd_nans[i, r]  > 0 else float("nan")
 
     # ---- 汇总指标 ----
     summary: Dict[str, float] = {}
 
+    # 辅助函数：对距离类指标（HD95/ASD）安全取均值，过滤 inf
+    def _safe_dist_mean(vals: torch.Tensor, nans: torch.Tensor, r: int) -> float:
+        valid_mask = nans[:, r] > 0
+        if not valid_mask.any():
+            return float("inf")
+        v = vals[valid_mask, r]
+        finite = torch.isfinite(v)
+        if not finite.any():
+            return float("inf")
+        return float(v[finite].mean().item())
+
     for r, rn in enumerate(region_names):
         # Dice
         valid_mask = dice_nans[:, r] > 0
-        if valid_mask.any():
-            summary[f"dice_{rn}"] = float(dice_vals[valid_mask, r].mean().item())
-        else:
-            summary[f"dice_{rn}"] = 0.0
+        summary[f"dice_{rn}"] = float(dice_vals[valid_mask, r].mean().item()) if valid_mask.any() else 0.0
+
+        # IoU
+        valid_mask = iou_nans[:, r] > 0
+        summary[f"iou_{rn}"] = float(iou_vals[valid_mask, r].mean().item()) if valid_mask.any() else 0.0
 
         # HD95
-        hd_valid_mask = hd95_nans[:, r] > 0
-        if hd_valid_mask.any():
-            hd_values = hd95_vals[hd_valid_mask, r]
-            # 过滤 inf 值（当 pred 或 gt 为空时 MONAI 可能返回 inf）
-            finite_mask = torch.isfinite(hd_values)
-            if finite_mask.any():
-                summary[f"hd95_{rn}"] = float(hd_values[finite_mask].mean().item())
-            else:
-                summary[f"hd95_{rn}"] = float("inf")
-        else:
-            summary[f"hd95_{rn}"] = float("inf")
+        summary[f"hd95_{rn}"] = _safe_dist_mean(hd95_vals, hd95_nans, r)
 
-    # 平均 Dice / HD95
+        # ASD
+        summary[f"asd_{rn}"] = _safe_dist_mean(asd_vals, asd_nans, r)
+
+    # 平均值
     valid_dice = [v for k, v in summary.items() if k.startswith("dice_") and v > 0]
     summary["dice_avg"] = float(np.mean(valid_dice)) if valid_dice else 0.0
 
-    valid_hd = [v for k, v in summary.items()
-                if k.startswith("hd95_") and np.isfinite(v)]
+    valid_iou = [v for k, v in summary.items() if k.startswith("iou_") and v > 0]
+    summary["iou_avg"] = float(np.mean(valid_iou)) if valid_iou else 0.0
+
+    valid_hd = [v for k, v in summary.items() if k.startswith("hd95_") and np.isfinite(v)]
     summary["hd95_avg"] = float(np.mean(valid_hd)) if valid_hd else float("inf")
+
+    valid_asd = [v for k, v in summary.items() if k.startswith("asd_") and np.isfinite(v)]
+    summary["asd_avg"] = float(np.mean(valid_asd)) if valid_asd else float("inf")
 
     return summary, per_sample_results
 
@@ -365,23 +392,27 @@ def main():
     ds_info = DATASET_CONFIGS[args.dataset]
     region_names = ds_info["region_names"]
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print(f"  Results: {args.dataset} ({args.split} split)")
-    print("=" * 60)
+    print("=" * 70)
 
-    print(f"\n{'Region':<15} {'Dice':>10} {'HD95':>10}")
-    print("-" * 37)
+    def _fmt(v: float) -> str:
+        return f"{v:.4f}" if np.isfinite(v) else "inf"
+
+    print(f"\n{'Region':<15} {'Dice':>10} {'IoU':>10} {'HD95':>10} {'ASD':>10}")
+    print("-" * 57)
     for rn in region_names:
-        d = summary.get(f"dice_{rn}", 0.0)
-        h = summary.get(f"hd95_{rn}", float("inf"))
-        h_str = f"{h:.4f}" if np.isfinite(h) else "inf"
-        print(f"{rn:<15} {d:>10.4f} {h_str:>10}")
+        d  = summary.get(f"dice_{rn}", 0.0)
+        io = summary.get(f"iou_{rn}", 0.0)
+        h  = summary.get(f"hd95_{rn}", float("inf"))
+        a  = summary.get(f"asd_{rn}", float("inf"))
+        print(f"{rn:<15} {_fmt(d):>10} {_fmt(io):>10} {_fmt(h):>10} {_fmt(a):>10}")
 
-    print("-" * 37)
-    avg_d = summary.get("dice_avg", 0.0)
-    avg_h = summary.get("hd95_avg", float("inf"))
-    avg_h_str = f"{avg_h:.4f}" if np.isfinite(avg_h) else "inf"
-    print(f"{'Average':<15} {avg_d:>10.4f} {avg_h_str:>10}")
+    print("-" * 57)
+    print(f"{'Average':<15} {_fmt(summary.get('dice_avg', 0.0)):>10} "
+          f"{_fmt(summary.get('iou_avg', 0.0)):>10} "
+          f"{_fmt(summary.get('hd95_avg', float('inf'))):>10} "
+          f"{_fmt(summary.get('asd_avg', float('inf'))):>10}")
     print()
 
     # ---- 保存 CSV ----
