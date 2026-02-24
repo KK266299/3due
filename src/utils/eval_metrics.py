@@ -52,8 +52,8 @@ def compute_psnr(
 
     # Flatten spatial dimensions: [B, C, ...] -> [B, -1]
     batch_size = original.shape[0]
-    orig_flat = original.view(batch_size, -1)
-    pert_flat = perturbed.view(batch_size, -1)
+    orig_flat = original.reshape(batch_size, -1)
+    pert_flat = perturbed.reshape(batch_size, -1)
 
     # MSE per sample
     mse = torch.mean((orig_flat - pert_flat) ** 2, dim=1)
