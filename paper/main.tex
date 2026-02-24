@@ -134,30 +134,16 @@ keeping perturbations imperceptible.
 \label{sec:3dmedue}
 
 \textbf{Overview.}\quad
-As discussed in Sec.~1, existing UEs fail in 3D medical
-segmentation because they ignore \textit{inter-slice anatomical
-consistency}, the key inductive bias exploited by 3D convolution
-kernels. 3DMedUE addresses this with three components:
-(i)~a 3D encoder--decoder noise generator $\mathcal{G}$ that
-produces volumetric perturbations bounded by $\tanh$ and gated by
-an ROI mask $\bm{m}=\mathbb{I}(\bm{y}>0)$ to concentrate
-perturbation budget on anatomically meaningful regions:
-\begin{equation}
-  \bm{\delta}=\mathcal{G}(\bm{x})
-  =\mathrm{Clamp}\!\bigl[
-    \tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon\;\odot\;\bm{m},
-    \;-\epsilon,\;\epsilon\bigr],
-  \label{eq:generator}
-\end{equation}
-with the protected volume
-$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$;
-(ii)~an \textit{Inter-Slice Consistency Disruption Loss}
-$\mathcal{L}_{\text{ISC}}$ that enforces maximal spectral discrepancy
-between adjacent slices, directly disrupting the inter-slice continuity
-prior; and
-(iii)~a \textit{Logits Divergence Loss}
-$\mathcal{L}_{\text{Logits}}$ that maximizes prediction distortion
-across all 3D frequency bands.
+Existing UEs fail in 3D medical segmentation because they ignore
+\textit{inter-slice anatomical consistency}, the key inductive bias
+exploited by 3D models. As illustrated in Fig.~\ref{fig:method},
+3DMedUE introduces two dedicated modules:
+(i)~\textit{Inter-Slice Consistency Disruption} maximizes spectral
+discrepancy between adjacent slices to break the inter-slice continuity
+prior;
+(ii)~\textit{Logits Divergence} maximizes prediction distortion in the
+3D frequency domain to corrupt semantic features across all spatial
+scales.
 
 %------- L_ISC -------
 \subsubsection{Inter-Slice Consistency Disruption Loss ($\mathcal{L}_{\text{ISC}}$).}
