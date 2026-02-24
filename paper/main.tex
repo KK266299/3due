@@ -52,7 +52,7 @@ Existing 2D UE methods neglect the volumetric priors unique to 3D data. Modern 3
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{fig/motivation.pdf}
-\caption{Motivation of 3DMedUE. \textbf{Left:} A model trained on clean data learns coherent volumetric representations and segments accurately on clean test volumes. \textbf{Right:} 3DMedUE disrupts inter-slice consistency by injecting spectrally diverse perturbations across adjacent slices; a model trained on such protected data fails to aggregate cross-slice features, producing severely degraded segmentation on clean test inputs.}
+\caption{Motivation of 3DMedUE. \textbf{Left:} A model trained on clean data segments accurately. \textbf{Right:} 3DMedUE disrupts inter-slice consistency via spectrally diverse perturbations across adjacent slices; the model trained on protected data fails to aggregate cross-slice features, producing degraded segmentation.}
 \label{fig:motivation}
 \end{figure}
 
