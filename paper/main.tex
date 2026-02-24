@@ -81,29 +81,38 @@ protection with DSC reduced to 6.8\%.
 IoU\,(\%), lower values indicate better protection ($\downarrow$). For
 HD95\,(mm) and ASD\,(mm), higher values indicate better protection
 ($\uparrow$). Best results in \textbf{bold}.}\label{tab:main}
-\begin{tabular}{|l|c|c|c|c|}
+\setlength{\tabcolsep}{3.2pt}
+\footnotesize
+\begin{tabular}{|l|c|c|c|c|c|c|c|c|}
 \hline
-Method & DSC$\downarrow$ & IoU$\downarrow$ & HD95$\uparrow$ & ASD$\uparrow$ \\
+\multirow{2}{*}{Method}
+  & \multicolumn{4}{c|}{BraTS19}
+  & \multicolumn{4}{c|}{FLARE21} \\
+\cline{2-9}
+  & DSC$\downarrow$ & IoU$\downarrow$ & HD95$\uparrow$ & ASD$\uparrow$
+  & DSC$\downarrow$ & IoU$\downarrow$ & HD95$\uparrow$ & ASD$\uparrow$ \\
 \hline
-\multicolumn{5}{|l|}{\textit{BraTS19 --- Brain Tumor Segmentation}} \\
-\hline
-Clean                              & 80.0 & 69.0 &  7.17 &  1.78 \\
-Gaussian Noise                     & 81.4 & 71.1 &  7.01 &  2.07 \\
-Min-Min~\cite{huang2021unlearnable} & 69.3 & 55.8 & 21.68 &  5.26 \\
-TAP~\cite{fowl2021adversarial}     &   -- &   -- &    -- &    -- \\
-LSP~\cite{yu2022availability}      &   -- &   -- &    -- &    -- \\
-SEP~\cite{liu2023stable}           & 72.3 & 60.4 &  9.48 &  2.58 \\
-\textbf{3DMedUE (Ours)}            & \textbf{0.0} & \textbf{0.0} & \textbf{45.56} & \textbf{31.02} \\
-\hline
-\multicolumn{5}{|l|}{\textit{FLARE21 --- Abdominal Organ Segmentation}} \\
-\hline
-Clean                              & 88.6 &   -- &    -- &    -- \\
-Gaussian Noise                     & 89.0 &   -- &    -- &    -- \\
-Min-Min~\cite{huang2021unlearnable} & 57.1 &   -- &    -- &    -- \\
-TAP~\cite{fowl2021adversarial}     &   -- &   -- &    -- &    -- \\
-LSP~\cite{yu2022availability}      &   -- &   -- &    -- &    -- \\
-SEP~\cite{liu2023stable}           &   -- &   -- &    -- &    -- \\
-\textbf{3DMedUE (Ours)}            & \textbf{6.8} & \textbf{--} & \textbf{--} & \textbf{--} \\
+Clean
+  & 80.0 & 69.0 &  7.17 &  1.78
+  & 88.6 &   -- &    -- &    -- \\
+Gaussian Noise
+  & 81.4 & 71.1 &  7.01 &  2.07
+  & 89.0 &   -- &    -- &    -- \\
+Min-Min~\cite{huang2021unlearnable}
+  & 69.3 & 55.8 & 21.68 &  5.26
+  & 57.1 &   -- &    -- &    -- \\
+TAP~\cite{fowl2021adversarial}
+  &   -- &   -- &    -- &    --
+  &   -- &   -- &    -- &    -- \\
+LSP~\cite{yu2022availability}
+  &   -- &   -- &    -- &    --
+  &   -- &   -- &    -- &    -- \\
+SEP~\cite{liu2023stable}
+  & 72.3 & 60.4 &  9.48 &  2.58
+  &   -- &   -- &    -- &    -- \\
+\textbf{3DMedUE (Ours)}
+  & \textbf{0.0} & \textbf{0.0} & \textbf{45.56} & \textbf{31.02}
+  & \textbf{6.8} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \hline
 \end{tabular}
 \end{table}
