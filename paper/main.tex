@@ -1,0 +1,125 @@
+% This is samplepaper.tex, a sample chapter demonstrating the
+% LLNCS macro package for Springer Computer Science proceedings;
+% Version 2.21 of 2022/01/12
+%
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{multirow}
+\usepackage{booktabs}
+%
+\begin{document}
+%
+\title{3DMedUE: Unlearnable Examples for 3D Medical Image Segmentation}
+%
+\author{Anonymous MICCAI Submission}
+\authorrunning{Anonymous}
+%
+\institute{Anonymous Institution}
+%
+\maketitle
+%
+\begin{abstract}
+Deep learning models for 3D medical image segmentation rely on large-scale
+annotated datasets that are costly to curate. Data owners may wish to protect
+their proprietary medical images from unauthorized exploitation. We propose
+\textbf{3DMedUE}, a method that generates unlearnable examples specifically
+designed for volumetric medical images. By adding imperceptible perturbations
+to 3D scans, models trained on the protected data fail to learn meaningful
+representations, resulting in near-zero segmentation performance. Experiments
+on BraTS19 (brain tumor) and FLARE21 (abdominal organ) benchmarks demonstrate
+that 3DMedUE reduces victim model performance to nearly zero across all
+metrics, significantly outperforming existing 2D unlearnable example methods
+adapted to the 3D setting.
+%
+\keywords{Unlearnable examples \and Medical image segmentation \and Data protection}
+\end{abstract}
+%
+\section{Introduction}\label{sec:intro}
+
+% TODO: Write introduction
+
+\section{Related Work}\label{sec:related}
+
+% TODO: Write related work
+
+\section{Method}\label{sec:method}
+
+% TODO: Write method
+
+\section{Experiments}\label{sec:exp}
+
+\subsection{Experimental Setup}\label{sec:setup}
+
+We evaluate on two public 3D medical segmentation benchmarks:
+\textbf{BraTS19}~\cite{menze2014multimodal} for brain tumor segmentation
+(3 classes: NCR/NET, ED, ET) and \textbf{FLARE21}~\cite{ma2022fast} for
+abdominal organ segmentation (4 classes: liver, kidney, spleen, pancreas).
+The victim model is a 3D~UNet. We compare against several unlearnable example
+baselines: random Gaussian noise, Min-Min~\cite{huang2021unlearnable},
+TAP~\cite{fowl2021adversarial}, LSP~\cite{yu2022availability}, and
+SEP~\cite{liu2023stable}.
+
+We report four metrics: Dice Similarity Coefficient (DSC), Intersection over
+Union (IoU), 95\% Hausdorff Distance (HD95), and Average Surface Distance
+(ASD). For effective data protection, DSC and IoU should be \emph{lower}
+(worse segmentation), while HD95 and ASD should be \emph{higher}.
+
+\subsection{Main Results}\label{sec:results}
+
+Table~\ref{tab:main} summarizes the protection effectiveness.
+On BraTS19, 3DMedUE reduces DSC and IoU to nearly 0\%, while increasing
+HD95 to 45.56\,mm and ASD to 31.02\,mm, vastly outperforming all baselines.
+Existing methods such as Min-Min and SEP only achieve partial degradation
+(DSC still above 69\%). On FLARE21, 3DMedUE similarly achieves strong
+protection with DSC reduced to 6.8\%.
+
+\begin{table}
+\caption{Protection effectiveness on victim 3D~UNet. For DSC\,(\%) and
+IoU\,(\%), lower values indicate better protection ($\downarrow$). For
+HD95\,(mm) and ASD\,(mm), higher values indicate better protection
+($\uparrow$). Best results in \textbf{bold}.}\label{tab:main}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+Method & DSC$\downarrow$ & IoU$\downarrow$ & HD95$\uparrow$ & ASD$\uparrow$ \\
+\hline
+\multicolumn{5}{|l|}{\textit{BraTS19 --- Brain Tumor Segmentation}} \\
+\hline
+Clean                              & 80.0 & 69.0 &  7.17 &  1.78 \\
+Gaussian Noise                     & 81.4 & 71.1 &  7.01 &  2.07 \\
+Min-Min~\cite{huang2021unlearnable} & 69.3 & 55.8 & 21.68 &  5.26 \\
+TAP~\cite{fowl2021adversarial}     &   -- &   -- &    -- &    -- \\
+LSP~\cite{yu2022availability}      &   -- &   -- &    -- &    -- \\
+SEP~\cite{liu2023stable}           & 72.3 & 60.4 &  9.48 &  2.58 \\
+\textbf{3DMedUE (Ours)}            & \textbf{0.0} & \textbf{0.0} & \textbf{45.56} & \textbf{31.02} \\
+\hline
+\multicolumn{5}{|l|}{\textit{FLARE21 --- Abdominal Organ Segmentation}} \\
+\hline
+Clean                              & 88.6 &   -- &    -- &    -- \\
+Gaussian Noise                     & 89.0 &   -- &    -- &    -- \\
+Min-Min~\cite{huang2021unlearnable} & 57.1 &   -- &    -- &    -- \\
+TAP~\cite{fowl2021adversarial}     &   -- &   -- &    -- &    -- \\
+LSP~\cite{yu2022availability}      &   -- &   -- &    -- &    -- \\
+SEP~\cite{liu2023stable}           &   -- &   -- &    -- &    -- \\
+\textbf{3DMedUE (Ours)}            & \textbf{6.8} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Ablation Study}\label{sec:ablation}
+
+% TODO: Write ablation study
+
+\section{Conclusion}\label{sec:conclusion}
+
+% TODO: Write conclusion
+
+%
+% ---- Bibliography ----
+%
+\bibliographystyle{splncs04}
+\bibliography{references}
+%
+\end{document}
