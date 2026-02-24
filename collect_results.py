@@ -163,20 +163,14 @@ def main():
             if k.startswith("dice_") and not k.endswith("_avg"):
                 region_names.append(k.replace("dice_", ""))
 
-    # ---- 打印表格 ----
+    # ---- 打印表格（只显示 avg）----
     is_pct = args.percent
 
-    # 表头
-    header_cols = ["Method"]
-    for m in METRICS:
-        for rn in region_names:
-            header_cols.append(f"{m}_{rn}")
-        header_cols.append(f"{m}_avg")
+    avg_cols = [f"{m}_avg" for m in METRICS]
 
-    # 分隔线宽度
     col_w = 12
     method_w = 45
-    total_w = method_w + len(header_cols[1:]) * col_w
+    total_w = method_w + len(avg_cols) * col_w
 
     print("\n" + "=" * total_w)
     title = f"Results: {args.dataset or 'custom'} ({args.split} split)"
@@ -187,7 +181,7 @@ def main():
 
     # 打印表头
     hdr = f"{'Method':<{method_w}}"
-    for c in header_cols[1:]:
+    for c in avg_cols:
         hdr += f"{c:>{col_w}}"
     print(hdr)
     print("-" * total_w)
@@ -203,12 +197,6 @@ def main():
 
         for m in METRICS:
             is_overlap = m in ("dice", "iou")
-            for rn in region_names:
-                key = f"{m}_{rn}"
-                v = data.get(key, float("nan"))
-                row_csv[key] = v
-                row_str += f"{fmt(v, is_pct and is_overlap):>{col_w}}"
-            # avg
             avg_key = f"{m}_avg"
             v = data.get(avg_key, float("nan"))
             row_csv[avg_key] = v
