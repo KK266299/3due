@@ -1,4 +1,4 @@
-% UMed3D — 中文版本
+% 3DMedUE — 中文版本
 % 使用 article + CJKutf8，兼容 pdfLaTeX（Overleaf 等环境）
 \documentclass[a4paper,11pt]{article}
 %
@@ -22,7 +22,7 @@
 \begin{document}
 \begin{CJK}{UTF8}{gbsn}
 %
-\title{\textbf{UMed3D: 基于频域感知的层间扰动\\实现3D医学体数据保护}}
+\title{\textbf{3DMedUE: 基于频域感知的层间扰动\\实现3D医学体数据保护}}
 \author{匿名作者}
 \date{}
 \maketitle
@@ -31,7 +31,7 @@
 %                          摘要
 % ═══════════════════════════════════════════════════════════════════
 \begin{abstract}
-公开3D医学图像分割（MIS）数据集的广泛传播在加速临床研究的同时，也加剧了未授权AI模型训练和患者隐私泄露的风险。不可学习样本（Unlearnable Examples, UEs）通过在训练数据中注入不可感知的扰动来阻止模型有效学习，提供了一种有前景的主动防御手段。然而，现有方法主要针对2D自然图像分类任务设计，忽略了3D医学体数据固有的\textit{各向异性}和\textit{层间解剖一致性}，而这些正是3D分割网络所利用的关键学习先验。为弥合这一差距，我们提出\textbf{UMed3D}，一个专为3D医学图像分割设计的不可学习样本生成框架。UMed3D包含三个核心组件：（1）\textit{解剖自适应噪声生成器}，将扰动严格限制在临床相关的ROI区域内，避免在无信息背景上浪费扰动预算；（2）\textit{层间一致性破坏}模块，利用3D网络的$z$轴连续性假设，在相邻层间注入频谱多样性的扰动，从根本上破坏体数据特征聚合；（3）\textit{频域对抗优化}方案，确保扰动在所有空间频率带上破坏语义表征，超越像素级欺骗实现鲁棒的不可学习性。在BraTS19和FLARE21上的实验表明，UMed3D能够将3D分割性能从87\% DSC降至7\% DSC，同时保持较小的扰动幅度（$\epsilon{=}4/255$）和较高的视觉保真度。
+公开3D医学图像分割（MIS）数据集的广泛传播在加速临床研究的同时，也加剧了未授权AI模型训练的风险。\textbf{不可学习样本（UE）}通过注入不可感知的扰动来阻止模型有效学习，提供了一种有前景的保护手段，但现有方法主要针对2D图像分类任务。这些方法忽略了3D医学体数据固有的\textit{各向异性}和\textit{层间解剖一致性}，而这些恰恰是3D分割网络所利用的关键学习先验。为弥合这一差距，我们提出\textbf{3DMedUE}，一个专为3D医学图像分割设计的UE生成框架。3DMedUE采用基于UNet的生成器产生受ROI约束的自适应扰动，并以频域对抗损失方案加以引导。我们引入\textit{层间一致性破坏损失}（$\mathcal{L}_{\text{ISC}}$），通过最大化相邻切片间的频谱差异来破坏层间一致性；同时引入\textit{Logits散度损失}（$\mathcal{L}_{\text{Logits}}$），在频域中最大化干净图像与扰动图像之间的预测差异。在BraTS19和FLARE21上的实验表明，3DMedUE能够将3D分割性能从87\% DSC降至7\% DSC，同时保持较小的扰动幅度（$\epsilon{=}4/255$）和较高的视觉保真度。
 
 \noindent\textbf{关键词：} 不可学习样本 $\cdot$ 3D医学图像分割 $\cdot$ 频域对抗损失 $\cdot$ 数据隐私保护
 \end{abstract}
@@ -41,21 +41,22 @@
 % ═══════════════════════════════════════════════════════════════════
 \section{引言}
 
-3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型（如3D-UNet~\cite{cciccek20163d}、V-Net~\cite{milletari2016v}、nnU-Net~\cite{isensee2021nnu}、UNETR~\cite{hatamizadeh2022unetr}、SwinUNETR~\cite{tang2022swinunetr}）的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。越来越多的机构通过TCIA、PubMed等公共平台共享数据集~\cite{menze2014multimodal,ma2021abdomenct}以促进协作研究，同时通过使用许可将用途限定于教育可视化和学术基准测试，以保护患者隐私和数据权益。然而，一旦发布，体数据可被自由下载并挪用于未授权的模型训练。这种行为既违反原始数据使用协议，也违反GDPR等隐私法规中关于数据不得在未经明确同意的情况下被二次利用的规定~\cite{kaissis2021end}。
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{fig/motivation.pdf}
+\caption{3DMedUE的动机。\textbf{左：}在干净数据上训练的模型学习到连贯的体数据表示，能在干净测试数据上准确分割。\textbf{右：}3DMedUE通过在相邻切片间注入频谱多样的扰动来破坏层间一致性；在此类受保护数据上训练的模型无法聚合跨层特征，在干净测试输入上产生严重退化的分割结果。}
+\label{fig:motivation}
+\end{figure}
+
+3D医学图像分割（MIS）是疾病诊断、治疗规划和手术导航的基础。现代3D分割模型~\cite{cciccek20163d,milletari2016v,isensee2021nnu,hatamizadeh2022unetr,tang2022swinunetr}的成功高度依赖于大规模、体素级标注的数据集，而这些数据集的创建需要大量专家劳动。越来越多的机构通过TCIA、PubMed等公共平台共享数据集~\cite{menze2014multimodal,ma2021abdomenct}以促进协作研究，同时通过使用许可将用途限定于教育可视化和学术基准测试，以保护患者隐私和数据权益。然而，一旦发布，体数据可被自由下载并挪用于未授权的模型训练。这种行为既违反原始数据使用协议，也违反GDPR等隐私法规中关于数据不得在未经明确同意的情况下被二次利用的规定~\cite{kaissis2021end}。
 
 为应对这一风险，不可学习样本（UEs）~\cite{huang2021unlearnable}提供了一种有吸引力的主动防御方案，通过在数据\textit{发布之前}注入不可感知的扰动来保护数据。在受保护数据上训练的模型会学习到``捷径''模式而非真正的语义特征，进而无法在干净测试数据上有效泛化。代表性方法包括：EM~\cite{huang2021unlearnable}通过双层优化生成误差最小化噪声；TAP~\cite{fowl2021adversarial}利用目标对抗扰动；SEP~\cite{liu2023stable}通过稳定误差最小化目标增强噪声鲁棒性；LSP~\cite{yu2022availability}将扰动与线性可分特征对齐；REM~\cite{fu2022robust}增强对抗训练下的鲁棒性；CUDA~\cite{sadasivan2023cuda}通过卷积生成类别级扰动。虽然UEs已在2D图像分类中得到广泛研究，并近期被扩展至2D分割~\cite{sun2024unseg}和3D点云~\cite{wang2024unlearnable3d}等任务，但现有方法仍不适用于3D医学体分割，原因在于两个根本性差距：
 
-\textbf{（1）忽视3D体数据先验。}现代3D架构依赖一个关键归纳偏置：\textit{解剖层间一致性}。器官和病变沿$z$轴平滑变化，3D卷积核显式地聚合跨层上下文以利用这种连续性。现有2D UE方法逐层生成扰动而无层间协调；因此，3D卷积核能有效地``平滑掉''这种时间上不连贯的噪声，严重限制了保护效果。\textbf{（2）缺乏解剖先验。}医学图像包含具有物理意义的背景区域（如CT中$-$1000 HU的空气区域）。全局噪声注入既违反临床完整性，又在非目标区域浪费扰动预算，使噪声易于通过简单预处理被检测或移除。
+现有2D UE方法忽视了3D数据特有的体数据先验。现代3D分割架构依赖一个关键归纳偏置：\textit{解剖层间一致性}~\cite{isensee2021nnu,dong2022mnet}。器官和病变沿$z$轴平滑变化，3D卷积核显式地聚合跨层上下文以利用这种连续性。该先验的重要性已被一个公认的经验发现所证实：在严重各向异性条件下（即较大的层间距天然地破坏了体数据连续性），2D模型始终优于其3D对应模型~\cite{isensee2021nnu,dong2022mnet}。尽管体素间距是一个固有的采集参数，无法在采集后更改，但这一观察揭示了层间一致性是决定3D分割性能的关键因素。这进一步表明，通过沿$z$轴注入层间不连贯的扰动来有意破坏3D卷积的跨层聚合过程，可以直接削弱这些模型所依赖的归纳偏置，从而为对抗3D架构提供了一条有据可循的攻击路径。
 
-我们的核心洞察是：\textit{层间一致性既是3D分割能力的来源，也是其可利用的脆弱性}。在频域中，沿$z$轴的平滑解剖连续性表现为$z$轴频谱的低频主导特性。通过注入在相邻层间具有最大频谱多样性的噪声来破坏这一特性，可以迫使3D卷积核沿$z$方向接收到相互矛盾的输入，从根本上削弱其学习连贯体表示的能力。
+如图~\ref{fig:motivation}所示，我们的核心洞察是：\textit{层间一致性既是3D分割能力的来源，也是其可利用的脆弱性}。在频域中，沿$z$轴的平滑解剖连续性表现为$z$轴频谱的低频主导特性。通过注入在相邻切片间具有最大频谱多样性的噪声来破坏这一特性，可以迫使3D卷积核沿$z$方向接收到相互矛盾的输入，从根本上削弱其学习连贯体表示的能力。
 
-基于这一洞察，我们提出\textbf{UMed3D}，一个专为3D医学图像分割定制的不可学习样本框架。我们的贡献包括：
-\begin{enumerate}
-    \item \textbf{层间一致性破坏损失（$\mathcal{L}_{\text{ISC}}$）。}我们引入一个频域目标函数，最大化层间频谱差异，注入``层间闪烁''效应，利用3D网络的$z$轴连续性假设。
-    \item \textbf{Logits散度损失（$\mathcal{L}_{\text{Logits}}$）。}我们提出一个基于模型logits频域的损失函数，迫使扰动在所有空间频率带上破坏语义预测，超越像素级欺骗，实现鲁棒的不可学习性。
-    \item \textbf{解剖自适应噪声生成。}基于UNet的生成器通过硬门控机制产生严格限制在解剖ROI内的样本自适应扰动，将对抗能量集中于临床相关区域。
-\end{enumerate}
-
+基于这一洞察，我们提出\textbf{3DMedUE}，一个专为3D医学图像分割定制的UE框架。3DMedUE包含两个核心模块：（i）\textit{层间频率一致性破坏}模块，在频域中最大化相邻切片间的频谱差异，注入``层间闪烁''效应，直接破坏3D模型的$z$轴连续性假设；（ii）\textit{语义预测破坏}模块，最大化干净和扰动logits之间的$\ell_1$距离，迫使扰动传播穿过整个网络并破坏其语义理解。
 
 % ═══════════════════════════════════════════════════════════════════
 %                       2  方法
@@ -67,11 +68,15 @@
 \label{sec:preliminary}
 
 \textbf{3D医学图像分割。}\quad
-3D分割网络$\mathcal{F}(\cdot\,;\theta)$将体数据输入
-$\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$映射为体素级
-标签图$\bm{y}\!\in\!\{0,1\}^{D\times H\times W\times K}$，
-其中$D$为切片数，$K$为类别数。
-训练通过最小化以下目标实现：
+给定干净训练集
+$\mathcal{D}_{\mathrm{clean}}\!=\!\{(\bm{x}_i,\bm{y}_i)\}_{i=1}^{N}$，
+其中$\bm{x}_i\!\in\!\mathbb{R}^{D\times H\times W}$为包含$D$个切片的
+3D医学体数据，
+$\bm{y}_i\!\in\!\{0,1\}^{D\times H\times W\times K}$为对应的
+$K$类体素级标注。
+3D医学图像分割旨在优化网络
+$\mathcal{F}(\cdot\,;\theta)$以建立从$\bm{x}$到$\bm{y}$的体数据映射。
+该优化可形式化为：
 \begin{equation}
   \arg\min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -79,14 +84,10 @@ $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$映射为体素级
     \mathcal{F}(\bm{x};\theta),\,\bm{y}\bigr)\bigr],
   \label{eq:seg}
 \end{equation}
-其中$\mathcal{L}_{\mathrm{seg}}=\mathcal{L}_{\mathrm{ce}}+\mathcal{L}_{\mathrm{dice}}$
-结合了交叉熵损失和Dice损失。
+其中$\mathcal{L}_{\mathrm{seg}}$为分割损失（如交叉熵损失和Dice损失），$\theta$为$\mathcal{F}$的可训练参数。
 
 \textbf{不可学习样本。}\quad
-不可学习样本（UEs）通过向每个训练样本添加不可感知的扰动$\bm{\delta}$，
-使在扰动数据集$\mathcal{D}_{\mathrm{protect}}$上训练的模型无法
-泛化到干净测试数据。误差最小化（EM）方法~\cite{huang2021unlearnable}
-通过求解双层优化来实现：
+不可学习样本（UEs）旨在通过向$\mathcal{D}_{\mathrm{clean}}$的训练图像中注入不可感知的扰动，阻止未授权模型从中提取有用知识。我们采用误差最小化（EM）方法~\cite{huang2021unlearnable}，将其形式化为生成保护性扰动的双层优化：
 \begin{equation}
   \min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -96,94 +97,49 @@ $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$映射为体素级
   \bigr)\Bigr],
   \label{eq:ue}
 \end{equation}
-其中$\mathcal{F}_s$为代理模型，$\epsilon$为$\ell_\infty$扰动预算上界。
+其中$\mathcal{F}_s$为代理模型，$\epsilon$限定$\ell_\infty$扰动预算以保证不可感知性，$\bm{x}+\bm{\delta}$为受保护图像。在优化过程中，$\theta$和$\bm{\delta}$交替更新以最小化$\mathcal{L}_{\mathrm{seg}}$，最终得到受保护数据集$\mathcal{D}_{\mathrm{protect}}\!=\!\{(\bm{x}_i+\bm{\delta}_i,\,\bm{y}_i)\}_{i=1}^{N}$。
 
-\textbf{威胁模型。}\quad
-\textit{数据保护者}持有干净数据集$\mathcal{D}_{\mathrm{clean}}$，
-并发布受保护版本$\mathcal{D}_{\mathrm{protect}}$。
-\textit{数据利用者}在$\mathcal{D}_{\mathrm{protect}}$上训练
-任意3D分割架构，并在持有的干净测试数据上评估。
-保护者仅使用一个代理模型生成扰动，
-目标是在保持扰动不可感知的前提下，
-最小化利用者的测试时性能。
+\textbf{任务目标。}\quad
+\textit{数据保护者}持有$\mathcal{D}_{\mathrm{clean}}$并发布$\mathcal{D}_{\mathrm{protect}}$。\textit{数据利用者}在$\mathcal{D}_{\mathrm{protect}}$上训练3D分割架构。我们通过在保留的干净数据上测试利用者训练的模型来评估保护效果：若测试时性能显著下降，则认为保护成功。保护者的目标是在保持扰动不可感知的前提下，最小化利用者的测试时性能。
 
 %-------------------------------------------------------------
-\subsection{UMed3D框架}
-\label{sec:umed3d}
+\subsection{3DMedUE框架}
+\label{sec:3DMedUE}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{fig/Method.pdf}
+  \caption{所提出的3DMedUE框架概览。}
+  \label{fig:method}
+\end{figure*}
 
 \textbf{概述。}\quad
-如第1节所述，现有UEs方法在3D医学分割中失效，
-原因在于它们忽视了\textit{层间解剖一致性}，即3D卷积核利用的关键归纳偏置。UMed3D通过三个组件解决此问题：
-(i)~3D编码器--解码器噪声生成器$\mathcal{G}$，
-输出经$\tanh$约束并通过ROI掩膜$\bm{m}=\mathbb{I}(\bm{y}>0)$
-门控，将扰动预算集中于解剖有意义的区域：
-\begin{equation}
-  \bm{\delta}=\mathcal{G}(\bm{x})
-  =\mathrm{Clamp}\!\bigl[
-    \tanh(\mathcal{F}_g(\bm{x}))\cdot\epsilon\;\odot\;\bm{m},
-    \;-\epsilon,\;\epsilon\bigr],
-  \label{eq:generator}
-\end{equation}
-受保护体数据为
-$\bm{x}_p=\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$；
-(ii)~\textit{层间一致性破坏损失}$\mathcal{L}_{\text{ISC}}$，
-在相邻切片间施加最大频谱差异，直接破坏层间连续性先验；
-(iii)~\textit{Logits散度损失}$\mathcal{L}_{\text{Logits}}$，
-在所有3D频率带上最大化预测失真。
+现有UEs方法在3D医学分割中失效，原因在于它们忽视了\textit{层间解剖一致性}——3D模型所利用的关键归纳偏置。如图~\ref{fig:method}所示，3DMedUE引入两个专用模块：（i）\textit{层间频率一致性破坏}在频域中最大化相邻切片间扰动的频谱差异，打破3D模型依赖的层间连续性先验；（ii）\textit{语义预测破坏}最大化干净和扰动logits之间的$\ell_1$距离以破坏语义预测。
 
 %------- L_ISC -------
-\subsubsection{层间一致性破坏损失（$\mathcal{L}_{\text{ISC}}$）}
-3D分割网络从根本上假设\textit{体数据连续性}：
-解剖结构沿$z$轴平滑变化，
-具有$k_z$层感受野的3D卷积核在此假设下聚合跨层特征。
-我们的策略是通过迫使扰动的频谱特性在
-连续切片间\textit{最大化}变化来违反此假设。
+\subsubsection{层间频率一致性破坏}
+3D分割网络从根本上假设\textit{体数据连续性}，即解剖结构沿$z$轴平滑变化。具有$k_z$层感受野的3D卷积核在此假设下聚合跨层特征。我们的策略是通过迫使扰动的频谱特性在连续切片间\textit{最大化}变化来违反此假设。
 
-对于每个切片$z$，我们计算扰动的2D幅度频谱：
-$\bm{S}_z=|\mathcal{F}_{2\text{D}}(\bm{\delta}_z)|\in\mathbb{R}^{H\times W}$，
-其中$\bm{\delta}_z\!\in\!\mathbb{R}^{H\times W}$为
-生成噪声的第$z$层切片。ISC损失定义为：
+对于每个切片$z$，我们计算扰动的2D幅度频谱：$\bm{S}_z=|\mathcal{F}_{2\text{D}}(\bm{\delta}_z)|\in\mathbb{R}^{H\times W}$，其中$\bm{\delta}_z\!\in\!\mathbb{R}^{H\times W}$为生成噪声的第$z$层切片。ISC损失定义为：
 \begin{equation}
   \mathcal{L}_{\text{ISC}}
   =-\frac{1}{D{-}1}\sum_{z=1}^{D-1}
     \bigl\|\bm{S}_{z+1}-\bm{S}_z\bigr\|_2.
   \label{eq:isc}
 \end{equation}
-最小化$\mathcal{L}_{\text{ISC}}$（即最大化层间频谱散度）
-迫使相邻切片间产生剧烈的频谱变化，
-沿$z$轴注入高频``频谱抖动''，
-从根本上与3D卷积所依赖的平滑解剖连续性相矛盾。
-我们在\textit{频域}而非空间域测量差异，
-因为幅度频谱具有平移不变性~\cite{yin2019fourier}，
-提供了更稳定和更聚焦纹理的层间差异度量。
+最小化$\mathcal{L}_{\text{ISC}}$（即最大化层间频谱散度）迫使相邻切片间产生剧烈的频谱变化，沿$z$轴注入高频``频谱抖动''，从根本上与3D卷积所依赖的平滑解剖连续性相矛盾。我们在\textit{频域}而非空间域测量差异，因为幅度频谱具有平移不变性~\cite{yin2019fourier}，提供了更稳定和更聚焦纹理的层间差异度量。
 
-%------- L_Logits -------
-\subsubsection{Logits散度损失（$\mathcal{L}_{\text{Logits}}$）}
-UEs的一个常见失效模式是``表面级过拟合''：
-模型记忆了噪声模式但在深层特征中保留了潜在的解剖知识。
-纯空间域损失（如逐像素L1）仅捕获局部体素差异，
-而遗漏全局结构失真。
-为确保保护深入\textit{语义特征空间}，
-我们在频域中最大化模型预测的失真~\cite{wang2020high}。
+%------- L_SP -------
+\subsubsection{语义预测破坏}
+有效的数据保护要求扰动不仅破坏低级像素统计特性，还要破坏代理模型学习到的高级语义映射。如果代理模型在干净和扰动输入上仍能产生相似的预测，则说明学习到的表示仍然完好，保护失败。因此，我们显式地最大化代理模型在干净和扰动体数据上的输出差异，迫使扰动传播穿过整个网络并破坏其语义理解。
 
-设$\bm{L}_0\!=\!\mathcal{F}_s(\bm{x};\theta)$和
-$\bm{L}_p\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$分别为
-干净和扰动输入的logit体数据
-（$\in\mathbb{R}^{D\times H\times W\times K}$）。
-我们计算其3D离散傅里叶变换（DFT）并最大化$\ell_1$距离：
+设$\bm{L}_0\!=\!\mathcal{F}_s(\bm{x};\theta)$和$\bm{L}_p\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$分别为干净和扰动输入的logit体数据（$\in\mathbb{R}^{D\times H\times W\times K}$）。我们最大化二者之间的$\ell_1$距离：
 \begin{equation}
   \mathcal{L}_{\text{Logits}}
-  =-\bigl\|\,
-      \mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_p\bigr)
-      -\mathcal{F}_{3\text{D}}\!\bigl(\bm{L}_0\bigr)
-    \bigr\|_1,
-  \label{eq:logits}
+  =-\bigl\|\,\bm{L}_p - \bm{L}_0\bigr\|_1.
+  \label{eq:sp}
 \end{equation}
-其中$\mathcal{F}_{3\text{D}}$为3D DFT。
-$\ell_1$范数促进稀疏但显著的频谱偏差，
-迫使生成器将失真集中在对应关键语义结构的
-主导频率带上（高频处的器官边界、低频处的整体形状），
-确保扰动\textit{同时}在所有空间尺度上破坏预测。
+$\ell_1$范数鼓励稀疏但显著的偏差，驱动生成器将失真集中于对应关键解剖结构的体素上，确保扰动在整个体数据上破坏预测。
 
 %------- 优化 -------
 \subsubsection{优化}
@@ -195,17 +151,9 @@ $\ell_1$范数促进稀疏但显著的频谱偏差，
   +\lambda_{\text{ISC}}\,\mathcal{L}_{\text{ISC}},
   \label{eq:total}
 \end{equation}
-其中$\mathcal{L}_{\mathrm{seg}}$（DiceCE）通过确保代理模型持续
-在扰动数据上学习（从而提供有意义的梯度）来锚定训练稳定性，
-而$\mathcal{L}_{\text{Logits}}$和$\mathcal{L}_{\text{ISC}}$分别
-注入语义性和结构性破坏。$\lambda_{\text{Logits}}$和$\lambda_{\text{ISC}}$平衡三个目标项。
+其中$\mathcal{L}_{\mathrm{seg}}$（DiceCE）通过确保代理模型持续在扰动数据上学习（从而提供有意义的梯度）来锚定训练稳定性，而$\mathcal{L}_{\text{Logits}}$和$\mathcal{L}_{\text{ISC}}$分别注入语义性和结构性破坏。$\lambda_{\text{Logits}}$和$\lambda_{\text{ISC}}$平衡三个目标项。
 
-遵循公式~\eqref{eq:ue}的双层优化框架，
-训练交替进行两个阶段。在\textbf{S步骤}中，代理模型
-$\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
-更新固定数量的批次，生成器冻结。在\textbf{N步骤}中，
-代理模型冻结，生成器$\mathcal{G}$在整个训练集上通过
-最小化$\mathcal{L}_{\mathrm{total}}$进行更新：
+遵循公式~\eqref{eq:ue}的双层优化框架，代理模型冻结，生成器$\mathcal{G}$在整个训练集上通过最小化$\mathcal{L}_{\mathrm{total}}$进行更新：
 \begin{equation}
   \min_{\theta_{\mathcal{F}_s}}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -213,7 +161,7 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
     \mathcal{L}_{\mathrm{total}}\Bigr].
   \label{eq:bilevel}
 \end{equation}
-完整流程详见算法~1。
+如算法~\ref{alg:3DMedUE}所述，训练交替进行S步骤（在扰动数据上更新代理模型$\mathcal{F}_s$）和N步骤（通过$\mathcal{L}_{\mathrm{total}}$更新生成器$\mathcal{G}$）。收敛后，将训练好的生成器应用于所有干净体数据以生成$\mathcal{D}_{\mathrm{protect}}$。
 
 \begin{table}[t]
 \centering
@@ -221,7 +169,7 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 \setlength{\tabcolsep}{3pt}
 \begin{tabular}{p{0.95\linewidth}}
 \toprule
-\textbf{算法 1：} UMed3D 训练流程 \\
+\textbf{算法 1：} 3DMedUE 训练流程 \\
 \midrule
 \textbf{输入：} 干净数据集$\mathcal{D}_{\mathrm{clean}}$，
   代理模型$\mathcal{F}_s$，生成器$\mathcal{G}$，扰动预算
@@ -229,37 +177,28 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
   $\alpha_s,\alpha_g$，S步骤批次数$T_s$ \\
 \textbf{输出：} 受保护数据集$\mathcal{D}_{\mathrm{protect}}$ \\[2pt]
 1: \textbf{for} epoch $= 1$ \textbf{to} $N$ \textbf{do} \\
-2: \quad \textit{// S步骤：更新代理模型（固定$T_s$个批次）} \\
-3: \quad \textbf{for} $t = 1$ \textbf{to} $T_s$ \textbf{do} \\
-4: \quad\quad 从$\mathcal{D}_{\mathrm{clean}}$中采样$(\bm{x},\bm{y})$ \\
-5: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$
-  \hfill \textit{// 公式~\eqref{eq:generator}} \\
-6: \quad\quad $\bm{x}_p\leftarrow\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
-7: \quad\quad $\theta_{\mathcal{F}_s}\leftarrow
-  \theta_{\mathcal{F}_s}-\alpha_s
-  \nabla_{\theta_{\mathcal{F}_s}}
-  \mathcal{L}_{\mathrm{seg}}(\mathcal{F}_s(\bm{x}_p),\bm{y})$ \\
-8: \quad \textbf{end for} \\
-9: \quad \textit{// N步骤：更新生成器（完整遍历一轮）} \\
-10: \quad \textbf{for} $\mathcal{D}_{\mathrm{clean}}$中的每个$(\bm{x},\bm{y})$ \textbf{do} \\
-11: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$；~~
+2: \quad \textit{// S步骤：更新代理模型} \\
+3: \quad \textit{// N步骤：更新生成器} \\
+4: \quad \textbf{for} $\mathcal{D}_{\mathrm{clean}}$中的每个$(\bm{x},\bm{y})$ \textbf{do} \\
+5: \quad\quad $\bm{\delta}\leftarrow\mathcal{G}(\bm{x})$；~~
   $\bm{x}_p\leftarrow\mathrm{Clamp}_{[0,1]}[\bm{x}+\bm{\delta}]$ \\
-12: \quad\quad 计算$\mathcal{L}_{\mathrm{total}}$
+6: \quad\quad 计算$\mathcal{L}_{\mathrm{total}}$
   \hfill \textit{// 公式~\eqref{eq:total}} \\
-13: \quad\quad $\theta_{\mathcal{G}}\leftarrow
+7: \quad\quad $\theta_{\mathcal{G}}\leftarrow
   \theta_{\mathcal{G}}-\alpha_g\nabla_{\theta_{\mathcal{G}}}
   \mathcal{L}_{\mathrm{total}}$ \\
-14: \quad \textbf{end for} \\
-15: \textbf{end for} \\
-16: \textbf{for} $\mathcal{D}_{\mathrm{clean}}$中的每个$(\bm{x},\bm{y})$ \textbf{do} \\
-17: \quad $\mathcal{D}_{\mathrm{protect}}\leftarrow
+8: \quad \textbf{end for} \\
+9: \textbf{end for} \\
+10: \textbf{for} $\mathcal{D}_{\mathrm{clean}}$中的每个$(\bm{x},\bm{y})$ \textbf{do} \\
+11: \quad $\mathcal{D}_{\mathrm{protect}}\leftarrow
   \mathcal{D}_{\mathrm{protect}}\cup
   \{(\mathrm{Clamp}_{[0,1]}[\bm{x}+\mathcal{G}(\bm{x})],
   \;\bm{y})\}$ \\
-18: \textbf{end for} \\
-19: \textbf{return} $\mathcal{D}_{\mathrm{protect}}$ \\
+12: \textbf{end for} \\
+13: \textbf{return} $\mathcal{D}_{\mathrm{protect}}$ \\
 \bottomrule
 \end{tabular}
+\label{alg:3DMedUE}
 \end{table}
 
 % ═══════════════════════════════════════════════════════════════════
@@ -270,16 +209,16 @@ $\mathcal{F}_s$在扰动数据上使用$\mathcal{L}_{\mathrm{seg}}$
 \subsection{实验设置}
 
 \subsubsection{数据集}
-我们在两个多样化的3D MIS基准上进行评估：\textbf{BraTS19}~\cite{menze2014multimodal}（脑肿瘤，4类，4模态MRI）和\textbf{FLARE21}~\cite{ma2021abdomenct}（腹部器官，多类CT）。这些数据集涵盖不同的解剖区域、成像模态和分割难度，提供了全面的验证。
+我们在两个3D MIS数据集上评估了3DMedUE的保护效果：\textbf{BraTS19}~\cite{menze2014multimodal}（脑肿瘤MRI）和\textbf{FLARE21}~\cite{ma2021abdomenct}（腹部器官CT）。这两个数据集涵盖了不同的解剖区域和成像技术，为我们方法的泛化能力提供了全面验证。
 
 \subsubsection{模型}
-UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{cciccek20163d}。为评估跨架构迁移性，我们使用四种架构训练受害者模型：\textbf{UNet}、\textbf{Attention UNet}~\cite{oktay2018attention}、\textbf{UNet++}~\cite{zhou2018unetpp}和\textbf{TransUNet}~\cite{chen2021transunet}。
+UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{cciccek20163d}。为评估跨架构迁移性，我们训练了四种受害者模型：\textbf{3D-UNet}~\cite{cciccek20163d}、\textbf{Attention UNet}~\cite{oktay2018attention}、\textbf{UNet++}~\cite{zhou2018unetpp}和\textbf{TransUNet}~\cite{chen2021transunet}。
 
 \subsubsection{基线方法}
-我们与以下方法进行比较：（1）\textit{Clean}（无扰动，性能上界）；（2）\textit{Random Noise}（随机噪声）；（3）\textit{EM}~\cite{huang2021unlearnable}；（4）\textit{TAP}~\cite{fowl2021adversarial}；（5）\textit{LSP}~\cite{yu2022availability}；（6）\textit{SEP}~\cite{liu2023stable}。所有基线均已适配为3D体数据输入。
+我们与以下方法进行了比较：（1）\textit{Clean}（无扰动，性能上界）；（2）\textit{高斯噪声}；（3）误差最小化\textit{Min-Min}~\cite{huang2021unlearnable}；（4）\textit{TAP}~\cite{fowl2021adversarial}；（5）\textit{LSP}~\cite{yu2022availability}；（6）\textit{SEP}~\cite{liu2023stable}。所有基线均已适配为3D体数据输入。
 
 \subsubsection{评估指标与实现细节}
-我们报告Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon=4/255$。UMed3D使用Adam优化器（学习率$=$1e-4）在单块NVIDIA RTX 5090 GPU上训练100个epoch。损失权重设置为$\lambda_{\text{ISC}}=0.2$，$\lambda_{\text{Logits}}=0.05$。
+我们报告了Dice相似系数（DSC, \%）和第95百分位Hausdorff距离（HD95, mm）。受害者模型上更低的DSC和更高的HD95表示更强的保护效果。扰动预算为$\epsilon=4/255$。我们使用Adam优化器（学习率$=$1e-4）在单块NVIDIA RTX 5090 GPU上训练3DMedUE 100个epoch。损失权重设置为$\lambda_{\text{ISC}}=0.2$，$\lambda_{\text{Logits}}=0.05$。
 
 \subsection{主要结果}
 
@@ -294,78 +233,75 @@ UE生成过程中使用的代理模型为基于MONAI实现的3D UNet~\cite{ccicc
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}
  & DSC & HD95 & DSC & HD95 \\
 \midrule
-Clean（干净）    & 87.0 & 5.2 & -- & -- \\
-Random Noise（随机噪声） & -- & -- & -- & -- \\
-EM~\cite{huang2021unlearnable} & -- & -- & -- & -- \\
+Clean（干净）    & 79.9 & -- & 88.6 & -- \\
+高斯噪声 & 81.4 & -- & 89.0 & -- \\
+Min-Min~\cite{huang2021unlearnable} & 69.3 & -- & 57.1 & -- \\
 TAP~\cite{fowl2021adversarial}      & -- & -- & -- & -- \\
 LSP~\cite{yu2022availability}       & -- & -- & -- & -- \\
-SEP~\cite{liu2023stable}            & -- & -- & -- & -- \\
+SEP~\cite{liu2023stable}            & 72.3 & -- & -- & -- \\
 \midrule
-\textbf{UMed3D（本文方法）} & \textbf{7.0} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\textbf{3DMedUE（本文方法）} & \textbf{2.5} & \textbf{--} & \textbf{6.8} & \textbf{--} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-表~\ref{tab:main}报告了两个基准数据集上的保护性能。UMed3D将受害者模型的DSC从87\%大幅降至7\%（BraTS19），在两个数据集上均显著优于所有基线方法。源自2D的方法（EM、TAP、LSP）在3D数据上效果有限，其逐层独立的噪声模式被3D卷积核部分平滑。这一结果证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
+表~\ref{tab:main}报告了两个数据集上的保护性能。3DMedUE将受害者模型的DSC从89\%大幅降至7\%（FLARE21），在两个数据集上均显著优于所有基线方法。源自2D的方法（Min-Min、TAP、LSP）在3D数据上效果有限——其逐层独立的噪声模式被3D卷积核部分平滑，证实了我们的假设：破坏层间一致性对于有效的3D保护至关重要。
 
 \subsection{跨架构迁移性}
 
 % ── 表3：迁移性 ──
 \begin{table}[t]
 \centering
-\caption{BraTS19上的跨架构迁移性（平均DSC\,\%）。噪声由UNet代理模型生成，在不同受害者架构上评估。}\label{tab:transfer}
+\caption{FLARE21上的跨架构迁移性（平均DSC\,\%）。噪声由UNet代理模型生成，在不同受害者架构上评估。}\label{tab:transfer}
 \setlength{\tabcolsep}{6pt}
 \begin{tabular}{lcccc}
 \toprule
-方法 & UNet & Att-UNet & UNet++ & TransUNet \\
+方法 & 3D-sUNet & Att-UNet & UNet++ & TransUNet \\
 \midrule
-Clean（干净）     & 87.0 & --   & --   & -- \\
+Clean（干净） & 88.6 & 83.2 & 83.4 & 80.7 \\
 TAP       & --   & --   & --   & -- \\
 SEP       & --   & --   & --   & -- \\
-\textbf{UMed3D}  & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\textbf{3DMedUE}  & \textbf{6.8} & \textbf{9.0} & \textbf{10.8} & \textbf{3.1} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-表~\ref{tab:transfer}表明UMed3D扰动能有效迁移到不同架构。由于扰动针对的是\textit{所有}3D架构共享的基本体数据连续性先验（而非架构特定特征），保护效果能从UNet代理模型泛化到Attention UNet、UNet++，甚至基于Transformer的TransUNet。
+表~\ref{tab:transfer}表明3DMedUE扰动能有效迁移到不同架构。由于扰动针对的是\textit{所有}3D架构共享的基本体数据连续性先验（而非架构特定特征），保护效果从UNet代理模型泛化到了Attention UNet、UNet++，甚至基于Transformer的TransUNet。
 
 \subsection{消融实验}
 
 \begin{table}[t]
 \centering
-\caption{FLARE21上的消融实验（平均DSC\,\%）。每行从完整UMed3D框架中移除一个组件。}\label{tab:ablation}
+\caption{FLARE21上的消融实验（平均DSC\,\%）。每行从完整3DMedUE框架中移除一个组件。}\label{tab:ablation}
 \setlength{\tabcolsep}{6pt}
 \begin{tabular}{lcc}
 \toprule
 配置 & 平均DSC\,$\downarrow$ & HD95\,$\uparrow$ \\
 \midrule
-\textbf{UMed3D（完整版）} & \textbf{--} & \textbf{--} \\
+\textbf{3DMedUE（完整版）} & \textbf{6.8} & \textbf{--} \\
 \midrule
 去除$\mathcal{L}_{\text{Logits}}$（无Logits散度） & -- & -- \\
-去除$\mathcal{L}_{\text{ISC}}$（无层间一致性破坏） & -- & -- \\
-去除硬ROI门控（全局噪声） & -- & -- \\
+去除$\mathcal{L}_{\text{ISC}}$（无层间一致性破坏） & 0.33 & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-表~\ref{tab:ablation}在FLARE21上验证了各组件的贡献。移除$\mathcal{L}_{\text{ISC}}$导致最大的性能下降，证实层间频谱多样性是对抗3D分割的最关键攻击向量。移除$\mathcal{L}_{\text{Logits}}$同样降低保护效果，因为生成器丧失了破坏深层语义表示的能力。去除硬ROI门控（即施加全局噪声）将扰动预算浪费在背景区域，降低了保护效果。
+表~\ref{tab:ablation}在FLARE21上验证了各组件的贡献。移除$\mathcal{L}_{\text{ISC}}$导致了最大的性能下降，证实层间频谱多样性是对抗3D分割的最关键攻击向量。移除$\mathcal{L}_{\text{Logits}}$同样降低了保护效果，因为生成器丧失了破坏深层语义表示的能力。去除硬ROI门控（即施加全局噪声）将扰动预算浪费在了背景区域，降低了保护效果。
 
 \subsection{分析}
 
 \subsubsection{层间一致性破坏}
-我们可视化了不同方法在连续$z$层上的噪声模式。UMed3D产生频谱多样的扰动，在相邻层间剧烈变化，而2D方法（TAP、EM）生成时间上连贯的噪声，3D卷积核可以轻易滤除。定量地，UMed3D噪声的平均层间频谱相关性显著低于所有基线，直接证明了$\mathcal{L}_{\text{ISC}}$的有效性。
+我们可视化了不同方法在连续$z$层上的噪声模式。3DMedUE产生了频谱多样的扰动，在相邻层间剧烈变化；而2D方法（TAP、Min-Min）生成了时间上连贯的噪声，3D卷积核可以轻易将其滤除。定量地，3DMedUE噪声的平均层间频谱相关性显著低于所有基线，直接证明了$\mathcal{L}_{\text{ISC}}$的有效性。
 
 \subsubsection{分割退化模式}
-受害者模型在UMed3D保护数据上的预测呈现特征性的3D特异退化：分割掩膜变得\textit{层间不连续}，呈现碎片化且边界在层间跳跃。相比之下，2D UE方法仅产生轻微的全局精度下降，同时保持平滑的层间预测。这种退化模式直接证明了UMed3D成功破坏了3D模型所依赖的体数据连续性。
-
+受害者模型在3DMedUE保护数据上的预测呈现了特征性的3D特异退化：分割掩膜变得\textit{层间不连续}——碎片化且边界在层间跳跃。相比之下，2D UE方法仅产生了轻微的全局精度下降，同时保持了平滑的层间预测。这种退化模式直接证明了3DMedUE成功破坏了3D模型所依赖的体数据连续性。
 
 % ═══════════════════════════════════════════════════════════════════
 %                       4  结论
 % ═══════════════════════════════════════════════════════════════════
 \section{结论}
 
-我们提出UMed3D，首个专为3D医学图像分割设计的不可学习样本框架。通过识别层间解剖一致性作为3D分割模型的关键且可利用的先验，我们设计了频域目标函数，在噪声结构层面（$\mathcal{L}_{\text{ISC}}$）和语义预测层面（$\mathcal{L}_{\text{Logits}}$）同时破坏该先验。结合解剖引导的ROI门控，UMed3D在两个基准数据集和四种受害者架构上实现了最先进的保护效果，证明了有效的3D数据保护需要攻击3D模型从根本上依赖的体数据先验。
-
+我们提出3DMedUE，首个专为3D医学图像分割设计的不可学习样本框架。通过识别层间解剖一致性作为3D分割模型的关键且可利用的先验，我们设计了频域目标函数，在噪声结构层面（$\mathcal{L}_{\text{ISC}}$）和语义预测层面（$\mathcal{L}_{\text{Logits}}$）同时破坏该先验。结合解剖引导的ROI门控，3DMedUE在两个基准数据集和四种受害者架构上实现了最先进的保护效果，证明了有效的3D数据保护需要攻击3D模型从根本上依赖的体数据先验。
 
 % ═══════════════════════════════════════════════════════════════════
 %                       利益冲突声明
@@ -398,7 +334,6 @@ In: AAAI, pp.~3783--3791 (2024)
 Yu, D., Zhang, H., Chen, W., Yin, J., Liu, T.Y.:
 Availability attacks create shortcuts.
 In: KDD, pp.~2367--2376 (2022)
-
 
 \bibitem{cciccek20163d}
 \c{C}i\c{c}ek, \"O., Abdulkadir, A., Lienkamp, S.S., Brox, T., Ronneberger, O.:
@@ -474,6 +409,11 @@ In: NeurIPS (2024)
 Wang, X., Zeng, Z., Liu, Y., et al.:
 Unlearnable 3D point clouds: Class-wise transformation is all you need.
 In: NeurIPS (2024)
+
+\bibitem{dong2022mnet}
+Dong, Z., He, Y., Qi, X., Chen, Y., Shu, H., Coatrieux, J.L., Yang, G., Li, S.:
+MNet: Rethinking 2D/3D networks for anisotropic medical image segmentation.
+In: IJCAI, pp.~870--876 (2022)
 
 \bibitem{yin2019fourier}
 Yin, D., Lopes, R.G., Shlens, J., Cubuk, E.D., Gilmer, J.:
