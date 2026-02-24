@@ -96,10 +96,9 @@ and $\theta$ denotes the trainable parameters of $\mathcal{F}$.
 UEs are designed to prevent unauthorized models from extracting useful
 knowledge by injecting imperceptible perturbations into the training
 images of $\mathcal{D}_{\mathrm{clean}}$.
-For illustration, we take the representative error-minimizing (EM)
-noise~\cite{huang2021unlearnable} as an example.
-EM formulates a bi-level optimization to generate protective
-perturbations:
+We adopt the error-minimizing (EM)
+formulation~\cite{huang2021unlearnable}, which formulates a bi-level
+optimization to generate protective perturbations:
 \begin{equation}
   \min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
