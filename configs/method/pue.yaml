@@ -15,7 +15,7 @@
 training:
   model_save_start: 9999 # no need to save for PUE
   model_save_freq: 10
-  epochs: 3
+  epochs: 100
   batch_size: 64
   num_workers: 2
   sampler:
@@ -40,11 +40,13 @@ ue:
 
   # —— Random Weight Perturbation (RWP) Configuration ——
   # 论文核心：通过对模型权重添加随机高斯噪声，使生成的噪声更加鲁棒
+  # 原论文 (2D CIFAR): sigma=0.25, U_p=10
+  # 3D 医学分割适配：sigma 适当降低（网络更大更敏感），U 降低（每次采样开销大）
   rwp:
     enabled: true               # 启用 RWP（论文主方法）
-    sigma: 0.05                 # 对每个可训练参数加 N(0, σ²) 临时噪声
-    U_train: 4                  # surrogate_step 内每步采样次数（均值loss再反传）
-    U_noise: 8                  # noise_step 内每步采样次数（均值梯度再PGD）
+    sigma: 0.1                  # 对每个可训练参数加 N(0, σ²) 临时噪声（论文0.25, 3D适配0.1）
+    U_train: 4                  # surrogate_step 内每步采样次数（论文10, 3D适配4）
+    U_noise: 8                  # noise_step 内每步采样次数（论文10, 3D适配8）
 
   # —— AMP (Mixed Precision) ——
   # 对 3D UNet 有显著加速（~2x），推荐在 GPU 上始终开启
@@ -86,5 +88,5 @@ ue:
     include_manifest: true
     strategy: files
     dtype: int8
-    save_from_epoch: 30
+    save_from_epoch: 50
     save_every: 10
