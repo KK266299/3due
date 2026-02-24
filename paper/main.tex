@@ -75,7 +75,7 @@ Given a volumetric input $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$
 with $D$ slices and its voxel-wise label
 $\bm{y}\!\in\!\{0,1\}^{D\times H\times W\times K}$ over $K$ classes,
 3D medical image segmentation aims to learn a mapping
-$\mathcal{F}(\cdot\,;\theta)$ from $\bm{x}$ to $\bm{y}$ by minimizing:
+$\mathcal{F}(\cdot\,;\theta)$ from $\bm{x}$ to $\bm{y}$:
 \begin{equation}
   \arg\min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
