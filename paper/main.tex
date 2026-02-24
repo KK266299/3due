@@ -71,11 +71,16 @@ Building on this insight, we propose \textbf{3DMedUE}, a UE framework tailored f
 \label{sec:preliminary}
 
 \textbf{3D Medical Image Segmentation.}\quad
-Given a volumetric input $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$
-with $D$ slices and its voxel-wise label
-$\bm{y}\!\in\!\{0,1\}^{D\times H\times W\times K}$ over $K$ classes,
-3D medical image segmentation aims to learn a mapping
-$\mathcal{F}(\cdot\,;\theta)$ from $\bm{x}$ to $\bm{y}$:
+Given a clean training set
+$\mathcal{D}_{\mathrm{clean}}\!=\!\{(\bm{x}_i,\bm{y}_i)\}_{i=1}^{N}$,
+where $\bm{x}_i\!\in\!\mathbb{R}^{D\times H\times W}$ is a 3D medical
+volume with $D$ slices and
+$\bm{y}_i\!\in\!\{0,1\}^{D\times H\times W\times K}$ is the
+corresponding voxel-wise annotation over $K$ classes,
+3D medical image segmentation aims to optimize a network
+$\mathcal{F}(\cdot\,;\theta)$ to establish the volumetric mapping from
+$\bm{x}$ to $\bm{y}$.
+This optimization can be formulated as:
 \begin{equation}
   \arg\min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -83,15 +88,18 @@ $\mathcal{F}(\cdot\,;\theta)$ from $\bm{x}$ to $\bm{y}$:
     \mathcal{F}(\bm{x};\theta),\,\bm{y}\bigr)\bigr],
   \label{eq:seg}
 \end{equation}
-where $\mathcal{L}_{\mathrm{seg}}=\mathcal{L}_{\mathrm{ce}}+\mathcal{L}_{\mathrm{dice}}$
-combines cross-entropy and Dice losses.
+where $\mathcal{L}_{\mathrm{seg}}$ is the segmentation loss
+(\textit{e.g.}, cross-entropy loss and Dice loss)
+and $\theta$ denotes the trainable parameters of $\mathcal{F}$.
 
 \textbf{Unlearnable Examples.}\quad
-UEs add an imperceptible perturbation $\bm{\delta}$ to each
-training sample so that models trained on the perturbed dataset
-$\mathcal{D}_{\mathrm{protect}}$ fail to generalize to clean test data.
-We adopt the error-minimizing (EM) formulation~\cite{huang2021unlearnable},
-which generates perturbations via a bi-level optimization:
+UEs are designed to prevent unauthorized models from extracting useful
+knowledge by injecting imperceptible perturbations into the training
+images of $\mathcal{D}_{\mathrm{clean}}$.
+For illustration, we take the representative error-minimizing (EM)
+noise~\cite{huang2021unlearnable} as an example.
+EM formulates a bi-level optimization to generate protective
+perturbations:
 \begin{equation}
   \min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -101,12 +109,18 @@ which generates perturbations via a bi-level optimization:
   \bigr)\Bigr],
   \label{eq:ue}
 \end{equation}
-where $\mathcal{F}_s$ is a surrogate model and $\epsilon$ bounds the
-$\ell_\infty$ perturbation budget.
+where $\mathcal{F}_s$ is a surrogate model,
+$\epsilon$ bounds the $\ell_\infty$ perturbation budget for
+imperceptibility, and $\bm{x}+\bm{\delta}$ denotes the protected
+image. During optimization, $\theta$ and $\bm{\delta}$ are alternately
+updated to minimize $\mathcal{L}_{\mathrm{seg}}$, yielding the
+protected dataset
+$\mathcal{D}_{\mathrm{protect}}\!=\!\{(\bm{x}_i+\bm{\delta}_i,\,
+\bm{y}_i)\}_{i=1}^{N}$.
 
 \textbf{Task Objective.}\quad
-The \textit{data protector} has access to the clean dataset
-$\mathcal{D}_{\mathrm{clean}}$ and publishes a protected version
+The \textit{data protector} has access to
+$\mathcal{D}_{\mathrm{clean}}$ and publishes
 $\mathcal{D}_{\mathrm{protect}}$. The \textit{data exploiter} trains
 a 3D segmentation architecture on
 $\mathcal{D}_{\mathrm{protect}}$.
