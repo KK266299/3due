@@ -1,4 +1,4 @@
-% UMed3D — MICCAI 2025 Anonymous Submission
+% 3DMedUE — MICCAI 2025 Anonymous Submission
 % Based on Springer LNCS template (llncs class)
 \documentclass[runningheads]{llncs}
 %
@@ -18,8 +18,8 @@
 %
 \begin{document}
 %
-\title{UMed3D: Protecting 3D Medical Volumes via\\Frequency-Aware Inter-Slice Disruption}
-\titlerunning{UMed3D}
+\title{3DMedUE: Protecting 3D Medical Volumes via\\Frequency-Aware Inter-Slice Disruption}
+\titlerunning{3DMedUE}
 %
 \author{Anonymized Authors}
 \authorrunning{Anonymized Author et al.}
@@ -32,7 +32,7 @@
 %                          ABSTRACT
 % ═══════════════════════════════════════════════════════════════════
 \begin{abstract}
-The widespread dissemination of public 3D medical image segmentation (MIS) datasets accelerates clinical research but simultaneously heightens risks of unauthorized AI model training and patient privacy leakage. While Unlearnable Examples (UEs) offer protection by injecting imperceptible perturbations to prevent effective model learning, existing methods primarily target 2D natural image classification. They consequently neglect the \textit{anisotropy} and \textit{inter-slice anatomical consistency} inherent in 3D medical volumes, which are critical learning priors exploited by 3D segmentation networks. To bridge this gap, we propose \textbf{UMed3D}, a UE generation framework specifically designed for 3D MIS. UMed3D comprises three key components: (1)~an \textit{anatomy-adaptive noise generator} that confines perturbations strictly to clinically relevant ROIs, avoiding perturbation budget waste on uninformative background; (2)~an \textit{inter-slice consistency disruption} module that exploits the $z$-axis continuity assumption of 3D networks by injecting spectrally diverse perturbations across adjacent slices, fundamentally undermining volumetric feature aggregation; and (3)~a \textit{frequency-domain adversarial optimization} scheme that ensures perturbations corrupt semantic representations across all spatial frequency bands, achieving robust unlearnability beyond pixel-level deception. Experiments on BraTS19 and FLARE21 demonstrate that UMed3D degrades 3D segmentation performance from 87\% to 7\% DSC with minimal perturbation ($\epsilon{=}4/255$), while preserving high visual fidelity.
+The widespread dissemination of public 3D medical image segmentation (MIS) datasets accelerates clinical research but simultaneously heightens risks of unauthorized AI model training and patient privacy leakage. While Unlearnable Examples (UEs) offer protection by injecting imperceptible perturbations to prevent effective model learning, existing methods primarily target 2D natural image classification. They consequently neglect the \textit{anisotropy} and \textit{inter-slice anatomical consistency} inherent in 3D medical volumes, which are critical learning priors exploited by 3D segmentation networks. To bridge this gap, we propose \textbf{3DMedUE}, a UE generation framework specifically designed for 3D MIS. 3DMedUE comprises three key components: (1)~an \textit{anatomy-adaptive noise generator} that confines perturbations strictly to clinically relevant ROIs, avoiding perturbation budget waste on uninformative background; (2)~an \textit{inter-slice consistency disruption} module that exploits the $z$-axis continuity assumption of 3D networks by injecting spectrally diverse perturbations across adjacent slices, fundamentally undermining volumetric feature aggregation; and (3)~a \textit{frequency-domain adversarial optimization} scheme that ensures perturbations corrupt semantic representations across all spatial frequency bands, achieving robust unlearnability beyond pixel-level deception. Experiments on BraTS19 and FLARE21 demonstrate that 3DMedUE degrades 3D segmentation performance from 87\% to 7\% DSC with minimal perturbation ($\epsilon{=}4/255$), while preserving high visual fidelity.
 
 \keywords{Unlearnable Examples \and 3D Medical Image Segmentation \and Frequency-domain Adversarial Loss \and Data Privacy Protection}
 \end{abstract}
@@ -45,7 +45,7 @@ The widespread dissemination of public 3D medical image segmentation (MIS) datas
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{fig/motivation.pdf}
-\caption{Motivation of UMed3D. \textbf{Left:} A 3D segmentation model trained on clean data achieves accurate predictions on clean test volumes. \textbf{Right:} The same model trained on UMed3D-protected data fails to generalize to clean test data, producing degraded segmentation.}
+\caption{Motivation of 3DMedUE. \textbf{Left:} A 3D segmentation model trained on clean data achieves accurate predictions on clean test volumes. \textbf{Right:} The same model trained on 3DMedUE-protected data fails to generalize to clean test data, producing degraded segmentation.}
 \label{fig:motivation}
 \end{figure}
 
@@ -58,7 +58,7 @@ Existing 2D UE methods neglect the volumetric priors unique to 3D data. Modern 3
 
 Our key insight is that \textit{inter-slice consistency is simultaneously the source of 3D segmentation power and its exploitable vulnerability}. In the frequency domain, smooth anatomical continuity along $z$ manifests as low-frequency dominance in the $z$-axis spectrum. Disrupting this by injecting noise with maximally diverse spectral patterns across adjacent slices, which forces 3D kernels to receive conflicting inputs along $z$, fundamentally undermining their ability to learn coherent volumetric representations.
 
-Building on this insight, we propose \textbf{UMed3D}, a UE framework tailored for 3D medical image segmentation. UMed3D comprises two core modules: (i)~an \textit{inter-slice consistency disruption} module that maximizes spectral discrepancies between adjacent slices in the frequency domain, injecting ``inter-slice flickering'' that directly undermines the $z$-axis continuity assumption of 3D convolutions; and (ii)~a \textit{frequency-domain logits divergence} module that drives perturbed model logits away from their clean counterparts across all spatial frequency bands, achieving robust semantic corruption beyond pixel-level deception.
+Building on this insight, we propose \textbf{3DMedUE}, a UE framework tailored for 3D medical image segmentation. 3DMedUE comprises two core modules: (i)~an \textit{inter-slice consistency disruption} module that maximizes spectral discrepancies between adjacent slices in the frequency domain, injecting ``inter-slice flickering'' that directly undermines the $z$-axis continuity assumption of 3D convolutions; and (ii)~a \textit{frequency-domain logits divergence} module that drives perturbed model logits away from their clean counterparts across all spatial frequency bands, achieving robust semantic corruption beyond pixel-level deception.
 
 
 % ═══════════════════════════════════════════════════════════════════
@@ -115,14 +115,14 @@ generation, and aims to minimize the exploiter's test-time
 performance while keeping perturbations imperceptible.
 
 %-------------------------------------------------------------
-\subsection{UMed3D Framework}
-\label{sec:umed3d}
+\subsection{3DMedUE Framework}
+\label{sec:3dmedue}
 
 \textbf{Overview.}\quad
 As discussed in Sec.~1, existing UEs fail in 3D medical
 segmentation because they ignore \textit{inter-slice anatomical
 consistency}, the key inductive bias exploited by 3D convolution
-kernels. UMed3D addresses this with three components:
+kernels. 3DMedUE addresses this with three components:
 (i)~a 3D encoder--decoder noise generator $\mathcal{G}$ that
 produces volumetric perturbations bounded by $\tanh$ and gated by
 an ROI mask $\bm{m}=\mathbb{I}(\bm{y}>0)$ to concentrate
@@ -246,7 +246,7 @@ The full procedure is detailed in Algorithm~1.
 \setlength{\tabcolsep}{3pt}
 \begin{tabular}{p{0.95\linewidth}}
 \toprule
-\textbf{Algorithm 1:} UMed3D Training Procedure \\
+\textbf{Algorithm 1:} 3DMedUE Training Procedure \\
 \midrule
 \textbf{Input:} Clean dataset $\mathcal{D}_{\mathrm{clean}}$,
   surrogate $\mathcal{F}_s$, generator $\mathcal{G}$, budget
@@ -306,7 +306,7 @@ The surrogate model used during UE generation is a 3D UNet~\cite{cciccek20163d} 
 We compare against: (1)~\textit{Clean} (no perturbation, upper bound); (2)~\textit{Random Noise}; (3)~\textit{EM}~\cite{huang2021unlearnable}; (4)~\textit{TAP}~\cite{fowl2021adversarial}; (5)~\textit{LSP}~\cite{yu2022availability}; (6)~\textit{SEP}~\cite{liu2023stable}. All baselines are adapted to 3D volumetric inputs.
 
 \subsubsection{Metrics and Implementation.}
-We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon=4/255$. We train UMed3D for 100 epochs with Adam optimizer (lr$=$1e-4) on a single NVIDIA RTX 5090 GPU. The loss weights are set to $\lambda_{\text{ISC}}=0.2$ and $\lambda_{\text{Logits}}=0.05$.
+We report the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models indicate stronger protection. The perturbation budget is $\epsilon=4/255$. We train 3DMedUE for 100 epochs with Adam optimizer (lr$=$1e-4) on a single NVIDIA RTX 5090 GPU. The loss weights are set to $\lambda_{\text{ISC}}=0.2$ and $\lambda_{\text{Logits}}=0.05$.
 
 \subsection{Main Results}
 
@@ -328,12 +328,12 @@ TAP~\cite{fowl2021adversarial}      & -- & -- & -- & -- \\
 LSP~\cite{yu2022availability}       & -- & -- & -- & -- \\
 SEP~\cite{liu2023stable}            & -- & -- & -- & -- \\
 \midrule
-\textbf{UMed3D (Ours)} & \textbf{7.0} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\textbf{3DMedUE (Ours)} & \textbf{7.0} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:main} reports the protection performance on both benchmarks. UMed3D achieves a dramatic reduction in victim model DSC (from 87\% to 7\% on BraTS19), substantially outperforming all baselines on both datasets. 2D-originated methods (EM, TAP, LSP) show limited effectiveness on 3D data, as their slice-independent noise patterns are partially smoothed by 3D convolution kernels. This confirms our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
+Table~\ref{tab:main} reports the protection performance on both benchmarks. 3DMedUE achieves a dramatic reduction in victim model DSC (from 87\% to 7\% on BraTS19), substantially outperforming all baselines on both datasets. 2D-originated methods (EM, TAP, LSP) show limited effectiveness on 3D data, as their slice-independent noise patterns are partially smoothed by 3D convolution kernels. This confirms our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
 
 \subsection{Cross-Architecture Transferability}
 
@@ -349,24 +349,24 @@ Method & UNet & Att-UNet & UNet++ & TransUNet \\
 Clean     & 87.0 & --   & --   & -- \\
 TAP       & --   & --   & --   & -- \\
 SEP       & --   & --   & --   & -- \\
-\textbf{UMed3D}  & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} \\
+\textbf{3DMedUE}  & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:transfer} demonstrates that UMed3D perturbations transfer effectively across architectures. Since the perturbations target the fundamental volumetric continuity prior shared by \textit{all} 3D architectures (not architecture-specific features), the protection generalizes from the UNet surrogate to Attention UNet, UNet++, and even Transformer-based TransUNet.
+Table~\ref{tab:transfer} demonstrates that 3DMedUE perturbations transfer effectively across architectures. Since the perturbations target the fundamental volumetric continuity prior shared by \textit{all} 3D architectures (not architecture-specific features), the protection generalizes from the UNet surrogate to Attention UNet, UNet++, and even Transformer-based TransUNet.
 
 \subsection{Ablation Study}
 
 \begin{table}[t]
 \centering
-\caption{Ablation study on FLARE21 (Mean DSC\,\%). Each row removes one component from the full UMed3D framework.}\label{tab:ablation}
+\caption{Ablation study on FLARE21 (Mean DSC\,\%). Each row removes one component from the full 3DMedUE framework.}\label{tab:ablation}
 \setlength{\tabcolsep}{6pt}
 \begin{tabular}{lcc}
 \toprule
 Configuration & Mean DSC\,$\downarrow$ & HD95\,$\uparrow$ \\
 \midrule
-\textbf{UMed3D (full)} & \textbf{--} & \textbf{--} \\
+\textbf{3DMedUE (full)} & \textbf{--} & \textbf{--} \\
 \midrule
 w/o $\mathcal{L}_{\text{Logits}}$ (no logits divergence) & -- & -- \\
 w/o $\mathcal{L}_{\text{ISC}}$ (no ISC disruption) & -- & -- \\
@@ -380,10 +380,10 @@ Table~\ref{tab:ablation} validates the contribution of each component on FLARE21
 \subsection{Analysis}
 
 \subsubsection{Inter-Slice Consistency Disruption.}
-We visualize the noise patterns across consecutive $z$-slices for different methods. UMed3D produces spectrally diverse perturbations that shift drastically between adjacent slices, while 2D methods (TAP, EM) generate temporally coherent noise that 3D kernels can readily filter. Quantitatively, the mean inter-slice spectral correlation of UMed3D noise is significantly lower than all baselines, directly evidencing the effectiveness of $\mathcal{L}_{\text{ISC}}$.
+We visualize the noise patterns across consecutive $z$-slices for different methods. 3DMedUE produces spectrally diverse perturbations that shift drastically between adjacent slices, while 2D methods (TAP, EM) generate temporally coherent noise that 3D kernels can readily filter. Quantitatively, the mean inter-slice spectral correlation of 3DMedUE noise is significantly lower than all baselines, directly evidencing the effectiveness of $\mathcal{L}_{\text{ISC}}$.
 
 \subsubsection{Segmentation Degradation Patterns.}
-Victim model predictions on UMed3D-protected data exhibit a characteristic 3D-specific degradation: segmentation masks become \textit{inter-slice discontinuous}, appearing fragmented with boundaries jumping between slices. In contrast, 2D UE methods produce only mild global accuracy reduction while retaining smooth inter-slice predictions. This degradation pattern directly demonstrates that UMed3D successfully disrupts the volumetric continuity that 3D models rely upon.
+Victim model predictions on 3DMedUE-protected data exhibit a characteristic 3D-specific degradation: segmentation masks become \textit{inter-slice discontinuous}, appearing fragmented with boundaries jumping between slices. In contrast, 2D UE methods produce only mild global accuracy reduction while retaining smooth inter-slice predictions. This degradation pattern directly demonstrates that 3DMedUE successfully disrupts the volumetric continuity that 3D models rely upon.
 
 
 % ═══════════════════════════════════════════════════════════════════
@@ -391,7 +391,7 @@ Victim model predictions on UMed3D-protected data exhibit a characteristic 3D-sp
 % ═══════════════════════════════════════════════════════════════════
 \section{Conclusion}
 
-We present UMed3D, the first unlearnable example framework specifically designed for 3D medical image segmentation. By identifying inter-slice anatomical consistency as the critical yet exploitable prior of 3D segmentation models, we design frequency-domain objectives that disrupt this prior at both the noise-structure level ($\mathcal{L}_{\text{ISC}}$) and the semantic-prediction level ($\mathcal{L}_{\text{Logits}}$). Combined with anatomy-guided ROI gating, UMed3D achieves state-of-the-art protection across two benchmarks and four victim architectures, demonstrating that effective 3D data protection requires attacking the volumetric priors that 3D models fundamentally depend upon.
+We present 3DMedUE, the first unlearnable example framework specifically designed for 3D medical image segmentation. By identifying inter-slice anatomical consistency as the critical yet exploitable prior of 3D segmentation models, we design frequency-domain objectives that disrupt this prior at both the noise-structure level ($\mathcal{L}_{\text{ISC}}$) and the semantic-prediction level ($\mathcal{L}_{\text{Logits}}$). Combined with anatomy-guided ROI gating, 3DMedUE achieves state-of-the-art protection across two benchmarks and four victim architectures, demonstrating that effective 3D data protection requires attacking the volumetric priors that 3D models fundamentally depend upon.
 
 
 % ═══════════════════════════════════════════════════════════════════
