@@ -2,7 +2,7 @@
 # ============================================================================
 # FLARE21 LSP/SEP/TAP 噪声生成脚本 (4/255 epsilon)
 # ============================================================================
-CKPT_DIR=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/clean/20260224_143824/checkpoints
+CKPT_DIR=/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/clean/20260224_143824/checkpoints/checkpoints
 # ============================================================================
 # LSP (Linear Separable Perturbation) - Training-Free
 # ============================================================================
