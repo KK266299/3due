@@ -13,9 +13,15 @@ DEVICE="cuda:0"
 # ── 模型列表 ──────────────────────────────────────────────────────
 # 格式: "数据集名称|模型路径"
 MODEL_LIST=(
+    # ── brats19 ──
     "brats19_seg|/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/best_model.pth"
-    # 添加更多模型：
+    "brats19_seg|/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_random_noise_gaussian/20251228_082846/checkpoints/checkpoints/best_model.pth"
+    "brats19_seg|/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_minmin_4_255/20251220_061401/checkpoints/checkpoints/best_model.pth"
+    "brats19_seg|/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_sep/20251222_124616/checkpoints/checkpoints/best_model.pth"
+    "brats19_seg|/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_nofreq_learnable_zdiv02_logits005/20260207_135201/checkpoints/checkpoints/best_model.pth"
+    # ── flare21 ──
     # "flare21_seg|/path/to/flare21/best_model.pth"
+    # ── kits19 ──
     # "kits19_seg|/path/to/kits19/best_model.pth"
 )
 
