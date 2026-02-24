@@ -71,11 +71,11 @@ Building on this insight, we propose \textbf{3DMedUE}, a UE framework tailored f
 \label{sec:preliminary}
 
 \textbf{3D Medical Image Segmentation.}\quad
-A 3D segmentation network $\mathcal{F}(\cdot\,;\theta)$ maps a volumetric
-input $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$ to a voxel-wise
-label map $\bm{y}\!\in\!\{0,1\}^{D\times H\times W\times K}$, where
-$D$ is the number of slices and $K$ the number of classes.
-Training minimizes:
+Given a volumetric input $\bm{x}\!\in\!\mathbb{R}^{D\times H\times W}$
+with $D$ slices and its voxel-wise label
+$\bm{y}\!\in\!\{0,1\}^{D\times H\times W\times K}$ over $K$ classes,
+3D medical image segmentation aims to learn a mapping
+$\mathcal{F}(\cdot\,;\theta)$ from $\bm{x}$ to $\bm{y}$ by minimizing:
 \begin{equation}
   \arg\min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -90,8 +90,8 @@ combines cross-entropy and Dice losses.
 UEs add an imperceptible perturbation $\bm{\delta}$ to each
 training sample so that models trained on the perturbed dataset
 $\mathcal{D}_{\mathrm{protect}}$ fail to generalize to clean test data.
-The error-minimizing (EM) formulation~\cite{huang2021unlearnable} solves
-a bi-level optimization:
+We adopt the error-minimizing (EM) formulation~\cite{huang2021unlearnable},
+which generates perturbations via a bi-level optimization:
 \begin{equation}
   \min_{\theta}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -104,15 +104,17 @@ a bi-level optimization:
 where $\mathcal{F}_s$ is a surrogate model and $\epsilon$ bounds the
 $\ell_\infty$ perturbation budget.
 
-\textbf{Threat Model.}\quad
+\textbf{Task Objective.}\quad
 The \textit{data protector} has access to the clean dataset
 $\mathcal{D}_{\mathrm{clean}}$ and publishes a protected version
 $\mathcal{D}_{\mathrm{protect}}$. The \textit{data exploiter} trains
-an arbitrary 3D segmentation architecture on
-$\mathcal{D}_{\mathrm{protect}}$ and evaluates on held-out clean test
-data. The protector uses a single surrogate model for perturbation
-generation, and aims to minimize the exploiter's test-time
-performance while keeping perturbations imperceptible.
+a 3D segmentation architecture on
+$\mathcal{D}_{\mathrm{protect}}$.
+We evaluate the protection effectiveness by testing the model trained
+by the exploiter on held-out clean data: if the test-time performance
+degrades significantly, the protection is considered successful.
+The protector aims to minimize such test-time performance while
+keeping perturbations imperceptible.
 
 %-------------------------------------------------------------
 \subsection{3DMedUE Framework}
