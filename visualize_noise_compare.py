@@ -59,13 +59,15 @@ SEG_COLORS = np.array([
 
 # Distinct colors for methods
 METHOD_COLORS = [
-    "#2196F3",  # blue  (method 1)
-    "#F44336",  # red   (method 2)
-    "#4CAF50",  # green (method 3)
-    "#FF9800",  # orange(method 4)
+    "#2196F3",  # blue   (method 1)
+    "#F44336",  # red    (method 2)
+    "#4CAF50",  # green  (method 3)
+    "#FF9800",  # orange (method 4)
+    "#9C27B0",  # purple (method 5)
+    "#00BCD4",  # cyan   (method 6)
 ]
 
-METHOD_CMAPS = ["RdBu_r", "PiYG_r", "PuOr_r", "BrBG_r"]
+METHOD_CMAPS = ["RdBu_r", "PiYG_r", "PuOr_r", "BrBG_r", "coolwarm", "seismic"]
 
 
 # ======================== Helpers (reuse from single) ======================== #
@@ -661,6 +663,188 @@ def compare_scheme_f(
     print(f"[Saved] Compare F: {output_path}")
 
 
+# ======================== Compare U (Unified) ======================== #
+
+def compare_unified(
+    methods: List[MethodData],
+    noises: List[torch.Tensor],
+    preds_noisy: List[torch.Tensor],
+    image: torch.Tensor,
+    label: torch.Tensor,
+    slice_z: int,
+    output_path: str,
+    case_id: str = "",
+    eps: float = 8/255,
+    vis_channel: int = 0,
+):
+    """
+    Unified comparison figure: (a) left = noise + seg for 2 adjacent slices,
+                               (b) right = inter-slice consistency metrics.
+
+    Left panel layout:
+      Cols:  Original | Method1 | Method2 | ... | MethodN
+      Rows:  Noise(z) | Seg(z) | Noise(z+1) | Seg(z+1)
+      Noise and segmentation rows are tightly adjacent.
+
+    Right panel:
+      Stacked inter-slice metric curves with box plots (compact).
+    """
+    M = len(methods)
+    image_np = image.numpy()
+    label_np = label.numpy()
+    C, D, H, W = image_np.shape
+
+    z0 = slice_z
+    z1 = min(slice_z + 1, D - 1)
+
+    n_img_cols = 1 + M  # Original + methods
+
+    # --- Figure dimensions ---
+    img_cell = 2.3
+    right_w = 7.5
+    left_w = img_cell * n_img_cols
+    fig_h = img_cell * 4 + 1.5
+    fig_w = left_w + right_w
+
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+
+    # Main left/right split
+    gs = gridspec.GridSpec(
+        1, 2, figure=fig,
+        width_ratios=[left_w, right_w],
+        wspace=0.06,
+    )
+
+    # Left: 4 rows x n_img_cols, with height_ratios to make noise/seg pairs tight
+    gs_img = gridspec.GridSpecFromSubplotSpec(
+        4, n_img_cols, subplot_spec=gs[0, 0],
+        wspace=0.03, hspace=0.04,
+    )
+
+    # Right: 5 metric rows x 2 cols (curve + box)
+    gs_met = gridspec.GridSpecFromSubplotSpec(
+        5, 2, subplot_spec=gs[0, 1],
+        width_ratios=[3, 1],
+        wspace=0.15, hspace=0.45,
+    )
+
+    # ============ (a) LEFT: Images ============
+    row_labels = [
+        f"Noise (z={z0})", f"Seg (z={z0})",
+        f"Noise (z={z1})", f"Seg (z={z1})",
+    ]
+
+    for pair, z in enumerate([z0, z1]):
+        r_n = pair * 2      # noise row
+        r_s = pair * 2 + 1  # seg row
+
+        # --- Col 0: Original image + GT segmentation ---
+        ax = fig.add_subplot(gs_img[r_n, 0])
+        ax.imshow(image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
+        ax.set_xticks([]); ax.set_yticks([])
+        if pair == 0:
+            ax.set_title("Original", fontsize=9, fontweight="bold")
+
+        ax2 = fig.add_subplot(gs_img[r_s, 0])
+        ax2.imshow(label_to_rgb(label_np[z]))
+        ax2.set_xticks([]); ax2.set_yticks([])
+
+        # --- Cols 1..M: Methods ---
+        for m_idx in range(M):
+            col = 1 + m_idx
+            color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
+            noise_np = noises[m_idx].numpy()
+            pred_np = preds_noisy[m_idx].numpy()
+
+            # Noise
+            ax_n = fig.add_subplot(gs_img[r_n, col])
+            ax_n.imshow(colorize_noise(noise_np[vis_channel, z], eps))
+            ax_n.set_xticks([]); ax_n.set_yticks([])
+            if pair == 0:
+                ax_n.set_title(methods[m_idx].name, fontsize=9,
+                               fontweight="bold", color=color)
+
+            # Segmentation
+            ax_s = fig.add_subplot(gs_img[r_s, col])
+            ax_s.imshow(label_to_rgb(pred_np[z]))
+            ax_s.set_xticks([]); ax_s.set_yticks([])
+
+    # Row labels on the leftmost column (via ylabel trick on col-0 axes)
+    for r, lbl in enumerate(row_labels):
+        ax = fig.add_subplot(gs_img[r, 0])
+        ax.set_ylabel(lbl, fontsize=7, fontweight="bold", rotation=90, labelpad=3)
+
+    # Add (a) label
+    fig.text(0.01, 0.97, "(a)", fontsize=14, fontweight="bold",
+             va="top", ha="left")
+
+    # ============ (b) RIGHT: Inter-Slice Metrics ============
+    print(f"  [Unified] Computing inter-slice metrics ...")
+    all_metrics: List[Dict[str, List[float]]] = []
+    for m_idx, noise_t in enumerate(noises):
+        metrics = compute_inter_slice_metrics(noise_t, vis_channel)
+        all_metrics.append(metrics)
+
+    curve_metrics = ["Pearson Corr.", "SSIM", "Cosine Sim.", "L2 Dist.", "Depth TV"]
+    similarity_type = {"Pearson Corr.", "SSIM", "Cosine Sim."}
+
+    for row, metric_name in enumerate(curve_metrics):
+        is_sim = metric_name in similarity_type
+
+        # Curve subplot
+        ax_c = fig.add_subplot(gs_met[row, 0])
+        all_vals = []
+        for m_idx in range(M):
+            vals = all_metrics[m_idx][metric_name]
+            all_vals.append(vals)
+            color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
+            mean_v = np.mean(vals)
+            ax_c.plot(vals, color=color, linewidth=0.8, alpha=0.8,
+                      label=f"{methods[m_idx].name} ({mean_v:.3f})")
+            ax_c.axhline(y=mean_v, color=color, linestyle="--",
+                         linewidth=0.6, alpha=0.3)
+
+        if is_sim:
+            ax_c.axhline(y=0, color="gray", linestyle=":", linewidth=0.5)
+            ax_c.set_ylim(-1.05, 1.05)
+        ax_c.set_ylabel(metric_name, fontsize=7)
+        ax_c.tick_params(labelsize=6)
+        ax_c.grid(True, alpha=0.2)
+        if row == 0:
+            ax_c.legend(fontsize=5.5, loc="upper right", ncol=2)
+        if row < len(curve_metrics) - 1:
+            ax_c.set_xticklabels([])
+        else:
+            ax_c.set_xlabel("Slice z", fontsize=7)
+
+        # Box subplot
+        ax_b = fig.add_subplot(gs_met[row, 1])
+        bp = ax_b.boxplot(all_vals, patch_artist=True, widths=0.45)
+        for m_idx2, patch in enumerate(bp["boxes"]):
+            patch.set_facecolor(METHOD_COLORS[m_idx2 % len(METHOD_COLORS)])
+            patch.set_alpha(0.3)
+        ax_b.set_xticklabels([])
+        ax_b.tick_params(labelsize=5)
+        ax_b.grid(True, alpha=0.2, axis="y")
+        if is_sim:
+            ax_b.axhline(y=0, color="gray", linestyle=":", linewidth=0.5)
+
+    # Add (b) label
+    fig.text(left_w / fig_w + 0.01, 0.97, "(b)", fontsize=14, fontweight="bold",
+             va="top", ha="left")
+
+    fig.suptitle(
+        f"Inter-Slice Noise & Segmentation Comparison — {case_id}\n"
+        f"Slices z={z0}, z+1={z1} ({MODALITY_NAMES[vis_channel]})  |  "
+        f"Methods: {', '.join(m.name for m in methods)}",
+        fontsize=11, fontweight="bold", y=1.02,
+    )
+
+    plt.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"[Saved] Unified: {output_path}")
+
+
 # ======================== CLI ======================== #
 
 class MethodAction(argparse.Action):
@@ -699,7 +883,7 @@ def main():
                         help="Modality for A/B (0=T1, 1=T1ce, 2=T2, 3=FLAIR)")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--schemes", type=str, default="a,b,f",
-                        help="Comma-separated: a,b,f")
+                        help="Comma-separated: a,b,f,u (u=unified)")
 
     args = parser.parse_args()
 
@@ -721,7 +905,7 @@ def main():
     for md in args.methods:
         m = MethodData(name=md["name"], noise_path=md["noise"],
                        model_path=md["model"])
-        if "f" in schemes:
+        if "f" in schemes or "u" in schemes:
             m.load_model(config, device)
         method_objs.append(m)
 
@@ -816,6 +1000,29 @@ def main():
                 label=label,
                 slice_idx=center_z,
                 output_path=path_f,
+                case_id=case_id,
+                eps=args.eps,
+                vis_channel=args.channel,
+            )
+
+        # --- Compare U (unified) ---
+        if "u" in schemes:
+            # Run inference for noisy predictions
+            preds_noisy_u = []
+            for m_idx, m in enumerate(method_objs):
+                noisy_img = (image + noise_list[m_idx]).clamp(0, 1)
+                pn = run_inference(m.model, noisy_img, device)
+                preds_noisy_u.append(pn)
+
+            path_u = os.path.join(args.output_dir, f"{prefix}_unified.png")
+            compare_unified(
+                methods=method_objs,
+                noises=noise_list,
+                preds_noisy=preds_noisy_u,
+                image=image,
+                label=label,
+                slice_z=center_z,
+                output_path=path_u,
                 case_id=case_id,
                 eps=args.eps,
                 vis_channel=args.channel,
