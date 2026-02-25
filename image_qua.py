@@ -108,6 +108,8 @@ def load_dataset(config: OmegaConf, split: str = "train"):
     ds_name = config.dataset.name
     if ds_name == "brats19":
         ds_name = "brats19_seg"
+    elif ds_name == "flare21":
+        ds_name = "flare21_seg"
     builder_cls = get_dataset_builder(ds_name)
     builder = builder_cls(config)
     return builder.get_dataset(split=split)
