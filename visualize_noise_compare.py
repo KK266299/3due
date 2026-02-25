@@ -682,12 +682,9 @@ def compare_unified(
 
     (a) Left — tight image grid, 2 rows (z, z+1):
         Cols: Original | Method1_noise | ... | MethodN_noise | GT | Seg(Ours)
-        Only the last method ("Ours") shows segmentation result.
-        Images tightly adjacent (no gaps).
+        No axis ticks, no borders, images tightly adjacent.
 
-    (b) Right — vertical z-axis Pearson correlation curve:
-        Y-axis = slice z (top->bottom), X-axis = Pearson corr.
-        One curve per noise method. Uses existing computation method.
+    (b) Right — vertical z-axis Pearson correlation curve.
     """
     M = len(methods)
     image_np = image.numpy()
@@ -705,7 +702,7 @@ def compare_unified(
     cell = 2.0
     plot_w = 3.5
     fig_w = cell * n_img_cols + plot_w
-    fig_h = cell * 2 + 0.6
+    fig_h = cell * 2 + 0.5
 
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
 
@@ -714,7 +711,7 @@ def compare_unified(
         2, n_img_cols + 1,
         figure=fig,
         width_ratios=w_ratios,
-        wspace=0.008, hspace=0.008,
+        wspace=0.005, hspace=0.005,
     )
 
     # Column titles
@@ -722,46 +719,50 @@ def compare_unified(
                   + [m.name for m in methods]
                   + ["GT", "Seg"])
 
+    # Pre-create all image axes (avoid duplicate add_subplot calls)
+    img_axes = {}
+    for row in range(2):
+        for col in range(n_img_cols):
+            ax = fig.add_subplot(gs[row, col])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            img_axes[(row, col)] = ax
+
+    # ============ (a) Fill images ============
     for row, z in enumerate([z0, z1]):
         # Col 0: Original image
-        ax = fig.add_subplot(gs[row, 0])
-        ax.imshow(image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
-        ax.axis("off")
+        img_axes[(row, 0)].imshow(
+            image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
 
         # Cols 1..M: Noise per method
         for m_idx in range(M):
             col = 1 + m_idx
-            ax = fig.add_subplot(gs[row, col])
             noise_np_m = noises[m_idx].numpy()
-            ax.imshow(colorize_noise(noise_np_m[vis_channel, z], eps))
-            ax.axis("off")
+            img_axes[(row, col)].imshow(
+                colorize_noise(noise_np_m[vis_channel, z], eps))
 
         # Col M+1: GT segmentation
-        col_gt = 1 + M
-        ax = fig.add_subplot(gs[row, col_gt])
-        ax.imshow(label_to_rgb(label_np[z]))
-        ax.axis("off")
+        img_axes[(row, 1 + M)].imshow(label_to_rgb(label_np[z]))
 
         # Col M+2: Seg result (Ours only)
-        col_seg = 2 + M
-        ax = fig.add_subplot(gs[row, col_seg])
-        ax.imshow(label_to_rgb(pred_np[z]))
-        ax.axis("off")
+        img_axes[(row, 2 + M)].imshow(label_to_rgb(pred_np[z]))
 
-    # Column titles (first row only)
+    # Column titles (first row only, reuse existing axes)
     for c, title in enumerate(col_titles):
-        ax = fig.add_subplot(gs[0, c])
         color = "black"
         if 1 <= c <= M:
             color = METHOD_COLORS[(c - 1) % len(METHOD_COLORS)]
-        ax.set_title(title, fontsize=8, fontweight="bold", color=color, pad=2)
+        img_axes[(0, c)].set_title(title, fontsize=8, fontweight="bold",
+                                   color=color, pad=2)
 
-    # Row z-labels on leftmost column
+    # Row z-labels
     for row, z in enumerate([z0, z1]):
-        ax = fig.add_subplot(gs[row, 0])
-        ax.text(-0.03, 0.5, f"z={z}", fontsize=7, fontweight="bold",
-                rotation=90, va="center", ha="right",
-                transform=ax.transAxes)
+        img_axes[(row, 0)].text(
+            -0.03, 0.5, f"z={z}", fontsize=7, fontweight="bold",
+            rotation=90, va="center", ha="right",
+            transform=img_axes[(row, 0)].transAxes)
 
     # (a) label
     fig.text(0.005, 0.97, "(a)", fontsize=12, fontweight="bold", va="top")
@@ -786,7 +787,7 @@ def compare_unified(
         ax_b.plot(corrs, z_indices, color=color, linewidth=1.0, alpha=0.85,
                   label=methods[m_idx].name)
 
-    ax_b.invert_yaxis()  # z increases downward (matches images top->bottom)
+    ax_b.invert_yaxis()
     ax_b.axvline(x=0, color="gray", linestyle=":", linewidth=0.5)
     ax_b.set_xlim(-1.05, 1.05)
     ax_b.set_xlabel("Pearson Corr.", fontsize=8)
@@ -795,7 +796,7 @@ def compare_unified(
     ax_b.grid(True, alpha=0.2)
     ax_b.legend(fontsize=6, loc="lower left")
 
-    # Mark selected slices z0, z1
+    # Mark selected slices
     ax_b.axhline(y=z0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
     ax_b.axhline(y=z1, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
 
