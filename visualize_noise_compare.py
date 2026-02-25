@@ -706,7 +706,7 @@ def compare_unified(
 
     # Sizing
     cell = 2.0
-    b_w = 3.0
+    b_w = 1.8
     c_w = cell
     fig_w = cell * n_a + b_w + c_w
     fig_h = cell * 2 + 0.5
@@ -996,10 +996,9 @@ def main():
 
         # --- Compare U (unified) ---
         if "u" in schemes:
-            # Only need Ours (last method) segmentation prediction
+            # Clean image through victim model -> should segment poorly
             ours_m = method_objs[-1]
-            noisy_img = (image + noise_list[-1]).clamp(0, 1)
-            pred_ours = run_inference(ours_m.model, noisy_img, device)
+            pred_ours = run_inference(ours_m.model, image, device)
 
             path_u = os.path.join(args.output_dir, f"{prefix}_unified.png")
             compare_unified(
