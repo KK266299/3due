@@ -1,13 +1,17 @@
 # @package _global_
-# Inter-Slice Consistency Attack Configuration
+# Slice-by-Slice UNet Noise Generator Configuration
 #
-# This method extends UNet Noise with inter-slice consistency constraints,
-# specifically designed for 3D medical imaging data (e.g., CT, MRI).
+# This method generates noise independently for each 2D slice using a 2D UNet,
+# then assembles the per-slice noise into a 3D volume.
 #
 # Key features:
-#   - Inter-slice consistency loss: ensures coherent noise across depth
-#   - ROI-aware: optional focusing on regions of interest
-#   - Gradient-aware: adapts noise smoothness based on image gradients
+#   - 2D UNet for per-slice noise generation (lighter than 3D UNet)
+#   - Each slice gets independent noise patterns
+#   - Same save paths and backend as other UNet noise methods
+#
+# Key parameters:
+#   - slice_batch_size: Number of slices to process at once (0 = all at once)
+#     Set this if you encounter OOM errors with large volumes
 #
 # Maximum noise bound: 8/255 ≈ 0.0313725 (L∞ constraint)
 
@@ -15,11 +19,11 @@ training:
   model_save_start: 9999  # no need to save model for noise generation
   model_save_freq: 10
   epochs: 100
-  batch_size: 4
+  batch_size: 8
   num_workers: 0
   sampler:
     name: pk
-    p: 4   # every batch 4 different patients (smaller for 3D data)
+    p: 4   # every batch 4 different patients
     k: 2   # each patient 2 images
   data:
     poison:
@@ -48,33 +52,16 @@ ue:
       noise_step: 1               # UNet training iterations per batch
       surrogate_step: 2           # S-step: batches per epoch for surrogate training
 
-      # Inter-slice consistency parameters
-      lambda_consistency: 0.5     # Weight for consistency loss (recommended: 0.1 ~ 1.0)
-
-      # Consistency mode: controls how slice consistency affects noise
-      #   - "smooth":  Minimize slice differences (encourage similar noise across slices)
-      #   - "disrupt": Maximize slice differences (encourage different noise across slices)
-      #   - "periodic": Encourage periodic noise pattern along depth axis
-      consistency_mode: "disrupt"
-
-      # Consistency type: how to compute slice differences
-      #   - "l2": Simple L2 distance
-      #   - "gradient_aware": Weight by inverse image gradient
-      consistency_type: "l2"
-
-      # Periodic mode settings
-      periodic_wavelength: 4      # Wavelength in slices for periodic mode
-
-      # ROI-aware settings
-      roi_aware: true             # Enable ROI-aware noise (focus on foreground)
-      bidirectional: true         # Use bidirectional slice consistency
+      # Slice processing
+      slice_batch_size: 0         # 0 = process all slices at once
+                                  # Set to e.g. 64/128 if OOM with large volumes
 
       # Legacy (unused, kept for compatibility)
       step_size: 5e-3
 
-  # Noise UNet configuration
+  # 2D Noise UNet configuration
   noise_unet:
-    # Smaller UNet for noise generation (lighter than surrogate)
+    # 2D UNet for per-slice noise generation
     channels: [16, 32, 64, 128]
     strides: [2, 2, 2]
     num_res_units: 1
@@ -95,7 +82,7 @@ ue:
     pix_aug: true
     same_on_batch: false
 
-  # Surrogate model for computing segmentation loss
+  # Surrogate model for computing segmentation loss (3D)
   surrogates:
     s_seg:
       backbone: unet
@@ -115,5 +102,5 @@ ue:
     include_manifest: true
     strategy: files
     dtype: int8
-    save_from_epoch: 0
+    save_from_epoch: 50
     save_every: 10

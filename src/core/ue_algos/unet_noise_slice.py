@@ -1,47 +1,43 @@
 # file: src/core/ue_algos/unet_noise_slice.py
 """
-Inter-Slice Consistency Attack for 3D Medical Image Segmentation.
+Slice-by-Slice UNet Noise Generator for 3D segmentation (e.g., BraTS19).
 
-This algorithm extends UNet Noise with inter-slice consistency constraints,
-specifically designed for 3D medical imaging data (e.g., CT, MRI).
+This algorithm generates noise independently for each 2D slice using a 2D UNet,
+then assembles the per-slice noise back into a 3D volume.
 
-Key Innovation:
-  - Multiple slice consistency modes to control noise behavior along depth axis
-  - ROI-Aware: Optional focusing on regions of interest.
-  - Gradient-Aware: Adapts noise smoothness based on image gradients.
+Core idea:
+  - Instead of using a 3D UNet on the entire volume, use a 2D UNet
+  - Process each depth slice independently: x[:,:,d,:,:] → noise[:,:,d,:,:]
+  - Assemble per-slice noise into full 3D noise volume
+  - This approach is lighter in memory and allows independent per-slice noise patterns
 
-Supported consistency modes:
-  - "smooth": Encourage adjacent slices to have similar noise (L2 minimization)
-  - "disrupt": Encourage adjacent slices to have different noise (L2 maximization)
-  - "periodic": Apply periodic modulation to noise along depth axis
+Key advantages:
+  - Lower GPU memory: 2D UNet is much smaller than 3D UNet
+  - Independent per-slice noise: each slice can have unique noise patterns
+  - Matches the anisotropic nature of medical imaging (e.g., CT/MRI slice acquisition)
 
 Core differences from UNetNoise:
-  - UNetNoise: Generates noise without explicit slice constraints
-  - UNetSliceConsistency: Adds explicit constraints along depth axis
+  - UNetNoise: 3D UNet generates noise for entire volume at once
+  - UNetNoiseSlice: 2D UNet generates noise for each slice independently
 
 Training loop:
-  1. Surrogate-step: Same as UNetNoise, train surrogate on noisy images
+  1. Surrogate-step: Same as UNetNoise, train 3D surrogate on noisy images
   2. Noise-step:
-     - Forward original image through noise U-Net to get noise prediction
-     - Compute inter-slice consistency loss based on selected mode
-     - Add noise to image, pass through surrogate, compute seg loss
-     - Total loss depends on mode:
-       * smooth:   seg_loss + lambda * consistency_loss
-       * disrupt:  seg_loss - lambda * consistency_loss
-       * periodic: seg_loss + lambda * periodic_loss
-     - Backprop to update noise U-Net parameters
+     - Reshape volume slices to batch: [B,C,D,H,W] → [B*D,C,H,W]
+     - Forward through 2D noise UNet to get per-slice noise
+     - Reshape back: [B*D,C,H,W] → [B,C,D,H,W]
+     - Add noise to image, pass through 3D surrogate, compute loss
+     - Backprop to update 2D noise UNet parameters
      - Store generated noise to backend
 
 Maximum noise bound: 8/255 ≈ 0.0313725 (L∞ constraint)
 """
 from __future__ import annotations
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Any
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from monai.losses import DiceCELoss
 from monai.networks.nets import UNet as MonaiUNet
 
@@ -50,11 +46,11 @@ from ...utils.config import get_config, require_config
 from ...utils.logger import get_logger
 
 
-def _build_noise_unet(cfg: DictConfig, in_channels: int, spatial_dims: int = 3) -> nn.Module:
+def _build_noise_unet_2d(cfg: DictConfig, in_channels: int) -> nn.Module:
     """
-    Build a small U-Net for noise generation.
-    Input: original image [B, C, D, H, W]
-    Output: noise [B, C, D, H, W] (same shape as input)
+    Build a 2D U-Net for per-slice noise generation.
+    Input: single slice [B, C, H, W]
+    Output: noise for single slice [B, C, H, W] (same shape as input)
     """
     channels = list(get_config(cfg, "channels", [16, 32, 64, 128]))
     strides = list(get_config(cfg, "strides", [2, 2, 2]))
@@ -64,9 +60,9 @@ def _build_noise_unet(cfg: DictConfig, in_channels: int, spatial_dims: int = 3) 
     dropout = float(get_config(cfg, "dropout", 0.0))
 
     unet = MonaiUNet(
-        spatial_dims=spatial_dims,
+        spatial_dims=2,  # 2D UNet for per-slice processing
         in_channels=in_channels,
-        out_channels=in_channels,
+        out_channels=in_channels,  # output same channels as input
         channels=channels,
         strides=strides,
         num_res_units=num_res_units,
@@ -77,14 +73,20 @@ def _build_noise_unet(cfg: DictConfig, in_channels: int, spatial_dims: int = 3) 
     return unet
 
 
-class NoiseUNetWrapper(nn.Module):
+class NoiseUNet2DWrapper(nn.Module):
     """
-    Wrapper for noise U-Net that applies tanh and scales output to [-eps, eps].
+    Wrapper for 2D noise U-Net that processes 3D volumes slice by slice.
+
+    Takes a 3D volume [B, C, D, H, W], reshapes to [B*D, C, H, W],
+    passes through the 2D UNet, then reshapes back to [B, C, D, H, W].
+
+    Supports chunked processing for memory efficiency when B*D is large.
     """
-    def __init__(self, unet: nn.Module, epsilon: float = 8/255):
+    def __init__(self, unet: nn.Module, epsilon: float = 8/255, slice_batch_size: int = 0):
         super().__init__()
         self.unet = unet
         self.epsilon = epsilon
+        self.slice_batch_size = slice_batch_size  # 0 = process all slices at once
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -93,187 +95,41 @@ class NoiseUNetWrapper(nn.Module):
         Returns:
             Noise [B, C, D, H, W] in [-eps, eps]
         """
-        raw_noise = self.unet(x)
-        noise = torch.tanh(raw_noise) * self.epsilon
+        B, C, D, H, W = x.shape
+
+        # Reshape: [B, C, D, H, W] → [B*D, C, H, W]
+        # permute to [B, D, C, H, W] then reshape to [B*D, C, H, W]
+        x_2d = x.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+
+        if self.slice_batch_size > 0 and B * D > self.slice_batch_size:
+            # Chunked processing for memory efficiency
+            chunks = []
+            for i in range(0, B * D, self.slice_batch_size):
+                chunk = x_2d[i:i + self.slice_batch_size]
+                raw_chunk = self.unet(chunk)
+                chunks.append(torch.tanh(raw_chunk) * self.epsilon)
+            noise_2d = torch.cat(chunks, dim=0)
+        else:
+            # Process all slices at once
+            raw_noise = self.unet(x_2d)
+            noise_2d = torch.tanh(raw_noise) * self.epsilon
+
+        # Reshape back: [B*D, C, H, W] → [B, D, C, H, W] → [B, C, D, H, W]
+        noise = noise_2d.reshape(B, D, C, H, W).permute(0, 2, 1, 3, 4)
+
         return noise
 
 
-class SliceConsistencyLoss(nn.Module):
-    """
-    Inter-Slice Consistency Loss for 3D data.
-
-    Computes consistency between adjacent slices along the depth dimension.
-    Supports multiple consistency modes:
-      - 'smooth': Minimize L2 distance between adjacent slices (encourage similarity)
-      - 'disrupt': Maximize L2 distance between adjacent slices (encourage difference)
-      - 'periodic': Encourage periodic patterns along depth axis
-
-    Additional options:
-      - 'gradient_aware': Weight by inverse image gradient
-      - 'roi_aware': Only compute in ROI regions
-    """
-    def __init__(
-        self,
-        consistency_mode: str = "smooth",  # "smooth", "disrupt", "periodic"
-        consistency_type: str = "l2",       # "l2", "gradient_aware"
-        roi_aware: bool = True,
-        bidirectional: bool = True,
-        depth_dim: int = 2,  # Assuming [B, C, D, H, W]
-        periodic_wavelength: int = 4,  # For periodic mode: wavelength in slices
-    ):
-        super().__init__()
-        self.consistency_mode = consistency_mode
-        self.consistency_type = consistency_type
-        self.roi_aware = roi_aware
-        self.bidirectional = bidirectional
-        self.depth_dim = depth_dim
-        self.periodic_wavelength = periodic_wavelength
-
-    def forward(
-        self,
-        delta: torch.Tensor,
-        image: Optional[torch.Tensor] = None,
-        label: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Compute inter-slice consistency loss.
-
-        Args:
-            delta: Noise tensor [B, C, D, H, W]
-            image: Original image (for gradient-aware mode) [B, C, D, H, W]
-            label: Segmentation label (for ROI-aware mode) [B, D, H, W]
-
-        Returns:
-            Scalar consistency loss (always positive)
-        """
-        if self.consistency_mode == "periodic":
-            return self._periodic_loss(delta, label)
-        elif self.consistency_type == "gradient_aware":
-            return self._gradient_aware_consistency(delta, image, label)
-        else:
-            return self._l2_consistency(delta, label)
-
-    def _l2_consistency(
-        self,
-        delta: torch.Tensor,
-        label: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Basic L2 consistency loss between adjacent slices.
-        Returns the mean squared difference (always positive).
-        """
-        d = self.depth_dim
-
-        # Forward difference: delta[d+1] - delta[d]
-        delta_fwd = torch.diff(delta, n=1, dim=d)  # [B, C, D-1, H, W]
-        diff_sq = delta_fwd ** 2
-
-        if self.bidirectional:
-            # Bidirectional: weight factor 2.0
-            diff_sq = diff_sq * 2.0
-
-        if self.roi_aware and label is not None:
-            roi_mask = self._create_roi_mask(label, diff_sq.shape)
-            diff_sq = diff_sq * roi_mask
-
-        return diff_sq.mean()
-
-    def _gradient_aware_consistency(
-        self,
-        delta: torch.Tensor,
-        image: Optional[torch.Tensor] = None,
-        label: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Gradient-aware consistency loss.
-        Allows larger noise differences where image has larger gradients.
-        """
-        d = self.depth_dim
-        delta_diff = torch.diff(delta, n=1, dim=d)
-
-        if image is not None:
-            img_grad = torch.diff(image, n=1, dim=d).abs()
-            weight = 1.0 / (img_grad + 1e-4)
-            weight = weight / (weight.mean() + 1e-8)
-            diff_sq = weight * (delta_diff ** 2)
-        else:
-            diff_sq = delta_diff ** 2
-
-        if self.roi_aware and label is not None:
-            roi_mask = self._create_roi_mask(label, diff_sq.shape)
-            diff_sq = diff_sq * roi_mask
-
-        return diff_sq.mean()
-
-    def _periodic_loss(
-        self,
-        delta: torch.Tensor,
-        label: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Periodic consistency loss.
-        Encourages noise to follow a periodic pattern along depth axis.
-
-        Target pattern: sin(2*pi*d / wavelength)
-        Loss = MSE between actual slice correlation and target periodic pattern
-        """
-        d = self.depth_dim
-        D = delta.shape[d]  # Depth dimension size
-        device = delta.device
-
-        # Generate target periodic pattern for slice differences
-        # We want: diff[i] should correlate with sin pattern
-        z = torch.arange(D - 1, device=device, dtype=delta.dtype)
-        target_pattern = torch.sin(2 * np.pi * z / self.periodic_wavelength)
-        # Reshape for broadcasting: [1, 1, D-1, 1, 1]
-        target_pattern = target_pattern.view(1, 1, -1, 1, 1)
-
-        # Compute actual slice differences
-        delta_diff = torch.diff(delta, n=1, dim=d)  # [B, C, D-1, H, W]
-
-        # Compute mean difference per slice (reduce H, W)
-        mean_diff = delta_diff.mean(dim=[-2, -1], keepdim=True)  # [B, C, D-1, 1, 1]
-
-        # Normalize to [-1, 1] range for comparison
-        mean_diff_norm = mean_diff / (mean_diff.abs().max() + 1e-8)
-
-        # MSE between actual pattern and target periodic pattern
-        periodic_loss = ((mean_diff_norm - target_pattern) ** 2).mean()
-
-        return periodic_loss
-
-    def _create_roi_mask(
-        self,
-        label: torch.Tensor,
-        target_shape: tuple,
-    ) -> torch.Tensor:
-        """
-        Create ROI mask from label tensor.
-        ROI = label > 0 (foreground regions)
-        """
-        if label.dim() == 5:
-            label = label.squeeze(1)
-
-        mask = (label > 0).float()
-        mask = mask.unsqueeze(1)
-
-        # Adjust depth dimension for diff operation (D -> D-1)
-        if mask.shape[2] > target_shape[2]:
-            mask = mask[:, :, :-1, :, :]
-
-        mask = mask.expand(-1, target_shape[1], -1, -1, -1)
-        return mask.to(label.device)
-
-
 @register_plugin("unet_noise_slice")
-class UNetSliceConsistencyUE:
+class UNetNoiseSliceUE:
     """
-    Inter-Slice Consistency Attack for 3D Medical Image Segmentation.
+    Slice-by-Slice UNet noise generation for 3D segmentation UE.
 
-    This method generates noise with inter-slice consistency constraints,
-    specifically designed to exploit the 3D structure of medical volumes.
+    Instead of using a 3D UNet on the entire volume, this method uses a 2D UNet
+    to generate noise independently for each depth slice. The per-slice noise is
+    then assembled back into a 3D volume.
 
-    Assumptions:
+    Assumptions (same as UNetNoise):
       - Batch:
           batch["image"]: FloatTensor [B, C, D, H, W] (3D volume)
           batch["label"]: LongTensor  [B, D, H, W]
@@ -284,19 +140,16 @@ class UNetSliceConsistencyUE:
           noise_backend.batch_noise(keys) -> [N, C_in, D, H, W]
 
     Additional components:
-      - noise_unet: U-Net that generates noise from input images
-      - opt_noise_unet: Optimizer for the noise U-Net
-      - consistency_loss: Inter-slice consistency loss module
+      - noise_unet: 2D U-Net that generates per-slice noise
+      - opt_noise_unet: Optimizer for the 2D noise U-Net
     """
 
     def __init__(self):
         self._seg_loss: DiceCELoss | None = None
-        self._noise_unet: NoiseUNetWrapper | None = None
+        self._noise_unet: NoiseUNet2DWrapper | None = None
         self._opt_noise_unet: torch.optim.Optimizer | None = None
-        self._consistency_loss: SliceConsistencyLoss | None = None
         self._noise_unet_device: torch.device | None = None
         self._initialized: bool = False
-        self._consistency_mode: str = "smooth"  # "smooth", "disrupt", "periodic"
         self.logger = get_logger()
 
     @staticmethod
@@ -308,23 +161,6 @@ class UNetSliceConsistencyUE:
         for c, (m, s) in enumerate(zip(mean, std)):
             x[:, c].sub_(float(m)).div_(float(s))
         return x
-
-    @staticmethod
-    def _create_roi_mask(label: torch.Tensor, spatial_shape: tuple) -> torch.Tensor:
-        """
-        Create ROI mask from label. ROI = label > 0.
-
-        Args:
-            label: [B, D, H, W] or [B, 1, D, H, W]
-            spatial_shape: target spatial shape
-        Returns:
-            mask: [B, 1, D, H, W] with 1 for ROI, 0 for background
-        """
-        if label.dim() == 5:
-            label = label.squeeze(1)
-        mask = (label > 0).float()
-        mask = mask.unsqueeze(1)
-        return mask
 
     def _get_seg_loss(self, trainer) -> DiceCELoss:
         """
@@ -353,9 +189,9 @@ class UNetSliceConsistencyUE:
         )
         return self._seg_loss
 
-    def _init_noise_unet(self, trainer, in_channels: int, spatial_dims: int = 3):
+    def _init_noise_unet(self, trainer, in_channels: int):
         """
-        Initialize the noise U-Net, its optimizer, and consistency loss (lazy, once).
+        Initialize the 2D noise U-Net and its optimizer (lazy, once).
         """
         if self._initialized:
             return
@@ -367,10 +203,13 @@ class UNetSliceConsistencyUE:
         noise_unet_cfg = get_config(cfg, "ue.noise_unet", DictConfig({}))
         params = get_config(cfg, "ue.algorithm.params", DictConfig({}))
         eps = float(get_config(params, "epsilon", 8/255))
+        slice_batch_size = int(get_config(params, "slice_batch_size", 0))
 
-        # Build noise UNet
-        base_unet = _build_noise_unet(noise_unet_cfg, in_channels, spatial_dims)
-        self._noise_unet = NoiseUNetWrapper(base_unet, epsilon=eps)
+        # Build 2D noise UNet
+        base_unet = _build_noise_unet_2d(noise_unet_cfg, in_channels)
+        self._noise_unet = NoiseUNet2DWrapper(
+            base_unet, epsilon=eps, slice_batch_size=slice_batch_size
+        )
         self._noise_unet = self._noise_unet.to(device)
         self._noise_unet_device = device
 
@@ -387,36 +226,19 @@ class UNetSliceConsistencyUE:
             betas=betas,
         )
 
-        # Build consistency loss
-        consistency_mode = str(get_config(params, "consistency_mode", "smooth"))
-        consistency_type = str(get_config(params, "consistency_type", "l2"))
-        roi_aware = bool(get_config(params, "roi_aware", True))
-        bidirectional = bool(get_config(params, "bidirectional", True))
-        periodic_wavelength = int(get_config(params, "periodic_wavelength", 4))
-
-        self._consistency_mode = consistency_mode
-        self._consistency_loss = SliceConsistencyLoss(
-            consistency_mode=consistency_mode,
-            consistency_type=consistency_type,
-            roi_aware=roi_aware,
-            bidirectional=bidirectional,
-            depth_dim=2,  # [B, C, D, H, W]
-            periodic_wavelength=periodic_wavelength,
-        )
-
         self._initialized = True
         self.logger.info(
-            f"[UNetSliceConsistency] Initialized noise UNet: in_channels={in_channels}, "
-            f"spatial_dims={spatial_dims}, eps={eps:.6f}, lr={lr}, "
-            f"consistency_mode={consistency_mode}, consistency_type={consistency_type}, "
-            f"roi_aware={roi_aware}"
+            f"[UNetNoiseSlice] Initialized 2D noise UNet: in_channels={in_channels}, "
+            f"eps={eps:.6f}, lr={lr}, slice_batch_size={slice_batch_size}"
         )
 
     # ---------------- Surrogate-step: Update surrogate ---------------- #
     def surrogate_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
         Update surrogate parameters only, do not update noise.
-        Uses generated noise from noise U-Net.
+        Uses noise from backend (3D noise volumes).
+
+        This is identical to UNetNoise: the surrogate trains on 3D noisy images.
         """
         cfg = trainer.config
         device = trainer.device
@@ -433,17 +255,16 @@ class UNetSliceConsistencyUE:
         keys: Iterable[int] = batch["key"]
 
         B, C_in = x.shape[:2]
-        spatial_dims = len(x.shape) - 2  # 3 for 3D
 
         # Initialize noise UNet if not done
-        self._init_noise_unet(trainer, C_in, spatial_dims)
+        self._init_noise_unet(trainer, C_in)
 
         # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
         std = tuple(get_config(cfg, "training.data.transforms.std", (1.0,) * C_in))
 
-        # Get noise from backend
-        delta = nb.batch_noise(list(keys)).to(device).float()
+        # Get noise from backend (3D noise)
+        delta = nb.batch_noise(list(keys)).to(device).float()  # [B, C_in, D, H, W]
         if delta.shape[:2] != x.shape[:2]:
             raise RuntimeError(
                 f"[UE] noise shape mismatch: noise {tuple(delta.shape)} vs input {tuple(x.shape)}"
@@ -483,20 +304,19 @@ class UNetSliceConsistencyUE:
             "loss": loss_val,
         }
 
-    # ---------------- N-step: Update noise via UNet with slice consistency ---------------- #
+    # ---------------- N-step: Update noise via 2D UNet (slice-by-slice) ---------------- #
     def noise_step_batch(self, trainer, batch) -> Dict[str, float]:
         """
-        Update noise using trainable U-Net with inter-slice consistency constraints.
+        Update noise using a 2D UNet that processes each slice independently.
 
         Process:
-          1. Forward image through noise U-Net to get noise prediction
-          2. Compute inter-slice consistency loss along depth dimension
-          3. Optionally apply ROI mask (only noise in ROI regions)
-          4. Add noise to image, normalize, pass through frozen surrogate
+          1. Reshape 3D volume to 2D slices: [B,C,D,H,W] → [B*D,C,H,W]
+          2. Forward through 2D noise UNet to get per-slice noise
+          3. Reshape back to 3D: [B*D,C,H,W] → [B,C,D,H,W]
+          4. Add noise to 3D image, normalize, pass through frozen 3D surrogate
           5. Compute segmentation loss
-          6. Total loss = seg_loss + lambda_consistency * consistency_loss
-          7. Backprop to update noise U-Net parameters
-          8. Store generated noise to backend
+          6. Backprop to update 2D noise UNet parameters
+          7. Store generated 3D noise to backend
         """
         cfg = trainer.config
         device = trainer.device
@@ -514,17 +334,14 @@ class UNetSliceConsistencyUE:
         keys_list: List[int] = list(keys)
 
         B, C_in = x.shape[:2]
-        spatial_dims = len(x.shape) - 2
 
         # Initialize if needed
-        self._init_noise_unet(trainer, C_in, spatial_dims)
+        self._init_noise_unet(trainer, C_in)
 
         algo = require_config(cfg, "ue.algorithm")
         params = require_config(algo, "params")
         eps = float(get_config(params, "epsilon", 8 / 255.0))
         num_steps = int(get_config(params, "noise_step", 1))
-        lambda_consistency = float(get_config(params, "lambda_consistency", 0.5))
-        roi_aware = bool(get_config(params, "roi_aware", True))
 
         # normalization config
         mean = tuple(get_config(cfg, "training.data.transforms.mean", (0.0,) * C_in))
@@ -540,73 +357,38 @@ class UNetSliceConsistencyUE:
         for p in s_model.parameters():
             p.requires_grad = False
 
-        # -------- create ROI mask if enabled --------
-        roi_mask = None
-        if roi_aware:
-            roi_mask = self._create_roi_mask(y, x.shape[2:])
-            roi_mask = roi_mask.expand(-1, C_in, -1, -1, -1).to(device)
-
-        # -------- train noise UNet --------
+        # -------- train 2D noise UNet --------
         self._noise_unet.train()
-        last_seg_loss = torch.tensor(0.0, device=device)
-        last_consistency_loss = torch.tensor(0.0, device=device)
+        last_loss = torch.tensor(0.0, device=device)
 
         for _ in range(max(1, num_steps)):
-            # Generate noise from UNet
-            delta_raw = self._noise_unet(x)  # [B, C_in, D, H, W], in [-eps, eps]
+            # Generate per-slice noise using 2D UNet
+            # Internally: [B,C,D,H,W] → [B*D,C,H,W] → 2D UNet → [B,C,D,H,W]
+            delta = self._noise_unet(x)  # [B, C_in, D, H, W], already in [-eps, eps]
 
-            # Compute inter-slice consistency loss (before ROI masking)
-            consistency_loss = self._consistency_loss(
-                delta_raw,
-                image=x,
-                label=y if roi_aware else None,
-            )
-            last_consistency_loss = consistency_loss.detach()
-
-            # Apply ROI mask if enabled
-            if roi_aware and roi_mask is not None:
-                delta = delta_raw * roi_mask
-            else:
-                delta = delta_raw
-
-            # Create perturbed image
+            # Create perturbed image (3D)
             perturb_img = (x + delta).clamp(0.0, 1.0)
             xn = perturb_img.clone()
             self._norm_inplace(xn, mean, std)
 
-            # Forward through surrogate
+            # Forward through 3D surrogate
             out = s_model(xn)
             logits = out[0] if isinstance(out, (tuple, list)) else out
 
-            # Compute segmentation loss (min-min: minimize loss)
-            seg_loss = seg_loss_fn(logits, y.unsqueeze(1))
-            last_seg_loss = seg_loss.detach()
+            # Compute loss (min-min: minimize loss)
+            loss = seg_loss_fn(logits, y.unsqueeze(1))
+            last_loss = loss.detach()
 
-            # Total loss depends on consistency mode:
-            #   - smooth:   seg_loss + lambda * consistency_loss (minimize difference)
-            #   - disrupt:  seg_loss - lambda * consistency_loss (maximize difference)
-            #   - periodic: seg_loss + lambda * consistency_loss (match periodic pattern)
-            if self._consistency_mode == "disrupt":
-                total_loss = seg_loss - lambda_consistency * consistency_loss
-            else:  # "smooth" or "periodic"
-                total_loss = seg_loss + lambda_consistency * consistency_loss
-
-            # Backprop to update noise UNet
+            # Backprop to update 2D noise UNet
             self._opt_noise_unet.zero_grad(set_to_none=True)
-            total_loss.backward()
+            loss.backward()
             self._opt_noise_unet.step()
 
         # -------- Store generated noise to backend --------
+        # Generate final noise and commit
         self._noise_unet.eval()
         with torch.no_grad():
-            final_delta_raw = self._noise_unet(x)
-
-            # Apply ROI mask if enabled
-            if roi_aware and roi_mask is not None:
-                final_delta = final_delta_raw * roi_mask
-            else:
-                final_delta = final_delta_raw
-
+            final_delta = self._noise_unet(x)  # [B, C_in, D, H, W]
             # Extra clamp for safety
             final_delta = final_delta.clamp(-eps, eps)
 
@@ -614,7 +396,6 @@ class UNetSliceConsistencyUE:
 
         delta_linf = float(final_delta.detach().abs().max().cpu())
         return {
-            "noise_loss": float(last_seg_loss.cpu()),
-            "consistency_loss": float(last_consistency_loss.cpu()),
+            "noise_loss": float(last_loss.cpu()),
             "delta_linf": delta_linf,
         }
