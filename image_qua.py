@@ -161,15 +161,11 @@ def compute_volume_ssim(original: torch.Tensor, noisy: torch.Tensor) -> float:
     Returns:
         SSIM 值
     """
-    C, D, H, W = original.shape
-    ssim_vals = []
-    for d in range(D):
-        # 取出单个 slice: [C, H, W] -> [1, C, H, W]
-        orig_slice = original[:, d, :, :].unsqueeze(0).float().contiguous()
-        noisy_slice = noisy[:, d, :, :].unsqueeze(0).float().contiguous()
-        val = compute_ssim(orig_slice, noisy_slice, data_range=1.0, size_average=True)
-        ssim_vals.append(float(val.item()))
-    return float(np.mean(ssim_vals))
+    # [C, D, H, W] -> [D, C, H, W]，D 作为 batch 维度，一次性计算所有 slice
+    orig_batch = original.permute(1, 0, 2, 3).float().contiguous()
+    noisy_batch = noisy.permute(1, 0, 2, 3).float().contiguous()
+    val = compute_ssim(orig_batch, noisy_batch, data_range=1.0, size_average=True)
+    return float(val.item())
 
 
 def compute_per_slice_metrics(
@@ -186,19 +182,21 @@ def compute_per_slice_metrics(
     Returns:
         List of dicts, 每个 slice 一个 dict: {"slice_idx", "psnr", "ssim"}
     """
-    C, D, H, W = original.shape
+    # [C, D, H, W] -> [D, C, H, W]，D 作为 batch 维度，一次性计算所有 slice
+    orig_batch = original.permute(1, 0, 2, 3).float().contiguous()
+    noisy_batch = noisy.permute(1, 0, 2, 3).float().contiguous()
+
+    # size_average=False 返回每个 slice 的值
+    psnr_vals = compute_psnr(orig_batch, noisy_batch, data_range=1.0)
+    ssim_vals = compute_ssim(orig_batch, noisy_batch, data_range=1.0, size_average=False)
+
+    D = original.shape[1]
     results = []
     for d in range(D):
-        orig_slice = original[:, d, :, :].unsqueeze(0).float().contiguous()
-        noisy_slice = noisy[:, d, :, :].unsqueeze(0).float().contiguous()
-
-        psnr_val = compute_psnr(orig_slice, noisy_slice, data_range=1.0)
-        ssim_val = compute_ssim(orig_slice, noisy_slice, data_range=1.0, size_average=True)
-
         results.append({
             "slice_idx": d,
-            "psnr": float(psnr_val.item()),
-            "ssim": float(ssim_val.item()),
+            "psnr": float(psnr_vals[d].item()) if psnr_vals.dim() > 0 else float(psnr_vals.item()),
+            "ssim": float(ssim_vals[d].item()) if ssim_vals.dim() > 0 else float(ssim_vals.item()),
         })
     return results
 
