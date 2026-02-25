@@ -42,6 +42,8 @@ from src.registry import get_dataset_builder, get_model
 from src.core.ue_artifacts import UEShardsAccessor
 from src.core.ue_keys import extract_key
 from src.utils.config import get_config
+from src.utils.ssim import ssim as ssim_fn
+from src.utils.eval_metrics import compute_noise_jacobian_metrics
 
 
 # ======================== Constants ======================== #
@@ -187,19 +189,86 @@ def auto_select_slice(label_np: np.ndarray, D: int) -> int:
     return D // 2
 
 
-def compute_inter_slice_correlation(noise_np: np.ndarray, channel: int = 0) -> List[float]:
-    noise_3d = noise_np[channel]
-    D = noise_3d.shape[0]
-    correlations = []
+def compute_inter_slice_metrics(
+    noise: torch.Tensor,
+    channel: int = 0,
+) -> Dict[str, List[float]]:
+    """
+    Compute multiple inter-slice similarity metrics along depth.
+
+    Uses existing project metrics:
+      - Pearson correlation (numpy)
+      - SSIM (src.utils.ssim)
+      - L2 distance (SliceConsistencyLoss._l2_consistency style)
+      - Cosine similarity
+      - Total Variation along depth (src.utils.eval_metrics style)
+
+    Args:
+        noise: [C, D, H, W] tensor
+        channel: which channel to compute on
+
+    Returns:
+        Dict of metric_name -> List[float] of length D-1
+    """
+    noise_ch = noise[channel]  # [D, H, W]
+    D, H, W = noise_ch.shape
+
+    pearson = []
+    ssim_vals = []
+    l2_dist = []
+    cosine_sim = []
+
     for z in range(D - 1):
-        s1 = noise_3d[z].flatten()
-        s2 = noise_3d[z + 1].flatten()
-        if np.std(s1) > 1e-8 and np.std(s2) > 1e-8:
-            corr = float(np.corrcoef(s1, s2)[0, 1])
+        s1 = noise_ch[z]  # [H, W]
+        s2 = noise_ch[z + 1]
+
+        # --- Pearson correlation (numpy, fast) ---
+        f1, f2 = s1.numpy().flatten(), s2.numpy().flatten()
+        if np.std(f1) > 1e-8 and np.std(f2) > 1e-8:
+            pearson.append(float(np.corrcoef(f1, f2)[0, 1]))
         else:
-            corr = 0.0
-        correlations.append(corr)
-    return correlations
+            pearson.append(0.0)
+
+        # --- SSIM (reuse project's ssim function) ---
+        # ssim expects [B, C, H, W]; data_range = noise amplitude range
+        x1 = s1.unsqueeze(0).unsqueeze(0).float()  # [1,1,H,W]
+        x2 = s2.unsqueeze(0).unsqueeze(0).float()
+        vrange = max(float(noise_ch.max() - noise_ch.min()), 1e-8)
+        try:
+            sv = ssim_fn(x1, x2, data_range=vrange, size_average=True,
+                         win_size=min(7, min(H, W) - 1 if min(H, W) % 2 == 0 else min(H, W)))
+            ssim_vals.append(float(sv.item()))
+        except Exception:
+            ssim_vals.append(0.0)
+
+        # --- L2 distance (same as SliceConsistencyLoss._l2_consistency) ---
+        diff_sq = (s2 - s1).pow(2).mean()
+        l2_dist.append(float(diff_sq.sqrt().item()))
+
+        # --- Cosine similarity ---
+        v1, v2 = s1.flatten(), s2.flatten()
+        dot = torch.dot(v1, v2)
+        n1, n2 = v1.norm(), v2.norm()
+        if n1 > 1e-8 and n2 > 1e-8:
+            cosine_sim.append(float((dot / (n1 * n2)).item()))
+        else:
+            cosine_sim.append(0.0)
+
+    # --- Total Variation along depth (per-slice TV) ---
+    # This is |δ[z+1] - δ[z]| summed over spatial, for each z pair
+    # (from compute_noise_jacobian_metrics convention)
+    depth_tv = []
+    for z in range(D - 1):
+        diff_abs = (noise_ch[z + 1] - noise_ch[z]).abs().mean()
+        depth_tv.append(float(diff_abs.item()))
+
+    return {
+        "Pearson Corr.": pearson,
+        "SSIM": ssim_vals,
+        "L2 Dist.": l2_dist,
+        "Cosine Sim.": cosine_sim,
+        "Depth TV": depth_tv,
+    }
 
 
 def dice_score(pred: np.ndarray, gt: np.ndarray, num_classes: int = 4) -> float:
@@ -313,94 +382,146 @@ def compare_scheme_a(
 
 def compare_scheme_b(
     methods: List[MethodData],
-    noises: List[np.ndarray],
+    noises: List[torch.Tensor],
     output_path: str,
     case_id: str = "",
     channel: int = 0,
 ):
     """
-    Comparison Scheme B: overlay inter-slice correlation curves.
+    Comparison Scheme B: multi-metric inter-slice similarity comparison.
 
-    Left:  Correlation curves (all methods overlaid)
-    Right: Statistics table + box plot
+    Uses existing project metrics:
+      - Pearson Correlation
+      - SSIM (src.utils.ssim)
+      - L2 Distance (SliceConsistencyLoss style)
+      - Cosine Similarity
+      - Depth Total Variation
+
+    Layout:
+      Row 0: Pearson Correlation curves + box
+      Row 1: SSIM curves + box
+      Row 2: L2 Distance curves + box
+      Row 3: Cosine Similarity curves + box
+      Right column: summary stats table
     """
     M = len(methods)
-    all_corrs = []
-    for noise_np in noises:
-        all_corrs.append(compute_inter_slice_correlation(noise_np, channel))
 
-    fig = plt.figure(figsize=(18, 7), facecolor="white")
-    gs = gridspec.GridSpec(1, 3, figure=fig, width_ratios=[3, 1, 1.5], wspace=0.25)
+    # Compute all metrics for each method
+    print(f"  [Scheme B] Computing inter-slice metrics ...")
+    all_metrics: List[Dict[str, List[float]]] = []
+    for m_idx, noise_t in enumerate(noises):
+        metrics = compute_inter_slice_metrics(noise_t, channel)
+        all_metrics.append(metrics)
+        print(f"    {methods[m_idx].name}: Pearson μ={np.mean(metrics['Pearson Corr.']):+.4f}, "
+              f"SSIM μ={np.mean(metrics['SSIM']):.4f}, "
+              f"L2 μ={np.mean(metrics['L2 Dist.']):.6f}, "
+              f"Cosine μ={np.mean(metrics['Cosine Sim.']):+.4f}")
 
-    # --- Left: Correlation curves ---
-    ax_corr = fig.add_subplot(gs[0, 0])
-    for m_idx, (method, corrs) in enumerate(zip(methods, all_corrs)):
-        color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
-        x = np.arange(len(corrs))
-        ax_corr.plot(x, corrs, color=color, linewidth=1.2, alpha=0.85,
-                     label=f"{method.name} (μ={np.mean(corrs):.3f})")
-        # Mean line
-        ax_corr.axhline(y=np.mean(corrs), color=color, linestyle="--",
-                        linewidth=1.0, alpha=0.5)
+    # Select metrics for curve plots (similarity-type and distance-type)
+    curve_metrics = ["Pearson Corr.", "SSIM", "Cosine Sim.", "L2 Dist.", "Depth TV"]
+    # Which metrics are "higher = more similar" vs "higher = more different"
+    similarity_type = {"Pearson Corr.", "SSIM", "Cosine Sim."}
 
-    ax_corr.axhline(y=0, color="gray", linestyle=":", linewidth=0.8)
-    ax_corr.set_xlabel("Slice Index (z)", fontsize=11)
-    ax_corr.set_ylabel("Pearson Correlation", fontsize=11)
-    ax_corr.set_title(
-        f"Inter-Slice Correlation ({MODALITY_NAMES[channel]}) — {case_id}",
-        fontsize=12, fontweight="bold",
+    n_curves = len(curve_metrics)
+    fig = plt.figure(figsize=(22, 3.5 * n_curves), facecolor="white")
+    gs = gridspec.GridSpec(
+        n_curves, 3, figure=fig,
+        width_ratios=[4, 1.2, 2],
+        hspace=0.35, wspace=0.25,
     )
-    ax_corr.set_ylim(-1.05, 1.05)
-    ax_corr.legend(fontsize=9, loc="upper right")
-    ax_corr.grid(True, alpha=0.3)
 
-    # --- Middle: Box plot ---
-    ax_box = fig.add_subplot(gs[0, 1])
-    bp = ax_box.boxplot(
-        all_corrs,
-        labels=[m.name for m in methods],
-        patch_artist=True,
-        widths=0.6,
-    )
-    for m_idx, patch in enumerate(bp["boxes"]):
-        color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
-        patch.set_facecolor(color)
-        patch.set_alpha(0.35)
-    ax_box.set_ylabel("Correlation", fontsize=10)
-    ax_box.set_title("Distribution", fontsize=11, fontweight="bold")
-    ax_box.axhline(y=0, color="gray", linestyle=":", linewidth=0.8)
-    ax_box.grid(True, alpha=0.3, axis="y")
+    for row, metric_name in enumerate(curve_metrics):
+        is_sim = metric_name in similarity_type
 
-    # --- Right: Stats table ---
-    ax_stats = fig.add_subplot(gs[0, 2])
+        # --- Left: Curves ---
+        ax_curve = fig.add_subplot(gs[row, 0])
+        all_vals = []
+        for m_idx, method in enumerate(methods):
+            vals = all_metrics[m_idx][metric_name]
+            all_vals.append(vals)
+            color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
+            x = np.arange(len(vals))
+            mean_v = np.mean(vals)
+            ax_curve.plot(x, vals, color=color, linewidth=1.0, alpha=0.8,
+                          label=f"{method.name} (μ={mean_v:.4f})")
+            ax_curve.axhline(y=mean_v, color=color, linestyle="--",
+                             linewidth=0.8, alpha=0.4)
+
+        if is_sim:
+            ax_curve.axhline(y=0, color="gray", linestyle=":", linewidth=0.6)
+        ax_curve.set_xlabel("Slice Index (z)", fontsize=9)
+        ax_curve.set_ylabel(metric_name, fontsize=10)
+        ax_curve.set_title(metric_name, fontsize=11, fontweight="bold")
+        ax_curve.legend(fontsize=8, loc="upper right")
+        ax_curve.grid(True, alpha=0.25)
+        if is_sim:
+            ax_curve.set_ylim(-1.05, 1.05)
+
+        # --- Middle: Box plot ---
+        ax_box = fig.add_subplot(gs[row, 1])
+        bp = ax_box.boxplot(
+            all_vals,
+            labels=[m.name for m in methods],
+            patch_artist=True,
+            widths=0.55,
+        )
+        for m_idx, patch in enumerate(bp["boxes"]):
+            color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
+            patch.set_facecolor(color)
+            patch.set_alpha(0.3)
+        ax_box.set_title("Distrib.", fontsize=9, fontweight="bold")
+        ax_box.grid(True, alpha=0.25, axis="y")
+        if is_sim:
+            ax_box.axhline(y=0, color="gray", linestyle=":", linewidth=0.6)
+
+    # --- Right column: comprehensive stats table ---
+    ax_stats = fig.add_subplot(gs[:, 2])
     ax_stats.axis("off")
 
-    header = f"{'Method':<12} {'Mean':>7} {'Std':>7} {'Min':>7} {'Max':>7}\n"
-    sep = "─" * 48 + "\n"
-    rows = header + sep
-    for m_idx, (method, corrs) in enumerate(zip(methods, all_corrs)):
-        c = np.array(corrs)
-        rows += (
-            f"{method.name:<12} {np.mean(c):+.4f} {np.std(c):.4f} "
-            f"{np.min(c):+.4f} {np.max(c):+.4f}\n"
+    lines = []
+    lines.append("Inter-Slice Similarity Summary")
+    lines.append("═" * 52)
+    lines.append(f"Case: {case_id}")
+    lines.append(f"Channel: {MODALITY_NAMES[channel]}")
+    lines.append(f"Depth: {noises[0].shape[1]} slices")
+    lines.append("")
+
+    for metric_name in curve_metrics:
+        is_sim = metric_name in similarity_type
+        lines.append(f"── {metric_name} ──")
+        lines.append(f"{'Method':<10} {'Mean':>8} {'Std':>8} {'Med':>8}")
+        lines.append("─" * 38)
+        for m_idx, method in enumerate(methods):
+            vals = np.array(all_metrics[m_idx][metric_name])
+            lines.append(
+                f"{method.name:<10} {np.mean(vals):+8.4f} {np.std(vals):8.4f} "
+                f"{np.median(vals):+8.4f}"
+            )
+        lines.append("")
+
+    # Global noise stats (reuse compute_noise_jacobian_metrics)
+    lines.append("── Global Noise Stats ──")
+    lines.append(f"{'Method':<10} {'L∞':>9} {'L2(rms)':>9} {'TV':>9} {'∇mean':>9}")
+    lines.append("─" * 42)
+    for m_idx, method in enumerate(methods):
+        noise_5d = noises[m_idx].unsqueeze(0)  # [1, C, D, H, W]
+        jm = compute_noise_jacobian_metrics(noise_5d)
+        lines.append(
+            f"{method.name:<10} {jm['noise_linf']:9.6f} {jm['noise_l2']:9.6f} "
+            f"{jm['noise_tv']:9.6f} {jm['noise_grad_mean']:9.6f}"
         )
 
-    # Add noise stats
-    rows += sep + f"{'Method':<12} {'L∞':>10} {'L2(rms)':>10}\n" + sep
-    for m_idx, (method, noise_np) in enumerate(zip(methods, noises)):
-        linf = np.abs(noise_np).max()
-        l2 = np.sqrt(np.mean(noise_np ** 2))
-        rows += f"{method.name:<12} {linf:10.6f} {l2:10.6f}\n"
-
+    stats_text = "\n".join(lines)
     ax_stats.text(
-        0.02, 0.95, rows, fontsize=9.5, family="monospace",
+        0.02, 0.98, stats_text, fontsize=8.5, family="monospace",
         verticalalignment="top", transform=ax_stats.transAxes,
         bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8),
     )
 
     fig.suptitle(
-        f"Compare B: Correlation Analysis — {' vs '.join(m.name for m in methods)}",
-        fontsize=13, fontweight="bold", y=1.02,
+        f"Compare B: Inter-Slice Similarity — {' vs '.join(m.name for m in methods)}\n"
+        f"Metrics: Pearson | SSIM | Cosine | L2 | TV  (channel: {MODALITY_NAMES[channel]})",
+        fontsize=13, fontweight="bold", y=1.0,
     )
 
     plt.savefig(output_path, dpi=150, bbox_inches="tight", facecolor="white")
@@ -665,10 +786,10 @@ def main():
 
         # --- Compare B ---
         if "b" in schemes:
-            path_b = os.path.join(args.output_dir, f"{prefix}_cmpB_correlation.png")
+            path_b = os.path.join(args.output_dir, f"{prefix}_cmpB_similarity.png")
             compare_scheme_b(
                 methods=method_objs,
-                noises=noise_np_list,
+                noises=noise_list,
                 output_path=path_b,
                 case_id=case_id,
                 channel=args.channel,
