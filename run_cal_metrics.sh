@@ -47,10 +47,12 @@ run_one flare21_seg /home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/vic
 echo "[GPU 5] Done."
 ) &
 
-# ── GPU 7: flare21 x2 ────────────────────────────────────────────
+# ── GPU 7: flare21 x4 ────────────────────────────────────────────
 (
 run_one flare21_seg /home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_sep/20260224_165559/checkpoints/checkpoints/best_model.pth cuda:7
 run_one flare21_seg /home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_umed_flare21/20260225_165841/checkpoints/checkpoints/best_model.pth cuda:7
+run_one flare21_seg /home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_lsp/20260224_143735/checkpoints/checkpoints/best_model.pth cuda:7
+run_one flare21_seg /home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_pue_4_255/20260225_021639/checkpoints/checkpoints/best_model.pth cuda:7
 echo "[GPU 7] Done."
 ) &
 
