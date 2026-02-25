@@ -39,7 +39,36 @@ adapted to the 3D setting.
 %
 \section{Introduction}\label{sec:intro}
 
-% TODO: Write introduction
+Deep learning has achieved remarkable success in 3D medical image
+segmentation~\cite{menze2014multimodal,ma2022fast}, yet training these models
+requires large-scale annotated datasets that are expensive and time-consuming
+to curate. Such datasets are often hosted on public repositories like
+PubMed~\cite{pubmed} and shared across institutions. However, the sensitive
+nature of medical data raises significant privacy and intellectual property
+concerns. Regulations such as the General Data Protection Regulation
+(GDPR)~\cite{gdpr2016} impose strict requirements on data usage, and recent
+studies~\cite{kaissis2021end} have highlighted the risks of unauthorized
+exploitation of medical imaging data.
+
+To address data protection without restricting data sharing, \emph{unlearnable
+examples}~\cite{huang2021unlearnable} have emerged as a promising approach.
+By adding imperceptible perturbations to training data, models trained on
+such protected data fail to learn useful representations. Several follow-up
+works have improved the effectiveness and robustness of unlearnable
+examples~\cite{fowl2021adversarial,yu2022availability,liu2023stable}, and
+recent work~\cite{wang2025provably} has provided provable guarantees for
+such protection. However, all existing methods operate exclusively on 2D
+natural images and do not account for the unique characteristics of 3D
+volumetric medical data, such as spatial continuity across slices and
+multi-modal inputs.
+
+In this paper, we propose \textbf{3DMedUE}, the first unlearnable example
+method specifically designed for 3D medical image segmentation. Our method
+generates imperceptible 3D perturbations that exploit the volumetric structure
+of medical scans, rendering the protected data useless for training
+segmentation models. Experiments on BraTS19 and FLARE21 benchmarks demonstrate
+that 3DMedUE reduces victim model performance to nearly zero, significantly
+outperforming existing 2D methods adapted to the 3D setting.
 
 \section{Related Work}\label{sec:related}
 
@@ -128,7 +157,61 @@ SEP~\cite{liu2023stable}
 %
 % ---- Bibliography ----
 %
-\bibliographystyle{splncs04}
-\bibliography{references}
+\begin{thebibliography}{10}
+
+\bibitem{menze2014multimodal}
+Menze, B.H., Jakab, A., Bauer, S., et~al.:
+The multimodal brain tumor image segmentation benchmark ({BRATS}).
+IEEE Transactions on Medical Imaging \textbf{34}(10), 1993--2024 (2015)
+
+\bibitem{ma2022fast}
+Ma, J., Zhang, Y., et~al.:
+Fast and low-{GPU}-memory abdomen {CT} organ segmentation: The {FLARE}
+challenge.
+Medical Image Analysis \textbf{82}, 102616 (2022)
+
+\bibitem{pubmed}
+PubMed, \url{https://pubmed.ncbi.nlm.nih.gov/}, last accessed 2025/01/15
+
+\bibitem{gdpr2016}
+{European Parliament and Council of the European Union}:
+Regulation ({EU}) 2016/679 (General Data Protection Regulation).
+Official Journal of the European Union, L~119, 1--88 (2016)
+
+\bibitem{kaissis2021end}
+Kaissis, G.A., Makowski, M.R., R{\"u}ckert, D., Braren, R.F.:
+End-to-end privacy preserving deep learning on multi-institutional medical
+imaging.
+Nature Machine Intelligence \textbf{3}(6), 473--484 (2021)
+
+\bibitem{huang2021unlearnable}
+Huang, H., Ma, X., Erfani, S.M., Bailey, J., Wang, Y.:
+Unlearnable examples: Making personal data unexploitable.
+In: International Conference on Learning Representations (ICLR) (2021)
+
+\bibitem{fowl2021adversarial}
+Fowl, L., Goldblum, M., Chiang, P.-y., Geiping, J., Czaja, W., Goldstein, T.:
+Adversarial examples make strong poisons.
+In: Advances in Neural Information Processing Systems, vol.~34,
+pp.~30339--30351 (2021)
+
+\bibitem{yu2022availability}
+Yu, D., Zhang, H., Chen, W., Yin, J., Liu, T.-Y.:
+Availability attacks create shortcuts.
+In: ACM SIGKDD Conference on Knowledge Discovery and Data Mining,
+pp.~2367--2376 (2022)
+
+\bibitem{liu2023stable}
+Liu, Y., Zhao, K., Cong, J., Yu, J., et~al.:
+Stable unlearnable example: Enhancing the robustness of unlearnable examples
+via stable error-minimizing noise.
+In: AAAI Conference on Artificial Intelligence (2023)
+
+\bibitem{wang2025provably}
+Wang, D., Xue, M., Li, B., Camtepe, S., Zhu, L.:
+Provably unlearnable data examples.
+In: Network and Distributed System Security Symposium (NDSS) (2025)
+
+\end{thebibliography}
 %
 \end{document}
