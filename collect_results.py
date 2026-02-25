@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-汇总所有方法在同一数据集上的 Dice / IoU / HD95 / ASD 结果。
+汇总所有方法在同一数据集上的 Dice / HD95 结果。
 
-两种用法：
+三种用法：
 
-1) 自动从 run_cal_metrics.sh 中已跑完的 summary CSV 收集：
+1) 指定汇总目录，自动递归查找所有 _summary.csv：
+   python collect_results.py --dir /path/to/outputs/flare21_seg
+
+2) 自动从 run_cal_metrics.sh 中已跑完的 summary CSV 收集：
    python collect_results.py --dataset brats19_seg
 
-2) 手动指定多个 summary CSV：
+3) 手动指定多个 summary CSV：
    python collect_results.py \
        --csv path/to/clean_summary.csv \
        --csv path/to/victim_summary.csv \
@@ -52,7 +55,8 @@ DATASET_REGIONS = {
     "kits19_seg":  ["Kidney", "Tumor"],
 }
 
-METRICS = ["dice", "iou", "hd95", "asd"]
+# 只保留 Dice 和 HD95
+METRICS = ["dice", "hd95"]
 
 
 def extract_method_name(model_path: str) -> str:
@@ -79,6 +83,38 @@ def extract_method_name(model_path: str) -> str:
     return "unknown"
 
 
+def extract_method_from_csv_path(csv_path: str) -> str:
+    """
+    从 summary CSV 路径提取实验名。
+
+    向上遍历目录结构，找到类似实验名的部分。
+    路径格式示例:
+      .../flare21_seg/clean/20260101_120000/checkpoints/.../metrics_..._summary.csv
+      → "clean"
+      .../victim_minmin_unetpp/20260101_120000/.../metrics_..._summary.csv
+      → "victim_minmin_unetpp"
+    """
+    parts = Path(csv_path).parts
+    # 查找 _seg 后的部分作为 method name
+    for i, p in enumerate(parts):
+        if p.endswith("_seg") and i + 1 < len(parts):
+            return parts[i + 1]
+
+    # fallback: 找第一个非时间戳、非 checkpoints、非文件名的有意义部分
+    skip = {"checkpoints", "results"}
+    for p in reversed(parts[:-1]):  # 跳过文件名
+        if p in skip:
+            continue
+        if re.match(r"^\d{8}_\d{6}$", p):
+            continue
+        if p.endswith("_seg"):
+            continue
+        if p.startswith("/") or p in ("home", "data", "project", "outputs"):
+            continue
+        return p
+    return Path(csv_path).stem.replace("_summary", "")
+
+
 def read_summary_csv(csv_path: str) -> Dict[str, float]:
     """读取 summary CSV 为 dict。"""
     with open(csv_path, "r") as f:
@@ -94,6 +130,17 @@ def find_summary_csv(model_path: str, dataset: str, split: str = "test") -> str:
     return os.path.join(model_dir, f"metrics_{dataset}_{split}_summary.csv")
 
 
+def find_summary_csvs_in_dir(root_dir: str) -> List[str]:
+    """递归查找目录下所有 _summary.csv 文件。"""
+    results = []
+    for dirpath, _, filenames in os.walk(root_dir):
+        for fn in filenames:
+            if fn.endswith("_summary.csv"):
+                results.append(os.path.join(dirpath, fn))
+    results.sort()
+    return results
+
+
 def fmt(v: float, is_pct: bool = False) -> str:
     """格式化数值。"""
     if not np.isfinite(v):
@@ -104,7 +151,9 @@ def fmt(v: float, is_pct: bool = False) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="汇总多个方法的分割指标")
+    parser = argparse.ArgumentParser(description="汇总多个方法的 Dice & HD95 指标")
+    parser.add_argument("--dir", type=str, default=None,
+                        help="汇总目录：递归查找其中所有 _summary.csv")
     parser.add_argument("--dataset", type=str, default=None,
                         help="数据集名称，自动查找已有的 summary CSV")
     parser.add_argument("--csv", type=str, action="append", default=None,
@@ -114,21 +163,42 @@ def main():
     parser.add_argument("--output", type=str, default=None,
                         help="输出汇总 CSV 路径（默认自动生成）")
     parser.add_argument("--percent", action="store_true",
-                        help="Dice/IoU 以百分比显示 (×100)")
+                        help="Dice 以百分比显示 (×100)")
     args = parser.parse_args()
 
     # ---- 收集 summary CSV ----
     entries: List[Dict] = []   # [{"method": str, "data": dict}, ...]
 
-    if args.csv:
+    if args.dir:
+        # 目录模式：递归查找所有 _summary.csv
+        root_dir = os.path.abspath(args.dir)
+        if not os.path.isdir(root_dir):
+            print(f"[ERROR] 目录不存在: {root_dir}")
+            sys.exit(1)
+
+        csv_files = find_summary_csvs_in_dir(root_dir)
+        if not csv_files:
+            print(f"[ERROR] 在 {root_dir} 下未找到任何 _summary.csv 文件")
+            sys.exit(1)
+
+        print(f"[INFO] 在 {root_dir} 下找到 {len(csv_files)} 个 summary CSV:")
+        for cf in csv_files:
+            method = extract_method_from_csv_path(cf)
+            data = read_summary_csv(cf)
+            entries.append({"method": method, "data": data, "csv_path": cf})
+            print(f"  - {method}: {cf}")
+        print()
+
+    elif args.csv:
         # 手动模式
         for csv_path in args.csv:
             if not os.path.exists(csv_path):
                 print(f"[WARN] CSV not found: {csv_path}, skipping")
                 continue
-            method = Path(csv_path).stem.replace("_summary", "").replace(f"metrics_{args.dataset or ''}_", "")
+            method = extract_method_from_csv_path(csv_path)
             data = read_summary_csv(csv_path)
-            entries.append({"method": method, "data": data})
+            entries.append({"method": method, "data": data, "csv_path": csv_path})
+
     elif args.dataset:
         # 自动模式
         if args.dataset not in DATASET_MODELS:
@@ -141,12 +211,12 @@ def main():
             method = extract_method_name(model_path)
             if not os.path.exists(csv_path):
                 print(f"[WARN] Summary not found for {method}: {csv_path}")
-                entries.append({"method": method, "data": {}})
+                entries.append({"method": method, "data": {}, "csv_path": csv_path})
                 continue
             data = read_summary_csv(csv_path)
-            entries.append({"method": method, "data": data})
+            entries.append({"method": method, "data": data, "csv_path": csv_path})
     else:
-        parser.error("请指定 --dataset 或 --csv")
+        parser.error("请指定 --dir、--dataset 或 --csv")
 
     if not entries:
         print("[ERROR] 没有找到任何结果")
@@ -163,30 +233,37 @@ def main():
             if k.startswith("dice_") and not k.endswith("_avg"):
                 region_names.append(k.replace("dice_", ""))
 
-    # ---- 打印表格（只显示 avg）----
+    # ---- 构建表格列 ----
     is_pct = args.percent
 
-    avg_cols = [f"{m}_avg" for m in METRICS]
+    # 每个 metric 显示: 各 region + avg
+    metric_cols = []
+    for m in METRICS:
+        for rn in region_names:
+            metric_cols.append(f"{m}_{rn}")
+        metric_cols.append(f"{m}_avg")
 
     col_w = 12
     method_w = 45
-    total_w = method_w + len(avg_cols) * col_w
+    total_w = method_w + len(metric_cols) * col_w
 
-    print("\n" + "=" * total_w)
-    title = f"Results: {args.dataset or 'custom'} ({args.split} split)"
+    # ---- 打印表格 ----
+    ds_label = args.dataset or (os.path.basename(args.dir.rstrip("/")) if args.dir else "custom")
+    print("=" * total_w)
+    title = f"Results: {ds_label} ({args.split} split)"
     if is_pct:
-        title += "  [Dice/IoU in %]"
+        title += "  [Dice in %]"
     print(f"  {title}")
     print("=" * total_w)
 
-    # 打印表头
+    # 表头
     hdr = f"{'Method':<{method_w}}"
-    for c in avg_cols:
+    for c in metric_cols:
         hdr += f"{c:>{col_w}}"
     print(hdr)
     print("-" * total_w)
 
-    # 打印每行
+    # 每行
     rows_for_csv = []
     for entry in entries:
         method = entry["method"]
@@ -195,11 +272,11 @@ def main():
         row_str = f"{method:<{method_w}}"
         row_csv = {"method": method}
 
-        for m in METRICS:
-            is_overlap = m in ("dice", "iou")
-            avg_key = f"{m}_avg"
-            v = data.get(avg_key, float("nan"))
-            row_csv[avg_key] = v
+        for c in metric_cols:
+            m_name = c.split("_")[0]  # dice or hd95
+            is_overlap = m_name in ("dice",)
+            v = data.get(c, float("nan"))
+            row_csv[c] = v
             row_str += f"{fmt(v, is_pct and is_overlap):>{col_w}}"
 
         print(row_str)
@@ -212,7 +289,7 @@ def main():
     if args.output is None:
         out_dir = "results"
         os.makedirs(out_dir, exist_ok=True)
-        ds_tag = args.dataset or "custom"
+        ds_tag = ds_label
         output_csv = os.path.join(out_dir, f"compare_{ds_tag}_{args.split}.csv")
     else:
         output_csv = args.output
