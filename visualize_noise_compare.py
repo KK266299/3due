@@ -670,7 +670,6 @@ def compare_unified(
     noises: List[torch.Tensor],
     pred_noisy: torch.Tensor,
     image: torch.Tensor,
-    label: torch.Tensor,
     slice_z: int,
     output_path: str,
     case_id: str = "",
@@ -678,131 +677,152 @@ def compare_unified(
     vis_channel: int = 0,
 ):
     """
-    Unified paper figure: (a) + (b) tightly packed.
+    Unified paper figure with three panels: (a) + (b) + (c).
 
-    (a) Left — tight image grid, 2 rows (z, z+1):
-        Cols: Original | Method1_noise | ... | MethodN_noise | GT | Seg(Ours)
-        No axis ticks, no borders, images tightly adjacent.
+    (a) Tight image grid, 2 rows (z, z+1):
+        Cols: Original | Method1_noise | ... | MethodN_noise | Noisy(Ours)
+        No borders, no ticks, tightly packed.
 
-    (b) Right — vertical z-axis Pearson correlation curve.
+    (b) Vertical ISC spectral divergence curve:
+        ||S_{z+1} - S_z||_2 where S_z = |F_2D(delta_z)|
+        Y-axis = slice z (top->bottom), one curve per method.
+
+    (c) Clean + Seg (2 rows):
+        Top = clean original image at z, Bottom = Ours seg prediction at z.
     """
     M = len(methods)
     image_np = image.numpy()
-    label_np = label.numpy()
     pred_np = pred_noisy.numpy()
     C, D, H, W = image_np.shape
 
     z0 = slice_z
     z1 = min(slice_z + 1, D - 1)
 
-    # Columns: Original + M noise methods + GT + Seg(Ours) = M + 3
-    n_img_cols = 1 + M + 1 + 1
+    # (a) cols: Original + M noise + Noisy(Ours) = M + 2
+    n_a = 1 + M + 1
 
-    # --- Figure sizing ---
+    # Total cols: (a) + (b) + (c)
+    n_total = n_a + 1 + 1
+
+    # Sizing
     cell = 2.0
-    plot_w = 3.5
-    fig_w = cell * n_img_cols + plot_w
+    b_w = 3.0
+    c_w = cell
+    fig_w = cell * n_a + b_w + c_w
     fig_h = cell * 2 + 0.5
 
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
 
-    w_ratios = [1] * n_img_cols + [plot_w / cell]
+    w_ratios = [1] * n_a + [b_w / cell, c_w / cell]
     gs = gridspec.GridSpec(
-        2, n_img_cols + 1,
-        figure=fig,
+        2, n_total, figure=fig,
         width_ratios=w_ratios,
         wspace=0.005, hspace=0.005,
     )
 
-    # Column titles
+    # ============ (a) Image grid ============
     col_titles = (["Original"]
                   + [m.name for m in methods]
-                  + ["GT", "Seg"])
+                  + ["Noisy"])
 
-    # Pre-create all image axes (avoid duplicate add_subplot calls)
-    img_axes = {}
+    # Pre-create (a) axes
+    a_axes = {}
     for row in range(2):
-        for col in range(n_img_cols):
+        for col in range(n_a):
             ax = fig.add_subplot(gs[row, col])
-            ax.set_xticks([])
-            ax.set_yticks([])
-            for spine in ax.spines.values():
-                spine.set_visible(False)
-            img_axes[(row, col)] = ax
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            a_axes[(row, col)] = ax
 
-    # ============ (a) Fill images ============
+    # Ours noisy image = original + last method's noise
+    ours_noise_np = noises[-1].numpy()
+
     for row, z in enumerate([z0, z1]):
-        # Col 0: Original image
-        img_axes[(row, 0)].imshow(
+        # Col 0: Original
+        a_axes[(row, 0)].imshow(
             image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
 
-        # Cols 1..M: Noise per method
+        # Cols 1..M: Noise per method (BWR)
         for m_idx in range(M):
             col = 1 + m_idx
             noise_np_m = noises[m_idx].numpy()
-            img_axes[(row, col)].imshow(
+            a_axes[(row, col)].imshow(
                 colorize_noise(noise_np_m[vis_channel, z], eps))
 
-        # Col M+1: GT segmentation
-        img_axes[(row, 1 + M)].imshow(label_to_rgb(label_np[z]))
+        # Last col: Noisy image (original + Ours noise)
+        noisy_slice = np.clip(
+            image_np[vis_channel, z] + ours_noise_np[vis_channel, z], 0, 1)
+        a_axes[(row, 1 + M)].imshow(noisy_slice, cmap="gray", vmin=0, vmax=1)
 
-        # Col M+2: Seg result (Ours only)
-        img_axes[(row, 2 + M)].imshow(label_to_rgb(pred_np[z]))
-
-    # Column titles (first row only, reuse existing axes)
+    # Titles
     for c, title in enumerate(col_titles):
         color = "black"
         if 1 <= c <= M:
             color = METHOD_COLORS[(c - 1) % len(METHOD_COLORS)]
-        img_axes[(0, c)].set_title(title, fontsize=8, fontweight="bold",
-                                   color=color, pad=2)
+        a_axes[(0, c)].set_title(title, fontsize=8, fontweight="bold",
+                                 color=color, pad=2)
 
-    # Row z-labels
+    # z-labels
     for row, z in enumerate([z0, z1]):
-        img_axes[(row, 0)].text(
+        a_axes[(row, 0)].text(
             -0.03, 0.5, f"z={z}", fontsize=7, fontweight="bold",
             rotation=90, va="center", ha="right",
-            transform=img_axes[(row, 0)].transAxes)
+            transform=a_axes[(row, 0)].transAxes)
 
-    # (a) label
     fig.text(0.005, 0.97, "(a)", fontsize=12, fontweight="bold", va="top")
 
-    # ============ (b) Vertical z-axis Pearson Correlation ============
-    ax_b = fig.add_subplot(gs[:, n_img_cols])  # span both rows
+    # ============ (b) ISC spectral divergence ============
+    col_b = n_a
+    ax_b = fig.add_subplot(gs[:, col_b])
 
     for m_idx in range(M):
         noise_ch = noises[m_idx][vis_channel].numpy()  # [D, H, W]
         Dz = noise_ch.shape[0]
-        corrs = []
+        isc_vals = []
         for zz in range(Dz - 1):
-            s1 = noise_ch[zz].flatten()
-            s2 = noise_ch[zz + 1].flatten()
-            if np.std(s1) > 1e-8 and np.std(s2) > 1e-8:
-                corrs.append(float(np.corrcoef(s1, s2)[0, 1]))
-            else:
-                corrs.append(0.0)
+            S_z = np.abs(np.fft.fft2(noise_ch[zz]))
+            S_z1 = np.abs(np.fft.fft2(noise_ch[zz + 1]))
+            isc_vals.append(float(np.linalg.norm(S_z1 - S_z)))
 
         color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
-        z_indices = np.arange(len(corrs))
-        ax_b.plot(corrs, z_indices, color=color, linewidth=1.0, alpha=0.85,
+        z_indices = np.arange(len(isc_vals))
+        ax_b.plot(isc_vals, z_indices, color=color, linewidth=1.0, alpha=0.85,
                   label=methods[m_idx].name)
 
     ax_b.invert_yaxis()
-    ax_b.axvline(x=0, color="gray", linestyle=":", linewidth=0.5)
-    ax_b.set_xlim(-1.05, 1.05)
-    ax_b.set_xlabel("Pearson Corr.", fontsize=8)
+    ax_b.set_xlabel(r"$\|S_{z\!+\!1}\!-\!S_z\|_2$", fontsize=8)
     ax_b.set_ylabel("Slice z", fontsize=8)
     ax_b.tick_params(labelsize=6)
     ax_b.grid(True, alpha=0.2)
     ax_b.legend(fontsize=6, loc="lower left")
+    ax_b.axhline(y=z0, color="black", linestyle="--", linewidth=0.6, alpha=0.4)
+    ax_b.axhline(y=z1, color="black", linestyle="--", linewidth=0.6, alpha=0.4)
 
-    # Mark selected slices
-    ax_b.axhline(y=z0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax_b.axhline(y=z1, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
-
-    # (b) label
-    b_x = (cell * n_img_cols) / fig_w + 0.005
+    b_x = (cell * n_a) / fig_w + 0.005
     fig.text(b_x, 0.97, "(b)", fontsize=12, fontweight="bold", va="top")
+
+    # ============ (c) Clean + Seg ============
+    col_c = n_a + 1
+
+    # Top: clean image at z0
+    ax_c0 = fig.add_subplot(gs[0, col_c])
+    ax_c0.imshow(image_np[vis_channel, z0], cmap="gray", vmin=0, vmax=1)
+    ax_c0.set_xticks([]); ax_c0.set_yticks([])
+    for sp in ax_c0.spines.values():
+        sp.set_visible(False)
+    ax_c0.set_title("Clean", fontsize=8, fontweight="bold", pad=2)
+
+    # Bottom: Ours seg prediction at z0
+    ax_c1 = fig.add_subplot(gs[1, col_c])
+    ax_c1.imshow(label_to_rgb(pred_np[z0]))
+    ax_c1.set_xticks([]); ax_c1.set_yticks([])
+    for sp in ax_c1.spines.values():
+        sp.set_visible(False)
+    ax_c1.set_title("Seg", fontsize=8, fontweight="bold", pad=2)
+
+    c_x = (cell * n_a + b_w) / fig_w + 0.005
+    fig.text(c_x, 0.97, "(c)", fontsize=12, fontweight="bold", va="top")
 
     plt.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white",
                 pad_inches=0.02)
@@ -987,7 +1007,6 @@ def main():
                 noises=noise_list,
                 pred_noisy=pred_ours,
                 image=image,
-                label=label,
                 slice_z=center_z,
                 output_path=path_u,
                 case_id=case_id,
