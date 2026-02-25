@@ -45,14 +45,14 @@ segmentation
 models~\cite{cciccek20163d,milletari2016v,isensee2021nnu,hatamizadeh2022unetr,tang2022swinunetr}
 critically depends on large-scale, voxel-annotated datasets whose creation
 requires substantial expert effort. Institutions increasingly share datasets
-through public repositories such as TCIA and PubMed-linked
+through public repositories such as TCIA and PubMed~\cite{pubmed}-linked
 archives~\cite{menze2014multimodal,ma2021abdomenct} to facilitate
 collaborative research, typically under licenses that restrict usage to
 educational visualization and academic benchmarking so as to protect patient
 privacy and data ownership. However, once published, volumetric data can be
 freely downloaded and repurposed for unauthorized model training. Such misuse
 violates both the original data-use agreements and privacy regulations such as
-the GDPR, which mandates that data collected for specific purposes shall not be
+the GDPR~\cite{gdpr2016}, which mandates that data collected for specific purposes shall not be
 repurposed without explicit consent~\cite{kaissis2021end}.
 
 To address data protection without restricting data sharing, \emph{unlearnable
@@ -162,7 +162,7 @@ SEP~\cite{liu2023stable}
 %
 % ---- Bibliography ----
 %
-\begin{thebibliography}{14}
+\begin{thebibliography}{16}
 
 \bibitem{cciccek20163d}
 {\c{C}}i{\c{c}}ek, {\"O}., Abdulkadir, A., Lienkamp, S.S., Brox, T.,
@@ -198,6 +198,9 @@ analysis.
 In: IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR),
 pp.~20730--20740 (2022)
 
+\bibitem{pubmed}
+PubMed, \url{https://pubmed.ncbi.nlm.nih.gov/}, last accessed 2025/01/15
+
 \bibitem{menze2014multimodal}
 Menze, B.H., Jakab, A., Bauer, S., et~al.:
 The multimodal brain tumor image segmentation benchmark ({BRATS}).
@@ -208,6 +211,11 @@ Ma, J., Zhang, Y., Gu, S., et~al.:
 AbdomenCT-1K: Is abdominal organ segmentation a solved problem?
 IEEE Transactions on Pattern Analysis and Machine Intelligence
 \textbf{44}(10), 6695--6714 (2022)
+
+\bibitem{gdpr2016}
+{European Parliament and Council of the European Union}:
+Regulation ({EU}) 2016/679 (General Data Protection Regulation).
+Official Journal of the European Union, L~119, 1--88 (2016)
 
 \bibitem{kaissis2021end}
 Kaissis, G.A., Makowski, M.R., R{\"u}ckert, D., Braren, R.F.:
