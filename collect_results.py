@@ -39,13 +39,22 @@ _BRATS19_MODELS = [
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/clean/20251220_144653/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_random_noise_gaussian/20251228_082846/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_minmin_4_255/20251220_061401/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_lsp_4_255/20260225_075837/checkpoints/checkpoints/best_model.pth",
     "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_sep/20251222_124616/checkpoints/checkpoints/best_model.pth",
-    "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_nofreq_learnable_zdiv02_logits005/20260207_135201/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/brats19_seg/victim_pue_4_255/20260225_021757/checkpoints/checkpoints/best_model.pth",
+]
+
+_FLARE21_MODELS = [
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/clean/20260224_143824/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_random_noise_gaussian_4_255/20260225_081338/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_minmin_noise_step_5e-3_4_255/20260112_061355/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_sep/20260224_165559/checkpoints/checkpoints/best_model.pth",
+    "/home/dengzhipeng/data/project/3d_ue/outputs/flare21_seg/victim_umed_flare21/20260225_165841/checkpoints/checkpoints/best_model.pth",
 ]
 
 DATASET_MODELS = {
     "brats19_seg": _BRATS19_MODELS,
-    # "flare21_seg": [...],
+    "flare21_seg": _FLARE21_MODELS,
     # "kits19_seg":  [...],
 }
 
