@@ -702,7 +702,7 @@ def compare_unified(
     # --- Figure sizing ---
     cell = 2.0
     b_w = 1.6
-    c_w = cell
+    c_w = 1.2
     gap = 0.4  # gap between panels
     fig_w = cell * n_a + gap + b_w + gap + c_w
     fig_h = cell * 2 + 0.5
