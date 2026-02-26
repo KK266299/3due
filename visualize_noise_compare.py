@@ -74,10 +74,11 @@ METHOD_CMAPS = ["RdBu_r", "PiYG_r", "PuOr_r", "BrBG_r", "coolwarm", "seismic"]
 # Noise colorbar range
 NOISE_VMIN = -4 / 255
 NOISE_VMAX = 4 / 255
-NOISE_CMAP = "RdBu_r"
+NOISE_CMAP = "bwr"
 
 
-def _add_noise_colorbar(fig, axes_list, location="right", shrink=0.6, pad=0.02):
+def _add_noise_colorbar(fig, axes_list, location="right", shrink=0.6, pad=0.02,
+                        label="Noise Intensity", fontsize=9):
     """Add a shared colorbar for noise images with range [-4/255, 4/255]."""
     norm = Normalize(vmin=NOISE_VMIN, vmax=NOISE_VMAX)
     sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
@@ -86,7 +87,8 @@ def _add_noise_colorbar(fig, axes_list, location="right", shrink=0.6, pad=0.02):
                         shrink=shrink, pad=pad, aspect=30)
     cbar.set_ticks([NOISE_VMIN, NOISE_VMIN / 2, 0, NOISE_VMAX / 2, NOISE_VMAX])
     cbar.set_ticklabels(["-4/255", "-2/255", "0", "2/255", "4/255"])
-    cbar.set_label("Noise Intensity", fontsize=9)
+    if label:
+        cbar.set_label(label, fontsize=fontsize)
     return cbar
 
 
@@ -750,11 +752,7 @@ def compare_unified(
         wspace=0.005, hspace=0.005,
     )
 
-    # ============ (a) Image grid — no borders ============
-    col_titles = (["Original"]
-                  + [m.name for m in methods]
-                  + ["Noisy"])
-
+    # ============ (a) Image grid — no borders, no text ============
     a_axes = {}
     for row in range(2):
         for col in range(n_a):
@@ -781,21 +779,7 @@ def compare_unified(
             image_np[vis_channel, z] + ours_noise_np[vis_channel, z], 0, 1)
         a_axes[(row, 1 + M)].imshow(noisy_slice, cmap="gray", vmin=0, vmax=1)
 
-    for c, title in enumerate(col_titles):
-        color = "black"
-        if 1 <= c <= M:
-            color = METHOD_COLORS[(c - 1) % len(METHOD_COLORS)]
-        a_axes[(0, c)].set_title(title, fontsize=8, fontweight="bold",
-                                 color=color, pad=2)
-
-    for row, z in enumerate([z0, z1]):
-        a_axes[(row, 0)].text(
-            -0.03, 0.5, f"z={z}", fontsize=7, fontweight="bold",
-            rotation=90, va="center", ha="right",
-            transform=a_axes[(row, 0)].transAxes)
-
-    fig.text(left_edge + 0.005, 0.96, "(a)", fontsize=12,
-             fontweight="bold", va="top")
+    # (no column titles, row labels, or panel labels)
 
     # ============ (b) Pearson correlation — keep plot frame ============
     ax_b = fig.add_subplot(gs_b[0, 0])
@@ -814,49 +798,37 @@ def compare_unified(
 
         color = METHOD_COLORS[m_idx % len(METHOD_COLORS)]
         z_indices = np.arange(len(corrs))
-        mean_c = np.mean(corrs)
-        ax_b.plot(corrs, z_indices, color=color, linewidth=1.0, alpha=0.85,
-                  label=f"{methods[m_idx].name} ({mean_c:+.2f})")
+        ax_b.plot(corrs, z_indices, color=color, linewidth=1.0, alpha=0.85)
 
     ax_b.invert_yaxis()
     ax_b.axvline(x=0, color="gray", linestyle=":", linewidth=0.5)
     ax_b.set_xlim(-1.05, 1.05)
 
-    # Title at top
-    ax_b.set_title("Inter-Slice Correlation", fontsize=8, fontweight="bold",
-                    pad=3)
-    # xlabel at bottom
-    ax_b.set_xlabel("Pearson r", fontsize=7)
-    ax_b.set_ylabel("Slice z", fontsize=7)
-    ax_b.tick_params(labelsize=5)
+    ax_b.set_xticklabels([])
+    ax_b.set_yticklabels([])
+    ax_b.tick_params(length=0)
     ax_b.grid(True, alpha=0.2)
-    ax_b.legend(fontsize=5.5, loc="lower left")
 
     ax_b.axhline(y=z0, color="black", linestyle="--", linewidth=0.5, alpha=0.4)
     ax_b.axhline(y=z1, color="black", linestyle="--", linewidth=0.5, alpha=0.4)
 
-    fig.text(b_left, 0.96, "(b)", fontsize=12, fontweight="bold", va="top")
-
-    # ============ (c) Clean + Seg — no borders ============
+    # ============ (c) Clean + Seg — no borders, no text ============
     ax_c0 = fig.add_subplot(gs_c[0, 0])
     ax_c0.imshow(image_np[vis_channel, z0], cmap="gray", vmin=0, vmax=1)
     ax_c0.set_xticks([]); ax_c0.set_yticks([])
     for sp in ax_c0.spines.values():
         sp.set_visible(False)
-    ax_c0.set_title("Clean", fontsize=8, fontweight="bold", pad=2)
 
     ax_c1 = fig.add_subplot(gs_c[1, 0])
     ax_c1.imshow(label_to_rgb(pred_np[z0]))
     ax_c1.set_xticks([]); ax_c1.set_yticks([])
     for sp in ax_c1.spines.values():
         sp.set_visible(False)
-    ax_c1.set_title("Seg", fontsize=8, fontweight="bold", pad=2)
 
-    fig.text(c_left, 0.96, "(c)", fontsize=12, fontweight="bold", va="top")
-
-    # Add noise colorbar below panel (a)
+    # Add noise colorbar below panel (a), no label
     noise_ax_list = [a_axes[(r, 1 + m)] for r in range(2) for m in range(M)]
-    _add_noise_colorbar(fig, noise_ax_list, location="bottom", shrink=0.5, pad=0.08)
+    _add_noise_colorbar(fig, noise_ax_list, location="bottom", shrink=0.5, pad=0.08,
+                        label="")
 
     plt.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white",
                 pad_inches=0.03)
