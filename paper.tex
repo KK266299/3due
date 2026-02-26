@@ -175,13 +175,9 @@ The protected volume is then $\bm{x}_p\!=\!\bm{x}+\bm{\delta}$.
 
 %------- L_ISC -------
 \subsubsection{Inter-Slice Frequency Consistency Disruption.}
-3D segmentation networks fundamentally assume \textit{volumetric
-continuity}, i.e., anatomical structures change smoothly along $z$.
-3D convolution kernels with receptive fields spanning $k_z$ slices
-aggregate cross-slice features under this assumption.
-Our strategy is to violate this assumption by forcing the
-perturbation's spectral characteristics to vary \textit{maximally}
-between consecutive slices.
+We violate 3D networks' \textit{volumetric continuity} assumption by
+forcing the perturbation spectrum to vary \textit{maximally} between
+consecutive slices.
 
 For each slice $z$, we compute the 2D amplitude
 spectrum of the perturbation:
@@ -205,13 +201,9 @@ translation-invariant~\cite{yin2019fourier,wang2020high}, providing a more stabl
 and texture-focused measure of inter-slice dissimilarity.
 %------- L_SP -------
 \subsubsection{Semantic Prediction Disruption.}
-To corrupt not only low-level pixel statistics but also high-level semantic predictions, we maximize the discrepancy between surrogate outputs on clean and perturbed volumes.
-
-Let $\bm{L}\!=\!\mathcal{F}_s(\bm{x};\theta)$ and
-$\bm{L}'\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$ denote the
-clean and perturbed logit volumes
-($\in\mathbb{R}^{D\times H\times W\times K}$), respectively.
-We maximize the $\ell_1$ distance between them:
+To disrupt high-level semantic learning, we maximize the $\ell_1$
+distance between clean logits $\bm{L}\!=\!\mathcal{F}_s(\bm{x};\theta)$
+and perturbed logits $\bm{L}'\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$:
 \begin{equation}
   \mathcal{L}_{\text{SPD}}
   =-\bigl\|\,\bm{L}' - \bm{L}\bigr\|_1.
