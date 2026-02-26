@@ -716,41 +716,38 @@ def compare_unified(
     z0 = slice_z
     z1 = min(slice_z + 1, D - 1)
 
-    # (a) cols: Original + M noise (Noisy goes after colorbar)
-    n_a = 1 + M
+    # Layout: [Original] [Colorbar] [Noise1..NoiseM | Noisy] [panel b] [panel c]
+    n_right = M + 1  # M noise cols + 1 Noisy col
 
     # --- Figure sizing ---
     cell = 2.0
     cbar_w = 0.35  # width for vertical colorbar
-    noisy_w = cell  # Noisy column same size as grid cells
     b_w = 1.6
     c_w = 1.2
-    gap = 0.4  # gap between panels
-    fig_w = cell * n_a + cbar_w + noisy_w + gap + b_w + gap + c_w
+    gap = 0.4
+    fig_w = cell + cbar_w + cell * n_right + gap + b_w + gap + c_w
     fig_h = cell * 2 + 0.5
 
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
 
     # Panel positions in figure fraction coordinates
-    left_edge = 0.0
-    a_right = (cell * n_a) / fig_w
-    cbar_frac_left = a_right + 0.005
-    cbar_frac_right = (cell * n_a + cbar_w) / fig_w
-    noisy_left = cbar_frac_right + 0.005
-    noisy_right = (cell * n_a + cbar_w + noisy_w) / fig_w
-    b_left = noisy_right + gap / fig_w
+    orig_right = cell / fig_w
+    cbar_frac_left = orig_right + 0.005
+    right_left = (cell + cbar_w) / fig_w + 0.005
+    right_right = (cell + cbar_w + cell * n_right) / fig_w
+    b_left = right_right + gap / fig_w
     b_right = b_left + b_w / fig_w
     c_left = b_right + gap / fig_w
     c_right = 1.0
 
-    gs_a = gridspec.GridSpec(
-        2, n_a, figure=fig,
-        left=left_edge, right=a_right, bottom=0.02, top=0.88,
+    gs_orig = gridspec.GridSpec(
+        2, 1, figure=fig,
+        left=0.0, right=orig_right, bottom=0.02, top=0.88,
         wspace=0.005, hspace=0.005,
     )
-    gs_noisy = gridspec.GridSpec(
-        2, 1, figure=fig,
-        left=noisy_left, right=noisy_right, bottom=0.02, top=0.88,
+    gs_right = gridspec.GridSpec(
+        2, n_right, figure=fig,
+        left=right_left, right=right_right, bottom=0.02, top=0.88,
         wspace=0.005, hspace=0.005,
     )
     gs_b = gridspec.GridSpec(
@@ -763,30 +760,15 @@ def compare_unified(
         wspace=0.005, hspace=0.005,
     )
 
-    # ============ (a) Image grid — no borders, no text ============
-    a_axes = {}
-    for row in range(2):
-        for col in range(n_a):
-            ax = fig.add_subplot(gs_a[row, col])
-            ax.set_xticks([]); ax.set_yticks([])
-            for sp in ax.spines.values():
-                sp.set_visible(False)
-            a_axes[(row, col)] = ax
-
-    ours_noise_np = noises[-1].numpy()
-
+    # ============ Original column ============
     for row, z in enumerate([z0, z1]):
-        a_axes[(row, 0)].imshow(
-            image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
+        ax = fig.add_subplot(gs_orig[row, 0])
+        ax.imshow(image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
+        ax.set_xticks([]); ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_visible(False)
 
-        for m_idx in range(M):
-            col = 1 + m_idx
-            noise_np_m = noises[m_idx].numpy()
-            a_axes[(row, col)].imshow(
-                noise_np_m[vis_channel, z], cmap=NOISE_CMAP,
-                vmin=NOISE_VMIN, vmax=NOISE_VMAX)
-
-    # ============ Vertical colorbar between grid and Noisy ============
+    # ============ Vertical colorbar — right of Original ============
     cbar_ax = fig.add_axes([cbar_frac_left, 0.08, 0.012, 0.75])
     norm = Normalize(vmin=NOISE_VMIN, vmax=NOISE_VMAX)
     sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
@@ -796,15 +778,28 @@ def compare_unified(
     cbar.set_ticklabels(["-4/255", "0", "4/255"])
     cbar.ax.tick_params(labelsize=6)
 
-    # ============ Noisy column — after colorbar ============
+    # ============ Noise + Noisy grid — no borders, no text ============
+    ours_noise_np = noises[-1].numpy()
+
     for row, z in enumerate([z0, z1]):
-        ax_n = fig.add_subplot(gs_noisy[row, 0])
-        ax_n.set_xticks([]); ax_n.set_yticks([])
-        for sp in ax_n.spines.values():
-            sp.set_visible(False)
+        # Noise columns
+        for m_idx in range(M):
+            ax = fig.add_subplot(gs_right[row, m_idx])
+            noise_np_m = noises[m_idx].numpy()
+            ax.imshow(noise_np_m[vis_channel, z], cmap=NOISE_CMAP,
+                      vmin=NOISE_VMIN, vmax=NOISE_VMAX)
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+
+        # Noisy column (last)
+        ax_n = fig.add_subplot(gs_right[row, M])
         noisy_slice = np.clip(
             image_np[vis_channel, z] + ours_noise_np[vis_channel, z], 0, 1)
         ax_n.imshow(noisy_slice, cmap="gray", vmin=0, vmax=1)
+        ax_n.set_xticks([]); ax_n.set_yticks([])
+        for sp in ax_n.spines.values():
+            sp.set_visible(False)
 
     # ============ (b) Pearson correlation — keep plot frame ============
     ax_b = fig.add_subplot(gs_b[0, 0])
