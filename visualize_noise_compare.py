@@ -721,10 +721,11 @@ def compare_unified(
 
     # --- Figure sizing ---
     cell = 2.0
+    cbar_w = 0.35  # width for vertical colorbar
     b_w = 1.6
     c_w = 1.2
     gap = 0.4  # gap between panels
-    fig_w = cell * n_a + gap + b_w + gap + c_w
+    fig_w = cell * n_a + cbar_w + gap + b_w + gap + c_w
     fig_h = cell * 2 + 0.5
 
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
@@ -732,7 +733,9 @@ def compare_unified(
     # Use three separate GridSpecs for proper gaps between panels
     left_edge = 0.0
     a_right = (cell * n_a) / fig_w
-    b_left = a_right + gap / fig_w
+    cbar_left = a_right + 0.005
+    cbar_right = (cell * n_a + cbar_w) / fig_w
+    b_left = cbar_right + gap / fig_w
     b_right = b_left + b_w / fig_w
     c_left = b_right + gap / fig_w
     c_right = 1.0
@@ -825,10 +828,15 @@ def compare_unified(
     for sp in ax_c1.spines.values():
         sp.set_visible(False)
 
-    # Add noise colorbar below panel (a), no label
-    noise_ax_list = [a_axes[(r, 1 + m)] for r in range(2) for m in range(M)]
-    _add_noise_colorbar(fig, noise_ax_list, location="bottom", shrink=0.5, pad=0.08,
-                        label="")
+    # Vertical colorbar on the right of panel (a), dedicated axes
+    cbar_ax = fig.add_axes([cbar_left, 0.08, 0.012, 0.75])
+    norm = Normalize(vmin=NOISE_VMIN, vmax=NOISE_VMAX)
+    sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_ticks([NOISE_VMIN, 0, NOISE_VMAX])
+    cbar.set_ticklabels(["-4/255", "0", "4/255"])
+    cbar.ax.tick_params(labelsize=6)
 
     plt.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white",
                 pad_inches=0.03)
@@ -933,7 +941,7 @@ def main():
             center_z = min(max(0, args.slice_idx), D - 1)
         print(f"  Center slice: z={center_z}")
 
-        # Load all noises
+        # Load all noises and clamp to [-4/255, 4/255]
         noise_list: List[torch.Tensor] = []
         noise_np_list: List[np.ndarray] = []
         for m in method_objs:
@@ -941,9 +949,12 @@ def main():
             if noise is None:
                 print(f"  [Warning] {m.name}: no noise, using zeros")
                 noise = torch.zeros_like(image)
+            linf_raw = noise.abs().max().item()
+            noise = noise.clamp(NOISE_VMIN, NOISE_VMAX)
             noise_list.append(noise)
             noise_np_list.append(noise.numpy())
-            print(f"  {m.name}: L∞={noise.abs().max():.6f}, "
+            print(f"  {m.name}: L∞(raw)={linf_raw:.6f}, "
+                  f"L∞(clamped)={noise.abs().max():.6f}, "
                   f"L2(rms)={torch.sqrt(torch.mean(noise**2)):.6f}")
 
         prefix = f"{idx:04d}_{case_id}"
