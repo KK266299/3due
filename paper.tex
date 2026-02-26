@@ -47,15 +47,15 @@ The widespread dissemination of public 3D medical image segmentation (MIS) datas
 \label{fig:motivation}
 \end{figure}
 
-3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models~\cite{cciccek20163d,milletari2016v,isensee2021nnu,hatamizadeh2022unetr,tang2022swinunetr} critically depends on large-scale, voxel-annotated datasets whose creation requires substantial expert effort. Institutions increasingly share datasets through public repositories such as TCIA~\cite{tcia}, with accompanying publications indexed on PubMed~\cite{pubmed}, to facilitate collaborative research~\cite{menze2014multimodal,ma2021abdomenct}, typically under data-use agreements that restrict usage to non-commercial research purposes so as to protect patient privacy and data ownership.
- However, once published, volumetric data can be freely downloaded and repurposed for unauthorized model training. Such misuse violates both the original data-use agreements and privacy regulations such as the GDPR~\cite{gdpr2016}, which mandates that data collected for specific purposes shall not be repurposed without explicit consent~\cite{kaissis2021end}.
+3D medical image segmentation (MIS) is fundamental to disease diagnosis, treatment planning, and surgical navigation. The success of modern 3D segmentation models~\cite{cciccek20163d,milletari2016v,isensee2021nnu,hatamizadeh2022unetr,tang2022swinunetr} critically depends on large-scale, voxel-annotated datasets shared via public repositories such as TCIA~\cite{tcia} under data-use agreements restricting non-commercial use~\cite{menze2014multimodal,ma2021abdomenct}.
+However, once published, volumetric data can be repurposed for unauthorized model training, violating both these agreements and privacy regulations such as the GDPR~\cite{gdpr2016,kaissis2021end}.
 
-To counter such risks, Unlearnable Examples (UEs)~\cite{huang2021unlearnable} offer an appealing proactive defense by injecting imperceptible perturbations into training data \textit{before} release. Models trained on the perturbed data learn ``shortcut'' patterns instead of genuine semantic features, and consequently fail to generalize to clean test inputs. Representative methods include EM~\cite{huang2021unlearnable}, which crafts error-minimizing noise via bi-level optimization; TAP~\cite{fowl2021adversarial}, which leverages targeted adversarial perturbations; SEP~\cite{liu2023stable}, which stabilizes noise through a stable error-minimizing objective; LSP~\cite{yu2022availability}, which aligns perturbations with linearly separable features; REM~\cite{fu2022robust}, which enhances robustness against adversarial training; and CUDA~\cite{sadasivan2023cuda}, which generates class-wise perturbations via convolution. While UEs have been explored for 2D image classification and more recently extended to 2D segmentation~\cite{sun2024unseg} and 3D point clouds~\cite{wang2024unlearnable3d}, existing methods remain ineffective for 3D medical volumetric segmentation due to two fundamental gaps:
+To counter such risks, Unlearnable Examples (UEs)~\cite{huang2021unlearnable} offer a proactive defense by injecting imperceptible perturbations \textit{before} release, causing models to learn ``shortcut'' patterns and fail to generalize to clean test inputs. Representative methods include EM~\cite{huang2021unlearnable}, TAP~\cite{fowl2021adversarial}, SEP~\cite{liu2023stable}, LSP~\cite{yu2022availability}, REM~\cite{fu2022robust}, and CUDA~\cite{sadasivan2023cuda}. While UEs have been extended to 2D segmentation~\cite{sun2024unseg} and 3D point clouds~\cite{wang2024unlearnable3d}, they remain ineffective for 3D medical volumetric segmentation due to two fundamental gaps:
 
-Existing 2D UE methods neglect the volumetric priors unique to 3D data. Modern 3D segmentation architectures rely on a key inductive bias: \textit{anatomical inter-slice consistency}~\cite{isensee2021nnu,dong2022mnet}. Organs and lesions vary smoothly along the $z$-axis, and 3D convolution kernels explicitly aggregate cross-slice context to exploit this continuity. The importance of this prior is evidenced by a well-established empirical finding: under severe anisotropy, where large inter-slice spacing naturally disrupts volumetric continuity, 2D models consistently outperform their 3D counterparts~\cite{isensee2021nnu,dong2022mnet}. Although voxel spacing is an intrinsic acquisition parameter that cannot be altered post hoc, this observation reveals that inter-slice consistency is the decisive factor governing 3D segmentation performance. This further suggests that deliberately disrupting the cross-slice aggregation process of 3D convolutions---by injecting inter-slice incoherent perturbations along the $z$-axis---can directly undermine the very inductive bias these models depend on, thereby providing a principled attack vector against 3D architectures.
+Existing 2D UE methods neglect the volumetric priors unique to 3D data. Modern 3D segmentation architectures rely on a key inductive bias: \textit{anatomical inter-slice consistency}~\cite{isensee2021nnu,dong2022mnet}. Organs and lesions vary smoothly along the $z$-axis, and 3D convolution kernels explicitly aggregate cross-slice context to exploit this continuity. This prior is critical: under severe anisotropy, 2D models consistently outperform 3D counterparts~\cite{isensee2021nnu,dong2022mnet}, confirming that inter-slice consistency is the decisive factor governing 3D segmentation. Deliberately disrupting this cross-slice aggregation---by injecting spectrally incoherent perturbations along $z$---therefore provides a principled attack vector against 3D architectures.
 
 
-As illustrated in Fig.~\ref{fig:motivation}, our key insight is that inter-slice consistency is simultaneously the source of 3D segmentation power and its exploitable vulnerability. Adjacent slices of a volume naturally share similar in-plane spatial patterns---a property that 3D convolutions heavily rely on to aggregate contextual cues along~$z$. We exploit this by injecting perturbations whose \emph{in-plane spectral characteristics} vary maximally between neighboring slices, so that 3D kernels spanning the $z$-axis receive conflicting frequency patterns at every spatial position, fundamentally undermining their ability to learn coherent volumetric representations.
+As illustrated in Fig.~\ref{fig:motivation}, inter-slice consistency is simultaneously the source of 3D segmentation power and its exploitable vulnerability. We exploit this by injecting perturbations whose \emph{spectral characteristics} vary maximally between neighboring slices, so that 3D kernels receive conflicting frequency patterns along~$z$ and fail to learn coherent volumetric representations.
 
 Building on this insight, we propose \textbf{VoxShield}, a UE framework
 tailored for 3D medical image segmentation. VoxShield comprises two core
@@ -129,16 +129,10 @@ $\mathcal{D}_{\mathrm{protect}}\!=\!\{(\bm{x}_i+\bm{\delta}_i,\,
 
 
 \textbf{Task Objective.}\quad
-The \textit{data protector} has access to
-$\mathcal{D}_{\mathrm{clean}}$ and publishes
-$\mathcal{D}_{\mathrm{protect}}$. The \textit{data exploiter} trains
-a 3D segmentation architecture on
-$\mathcal{D}_{\mathrm{protect}}$.
-We evaluate the protection effectiveness by testing the model trained
-by the exploiter on held-out clean data: if the test-time performance
-degrades significantly, the protection is considered successful.
-The protector aims to minimize such test-time performance while
-keeping perturbations imperceptible.
+The \textit{data protector} publishes $\mathcal{D}_{\mathrm{protect}}$;
+the \textit{data exploiter} trains on it and is evaluated on held-out
+clean data. Protection succeeds if test-time performance degrades
+significantly while perturbations remain imperceptible.
 
 %-------------------------------------------------------------
 \subsection{VoxShield Framework}
@@ -211,14 +205,7 @@ translation-invariant~\cite{yin2019fourier,wang2020high}, providing a more stabl
 and texture-focused measure of inter-slice dissimilarity.
 %------- L_SP -------
 \subsubsection{Semantic Prediction Disruption.}
-Effective data protection requires that perturbations corrupt not only
-low-level pixel statistics but also the high-level semantic mapping
-learned by the surrogate. If the surrogate can still produce similar
-predictions on clean and perturbed inputs, the learned representations
-remain intact and protection fails. We therefore explicitly maximize
-the discrepancy between the surrogate's outputs on clean and perturbed
-volumes, forcing perturbations to propagate through the entire network
-and disrupt its semantic understanding.
+To corrupt not only low-level pixel statistics but also high-level semantic predictions, we maximize the discrepancy between surrogate outputs on clean and perturbed volumes.
 
 Let $\bm{L}\!=\!\mathcal{F}_s(\bm{x};\theta)$ and
 $\bm{L}'\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$ denote the
@@ -230,8 +217,6 @@ We maximize the $\ell_1$ distance between them:
   =-\bigl\|\,\bm{L}' - \bm{L}\bigr\|_1.
   \label{eq:sp}
 \end{equation}
-Compared with the $\ell_2$ norm, the $\ell_1$ norm is less dominated by a few large-deviation voxels, thereby encouraging the generator to degrade predictions broadly across the volume rather than at isolated locations.
-
 %------- Optimization -------
 \subsubsection{Optimization.}
 The total generator objective combines segmentation, logits
@@ -243,15 +228,9 @@ divergence, and inter-slice consistency disruption:
   +\lambda_{\text{ISC}}\,\mathcal{L}_{\text{ISC}},
   \label{eq:total}
 \end{equation}
-where $\mathcal{L}_{\text{seg}}^{'}$ (DiceCE) anchors training stability
-by ensuring the surrogate continues to learn on perturbed data (thus
-providing meaningful gradients), while $\mathcal{L}_{\text{SPD}}$
-and $\mathcal{L}_{\text{ISC}}$ inject semantic and structural corruption,
-respectively. $\lambda_{\text{SPD}}$ and $\lambda_{\text{ISC}}$ balance the three terms.
-
-Following the bi-level framework of Eq.~\eqref{eq:ue}, the surrogate is frozen and the
-generator $\mathcal{G}$ is updated over the full training set by
-minimizing $\mathcal{L}_{\mathrm{total}}$:
+where $\mathcal{L}_{\text{seg}}^{'}$ (DiceCE) anchors gradient stability, and $\lambda_{\text{SPD}},\lambda_{\text{ISC}}$ are loss weights.
+Following Eq.~\eqref{eq:ue}, the surrogate is frozen while the
+generator $\mathcal{G}$ minimizes $\mathcal{L}_{\mathrm{total}}$:
 \begin{equation}
   \min_{\theta_{\mathcal{F}_s}}\;
   \mathbb{E}_{(\bm{x},\bm{y})\sim\mathcal{D}_{\mathrm{clean}}}
@@ -259,12 +238,7 @@ minimizing $\mathcal{L}_{\mathrm{total}}$:
     \mathcal{L}_{\mathrm{total}}\Bigr].
   \label{eq:bilevel}
 \end{equation}
-As detailed in Algorithm~\ref{alg:VoxShield}, training alternates
-between an S-step that updates the surrogate $\mathcal{F}_s$ on
-perturbed data and an N-step that updates the generator $\mathcal{G}$
-via $\mathcal{L}_{\mathrm{total}}$. After convergence, the trained
-generator is applied to all clean volumes to produce
-$\mathcal{D}_{\mathrm{protect}}$.
+Training alternates between updating the surrogate $\mathcal{F}_s$ (S-step) and the generator $\mathcal{G}$ (N-step); after convergence $\mathcal{G}$ is applied to all clean volumes to produce $\mathcal{D}_{\mathrm{protect}}$ (Algorithm~\ref{alg:VoxShield}).
 
 \begin{table}[t]
 \centering
@@ -313,11 +287,9 @@ $\mathcal{D}_{\mathrm{protect}}$.
 \subsection{Experimental Setup}
 
 \textbf{Datasets.}
-We evaluated the protection effectiveness of VoxShield on two 3D MIS datasets:
+We evaluated VoxShield on two 3D MIS datasets:
 \textbf{BraTS19}~\cite{menze2014multimodal} (brain tumor MRI) and
-\textbf{FLARE21}~\cite{ma2021abdomenct} (abdominal organ CT). These two datasets
-cover different anatomical regions and imaging techniques, providing comprehensive
-validation for the generalizability of our approach.
+\textbf{FLARE21}~\cite{ma2021abdomenct} (abdominal organ CT), covering different anatomical regions and imaging modalities.
 
 
 \textbf{Models.}
@@ -337,9 +309,7 @@ We compared against: (1)~\textit{Clean}; (2)~\textit{Gaussian Noise};
 adapted to 3D volumetric inputs.
 
 \textbf{Metrics and Implementation.}
-We reported the Dice Similarity Coefficient (DSC, \%) and 95th-percentile Hausdorff Distance (HD95, mm). Lower DSC and higher HD95 on victim models reflect more effective data protection. The perturbation budget was
-$\epsilon=4/255$. We trained VoxShield for 100 epochs with Adam optimizer (lr$=$1e-4) on a single NVIDIA
-RTX 5090 GPU. The loss weights were set to $\lambda_{\text{ISC}}=0.2$ and $\lambda_{\text{SPD}}=0.05$.
+We report DSC\,(\%) and HD95\,(mm) as protection metrics, with perturbation budget $\epsilon=4/255$. VoxShield was trained for 100 epochs with Adam (lr$=$1e-4) on a single NVIDIA RTX 5090 GPU, with $\lambda_{\text{ISC}}=0.2$ and $\lambda_{\text{SPD}}=0.05$.
 
 \subsection{Main Results}
 
@@ -397,11 +367,7 @@ UMed~\cite{lin2024safeguarding}
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:main} reports the protection performance on both datasets. VoxShield achieved a dramatic
-reduction in victim model DSC (from 89\% to 7\% on FLARE21), substantially outperforming all baselines
-on both datasets. 2D-originated methods (EM, SEP, LSP, PUE, UMed) showed limited effectiveness on 3D
-data---their slice-independent noise patterns were partially smoothed by 3D convolution kernels,
-confirming our hypothesis that disrupting inter-slice consistency is essential for effective 3D protection.
+Table~\ref{tab:main} shows that VoxShield reduces victim DSC from 89\% to 7\% on FLARE21, outperforming all baselines. 2D-originated methods show limited 3D effectiveness because their slice-independent noise is smoothed by 3D convolutions, confirming that inter-slice disruption is essential.
 
 \textbf{Cross-Architecture Transferability}
 
@@ -421,10 +387,7 @@ EM       & 69.3   & 48.6   & 68.6   & 74.2 \\
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:transfer} demonstrates that VoxShield perturbations transfer effectively across
-architectures. Since the perturbations targeted the fundamental volumetric continuity prior shared by
-\textit{all} 3D architectures (not architecture-specific features), the protection generalized from the
-UNet surrogate to Attention UNet, UNet++, and even Transformer-based TransUNet.
+Table~\ref{tab:transfer} demonstrates strong cross-architecture transferability: by targeting the volumetric continuity prior shared by \textit{all} 3D models, VoxShield generalizes from the UNet surrogate to Attention UNet, UNet++, and TransUNet.
 
 \textbf{Ablation Study}
 
@@ -453,19 +416,10 @@ Per-slice Gen.\ (no cross-slice disruption)
 \end{table}
 
 
-Table~\ref{tab:ablation} validates the contribution of each component on FLARE21. Removing
-$\mathcal{L}_{\text{ISC}}$ caused the largest performance drop, confirming that inter-slice spectral
-diversity is the most critical attack vector against 3D segmentation. Removing $\mathcal{L}_{\text{SPD}}$
-also degraded protection, as the generator lost its ability to corrupt deep semantic representations.
+Table~\ref{tab:ablation} validates each component: removing $\mathcal{L}_{\text{ISC}}$ causes the largest drop, confirming inter-slice spectral disruption is the primary attack vector; removing $\mathcal{L}_{\text{SPD}}$ also degrades protection.
 
-\textbf{Inter-Slice Frequency Consistency Disruption.}
-We visualized the noise patterns across consecutive $z$-slices for different methods.
-VoxShield produced spectrally diverse perturbations that shifted drastically between
-adjacent slices, while 2D methods (EM, SEP, LSP, PUE, UMed) generated temporally coherent noise that
-3D kernels could readily filter. Quantitatively, the mean inter-slice spectral
-correlation of VoxShield noise was significantly lower than all baselines, directly
-evidencing the effectiveness of $\mathcal{L}_{\text{ISC}}$.
-Fig.~\ref{fig:isc} illustrates these differences.
+\textbf{Qualitative Analysis.}
+As shown in Fig.~\ref{fig:isc}, VoxShield noise exhibits drastically varying spectral patterns across adjacent slices, whereas 2D-method noise remains spectrally coherent and is readily filtered by 3D kernels. The mean inter-slice spectral correlation of VoxShield is significantly lower than all baselines, directly evidencing $\mathcal{L}_{\text{ISC}}$'s effectiveness.
 
 \begin{figure}[t]
 \centering
