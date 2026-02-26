@@ -777,9 +777,9 @@ def compare_unified(
     cbar.set_ticks([])  # no side ticks
     # Labels at top and bottom of colorbar
     cbar.ax.text(0.5, 1.02, "4/255", ha="center", va="bottom",
-                 fontsize=6, transform=cbar.ax.transAxes)
+                 fontsize=8, transform=cbar.ax.transAxes)
     cbar.ax.text(0.5, -0.02, "-4/255", ha="center", va="top",
-                 fontsize=6, transform=cbar.ax.transAxes)
+                 fontsize=8, transform=cbar.ax.transAxes)
 
     # ============ Noise + Noisy grid — no borders, no text ============
     ours_noise_np = noises[-1].numpy()
