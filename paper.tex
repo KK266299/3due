@@ -147,7 +147,7 @@ keeping perturbations imperceptible.
   \centering
   \includegraphics[width=\textwidth]{fig/Method.pdf}
 \caption{Overview of the proposed VoxShield framework. A learnable noise
-generator $G$ produces mask-guided perturbations that are added to clean
+generator $\mathcal{G}$ produces mask-guided perturbations that are added to clean
 3D medical images to create protected volumes. A frozen surrogate model
 $F_s$ computes $\mathcal{L}_{\text{SPD}}$ and $\mathcal{L}_{\text{seg}}^{'}$
 to drive protected images away from the original decision boundaries.
@@ -173,7 +173,7 @@ generator output is masked by a binary region-of-interest mask
 $\bm{M}\!\in\!\{0,1\}^{D\times H\times W}$ derived from $\bm{y}$:
 \begin{equation}
   \bm{\delta} = \operatorname{clamp}\!\bigl(
-G(\bm{x})\odot\bm{M},\;-\epsilon,\;\epsilon\bigr),
+\mathcal{G}(\bm{x})\odot\bm{M},\;-\epsilon,\;\epsilon\bigr),
   \label{eq:mask}
 \end{equation}
 where $\odot$ denotes element-wise multiplication.
@@ -220,14 +220,14 @@ the discrepancy between the surrogate's outputs on clean and perturbed
 volumes, forcing perturbations to propagate through the entire network
 and disrupt its semantic understanding.
 
-Let $\bm{L}_{z}\!=\!\mathcal{F}_s(\bm{x};\theta)$ and
-$\bm{L}_{z'}\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$ denote the
+Let $\bm{L}\!=\!\mathcal{F}_s(\bm{x};\theta)$ and
+$\bm{L}'\!=\!\mathcal{F}_s(\bm{x}_p;\theta)$ denote the
 clean and perturbed logit volumes
 ($\in\mathbb{R}^{D\times H\times W\times K}$), respectively.
 We maximize the $\ell_1$ distance between them:
 \begin{equation}
   \mathcal{L}_{\text{SPD}}
-  =-\bigl\|\,\bm{L}_{z'} - \bm{L}_{z}\bigr\|_1.
+  =-\bigl\|\,\bm{L}' - \bm{L}\bigr\|_1.
   \label{eq:sp}
 \end{equation}
 Compared with the $\ell_2$ norm, the $\ell_1$ norm is less dominated by a few large-deviation voxels, thereby encouraging the generator to degrade predictions broadly across the volume rather than at isolated locations.
@@ -380,7 +380,7 @@ LSP~\cite{yu2022availability}
 SEP~\cite{liu2023stable}
   & 72.3 &  16.7 & 33.9   & 0.7544
   & 88.4 &  7.0 & 40.8   & 0.9511 \\
-TAP~\cite{liu2023stable}
+TAP~\cite{fowl2021adversarial}
   & 68.4 &  22.7 & 38.0   & 0.8792
   & 45.7 &  40.9 & 37.7   & 0.9084 \\
 PUE~\cite{wang2025provably}
@@ -397,7 +397,7 @@ UMed~\cite{lin2024safeguarding}
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:main} reported the protection performance on both datasets. VoxShield achieved a dramatic
+Table~\ref{tab:main} reports the protection performance on both datasets. VoxShield achieved a dramatic
 reduction in victim model DSC (from 89\% to 7\% on FLARE21), substantially outperforming all baselines
 on both datasets. 2D-originated methods (EM, SEP, LSP, PUE, UMed) showed limited effectiveness on 3D
 data---their slice-independent noise patterns were partially smoothed by 3D convolution kernels,
@@ -421,7 +421,7 @@ EM       & 69.3   & 48.6   & 68.6   & 74.2 \\
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:transfer} demonstrated that VoxShield perturbations transferred effectively across
+Table~\ref{tab:transfer} demonstrates that VoxShield perturbations transfer effectively across
 architectures. Since the perturbations targeted the fundamental volumetric continuity prior shared by
 \textit{all} 3D architectures (not architecture-specific features), the protection generalized from the
 UNet surrogate to Attention UNet, UNet++, and even Transformer-based TransUNet.
@@ -453,7 +453,7 @@ Per-slice Gen.\ (no cross-slice disruption)
 \end{table}
 
 
-Table~\ref{tab:ablation} validated the contribution of each component on FLARE21. Removing
+Table~\ref{tab:ablation} validates the contribution of each component on FLARE21. Removing
 $\mathcal{L}_{\text{ISC}}$ caused the largest performance drop, confirming that inter-slice spectral
 diversity is the most critical attack vector against 3D segmentation. Removing $\mathcal{L}_{\text{SPD}}$
 also degraded protection, as the generator lost its ability to corrupt deep semantic representations.
@@ -470,7 +470,7 @@ Fig.~\ref{fig:isc} illustrates these differences.
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{fig/result.pdf}
-\caption{Inter-slice frequency consistency disruption. Each column shows two consecutive $z$-slices iamge. 2D methods (EM, LSP)
+\caption{Inter-slice frequency consistency disruption. Each column shows two consecutive $z$-slice images. 2D methods (EM, LSP)
 produce spectrally consistent noise across slices (high inter-slice correlation), which 3D convolutional kernels can easily filter out. In contrast, VoxShield generates spectrally diverse perturbations with significantly lower inter-slice spectral correlation, effectively disrupting the frequency consistency that 3D models rely on.}
 \label{fig:isc}
 \end{figure}
@@ -480,8 +480,7 @@ produce spectrally consistent noise across slices (high inter-slice correlation)
 Victim model predictions on VoxShield-protected data exhibited a characteristic 3D-specific degradation:
 segmentation masks became \textit{inter-slice discontinuous}---fragmented, with boundaries jumping between
 slices. In contrast, 2D UE methods produced only mild global accuracy reduction while retaining smooth
-inter-slice predictions. This degradation pattern directly demonstrated that VoxShield successfully
-disrupted the volumetric continuity that 3D models relied upon.
+inter-slice predictions, confirming that VoxShield uniquely targets the volumetric continuity prior on which 3D models depend.
 
 
 % ═══════════════════════════════════════════════════════════════════
@@ -489,7 +488,7 @@ disrupted the volumetric continuity that 3D models relied upon.
 % ═══════════════════════════════════════════════════════════════════
 \section{Conclusion}
 
-We present VoxShield, the first unlearnable example framework specifically designed for 3D medical image segmentation. By identifying inter-slice anatomical consistency as the critical---and exploitable---prior of 3D segmentation models, we design frequency-domain objectives that disrupt this prior at both the noise-structure level ($\mathcal{L}_{\text{ISC}}$) and the semantic-prediction level ($\mathcal{L}_{\text{SPD}}$). VoxShield achieves state-of-the-art protection across two benchmarks and four victim architectures, demonstrating that effective 3D data protection requires attacking the volumetric priors that 3D models fundamentally depend upon.
+VoxShield is the first unlearnable example framework for 3D medical image segmentation. Targeting inter-slice anatomical consistency as the key exploitable prior, we devise frequency-domain objectives disrupting it at both the noise-structure ($\mathcal{L}_{\text{ISC}}$) and semantic-prediction ($\mathcal{L}_{\text{SPD}}$) levels. State-of-the-art protection across two benchmarks and four architectures confirms that effective 3D data protection must attack the volumetric priors that 3D models fundamentally depend on.
 
 % ═══════════════════════════════════════════════════════════════════
 %                       BIBLIOGRAPHY
