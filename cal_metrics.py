@@ -23,13 +23,11 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import h5py
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -198,39 +196,6 @@ def load_dataset(config: OmegaConf, dataset: str, split: str = "test"):
 
 
 # ======================================================================
-#  辅助：物理空间对角线（mm）
-# ======================================================================
-
-def _diag_mm_from_shape(
-    d: int,
-    h: int,
-    w: int,
-    spacing: Tuple[float, float, float],
-) -> float:
-    """计算体积在物理空间中的对角线长度 (mm)。"""
-    sd, sh, sw = spacing
-    dd = max(d - 1, 0) * sd
-    hh = max(h - 1, 0) * sh
-    ww = max(w - 1, 0) * sw
-    return float(math.sqrt(dd * dd + hh * hh + ww * ww))
-
-
-def _read_spacing_from_h5(h5_path: str) -> Tuple[float, float, float]:
-    """从 H5 文件读取 spacing，优先 target_spacing，其次 orig_spacing，兜底 (1,1,1)。"""
-    try:
-        with h5py.File(h5_path, "r") as f:
-            if "target_spacing" in f.attrs:
-                sp = tuple(float(x) for x in f.attrs["target_spacing"])
-            elif "orig_spacing" in f.attrs:
-                sp = tuple(float(x) for x in f.attrs["orig_spacing"])
-            else:
-                sp = (1.0, 1.0, 1.0)
-    except Exception:
-        sp = (1.0, 1.0, 1.0)
-    return sp
-
-
-# ======================================================================
 #  主逻辑
 # ======================================================================
 
@@ -288,10 +253,6 @@ def compute_metrics(
         image = sample["image"]     # [C, D, H, W]
         label = sample["label"]     # [D, H, W]
         case_id = sample.get("case_id", f"sample_{idx}")
-        h5_path = sample.get("h5_path", "")
-
-        # 从 H5 读取 spacing (mm)
-        spacing = _read_spacing_from_h5(h5_path) if h5_path else (1.0, 1.0, 1.0)
 
         # 推理
         with torch.no_grad():
@@ -310,13 +271,13 @@ def compute_metrics(
         gt_nonempty_list.append(gt_ne)
         pred_nonempty_list.append(pred_ne)
         D, H, W = y_reg.shape[2:]
-        volume_diags.append(_diag_mm_from_shape(D, H, W, spacing))
+        volume_diags.append(float((D**2 + H**2 + W**2) ** 0.5))
 
-        # 累积 metrics（距离指标传入 spacing 使结果为 mm 单位）
+        # 累积 metrics
         dice_metric(y_pred=p_reg, y=y_reg)
         iou_metric(y_pred=p_reg, y=y_reg)
-        hd95_metric(y_pred=p_reg, y=y_reg, spacing=spacing)
-        asd_metric(y_pred=p_reg, y=y_reg, spacing=spacing)
+        hd95_metric(y_pred=p_reg, y=y_reg)
+        asd_metric(y_pred=p_reg, y=y_reg)
 
         # 单样本结果（汇总后再填数值）
         row = {"case_id": case_id, "index": idx}
@@ -339,10 +300,10 @@ def compute_metrics(
     asd_vals = asd_vals.view(-1, n_regions)
     asd_nans = asd_nans.view(-1, n_regions)
 
-    # ---- 修正 NaN：单侧为空时用物理对角线 (mm) 作为惩罚值 ----
+    # ---- 修正 NaN：单侧为空时用体素对角线作为惩罚值 ----
     # 当 GT 有某区域但 Pred 完全为空（或反之）时，MONAI 对 HD95/ASD 返回 NaN，
     # 导致这些"完全漏检"样本被排除在平均之外，使 HD95 均值虚低。
-    # 修正：用该样本体积的物理对角线长度 (mm) 作为惩罚距离。
+    # 修正：用该样本体积的对角线长度作为惩罚距离。
     gt_nonempty = torch.stack(gt_nonempty_list)      # [N, R]
     pred_nonempty = torch.stack(pred_nonempty_list)   # [N, R]
     one_sided_empty = gt_nonempty ^ pred_nonempty     # 恰好一侧非空
