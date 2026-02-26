@@ -721,7 +721,7 @@ def compare_unified(
 
     # --- Figure sizing ---
     cell = 2.0
-    cbar_w = 0.7  # width for vertical colorbar + tick labels
+    cbar_w = 0.35  # width for vertical colorbar
     b_w = 1.6
     c_w = 1.2
     gap = 0.4
@@ -774,9 +774,12 @@ def compare_unified(
     sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.set_ticks([NOISE_VMIN, 0, NOISE_VMAX])
-    cbar.set_ticklabels(["-4/255", "0", "4/255"])
-    cbar.ax.tick_params(labelsize=6)
+    cbar.set_ticks([])  # no side ticks
+    # Labels at top and bottom of colorbar
+    cbar.ax.text(0.5, 1.02, "4/255", ha="center", va="bottom",
+                 fontsize=6, transform=cbar.ax.transAxes)
+    cbar.ax.text(0.5, -0.02, "-4/255", ha="center", va="top",
+                 fontsize=6, transform=cbar.ax.transAxes)
 
     # ============ Noise + Noisy grid — no borders, no text ============
     ours_noise_np = noises[-1].numpy()
