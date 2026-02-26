@@ -32,6 +32,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.colors import Normalize
+from matplotlib.cm import ScalarMappable
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -68,6 +70,24 @@ METHOD_COLORS = [
 ]
 
 METHOD_CMAPS = ["RdBu_r", "PiYG_r", "PuOr_r", "BrBG_r", "coolwarm", "seismic"]
+
+# Noise colorbar range
+NOISE_VMIN = -4 / 255
+NOISE_VMAX = 4 / 255
+NOISE_CMAP = "RdBu_r"
+
+
+def _add_noise_colorbar(fig, axes_list, location="right", shrink=0.6, pad=0.02):
+    """Add a shared colorbar for noise images with range [-4/255, 4/255]."""
+    norm = Normalize(vmin=NOISE_VMIN, vmax=NOISE_VMAX)
+    sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes_list, location=location,
+                        shrink=shrink, pad=pad, aspect=30)
+    cbar.set_ticks([NOISE_VMIN, NOISE_VMIN / 2, 0, NOISE_VMAX / 2, NOISE_VMAX])
+    cbar.set_ticklabels(["-4/255", "-2/255", "0", "2/255", "4/255"])
+    cbar.set_label("Noise Intensity", fontsize=9)
+    return cbar
 
 
 # ======================== Helpers (reuse from single) ======================== #
@@ -159,20 +179,6 @@ def run_inference(model: torch.nn.Module, image: torch.Tensor, device: torch.dev
             out = out[0]
         pred = out.argmax(dim=1).squeeze(0).cpu()
     return pred
-
-
-def colorize_noise(noise_2d: np.ndarray, eps: float = 8/255) -> np.ndarray:
-    normalized = np.clip(noise_2d / max(eps, 1e-12), -1, 1)
-    rgb = np.zeros((*noise_2d.shape, 3), dtype=np.float32)
-    neg = normalized < 0
-    rgb[neg, 2] = 1.0
-    rgb[neg, 0] = 1.0 + normalized[neg]
-    rgb[neg, 1] = 1.0 + normalized[neg]
-    pos = normalized >= 0
-    rgb[pos, 0] = 1.0
-    rgb[pos, 1] = 1.0 - normalized[pos]
-    rgb[pos, 2] = 1.0 - normalized[pos]
-    return (rgb * 255).astype(np.uint8)
 
 
 def label_to_rgb(label_2d: np.ndarray, num_classes: int = 4) -> np.ndarray:
@@ -342,15 +348,18 @@ def compare_scheme_a(
         axes[0, i].axis("off")
     axes[0, 0].set_ylabel("Original", fontsize=11, fontweight="bold")
 
+    noise_axes = []  # collect noise axes for shared colorbar
     for m_idx, (method, noise_np) in enumerate(zip(methods, noises)):
         row_noise = 1 + m_idx * 2
         row_diff = 2 + m_idx * 2
 
-        # Noise row
+        # Noise row — use diverging colormap with fixed range
         for i, z in enumerate(slices):
-            noise_rgb = colorize_noise(noise_np[channel, z], eps)
-            axes[row_noise, i].imshow(noise_rgb)
+            axes[row_noise, i].imshow(
+                noise_np[channel, z], cmap=NOISE_CMAP,
+                vmin=NOISE_VMIN, vmax=NOISE_VMAX)
             axes[row_noise, i].axis("off")
+            noise_axes.append(axes[row_noise, i])
         axes[row_noise, 0].set_ylabel(
             f"{method.name}\nNoise", fontsize=10, fontweight="bold"
         )
@@ -367,6 +376,9 @@ def compare_scheme_a(
         axes[row_diff, 0].set_ylabel(
             f"{method.name}\nSlice Diff", fontsize=10, fontweight="bold"
         )
+
+    # Add shared colorbar for noise rows
+    _add_noise_colorbar(fig, noise_axes, shrink=0.8, pad=0.03)
 
     fig.suptitle(
         f"Compare A: Multi-Slice Noise — {case_id}\n"
@@ -600,9 +612,9 @@ def compare_scheme_f(
         pred_c_slice = pred_c_np[slice_idx]
         pred_n_slice = pred_n_np[slice_idx]
 
-        # Row 0: Noise BWR, Noisy image, |δ|×10
-        noise_rgb = colorize_noise(noise_slice, eps)
-        axes[0, col_base].imshow(noise_rgb)
+        # Row 0: Noise (diverging cmap), Noisy image, |δ|×10
+        axes[0, col_base].imshow(
+            noise_slice, cmap=NOISE_CMAP, vmin=NOISE_VMIN, vmax=NOISE_VMAX)
         axes[0, col_base].set_title(f"{method.name}\nNoise", fontsize=10,
                                     fontweight="bold", color=color)
 
@@ -646,11 +658,17 @@ def compare_scheme_f(
 
         dice_strs.append(f"{method.name}: {d_clean:.3f}→{d_noisy:.3f} (Δ{delta:+.3f})")
 
-    # Turn off all axes
+    # Turn off all axes — remove black borders
+    noise_axes_f = []
     for ax_row in axes:
         for ax in ax_row:
-            ax.set_xticks([])
-            ax.set_yticks([])
+            ax.axis("off")
+
+    # Collect noise axes for shared colorbar
+    for m_idx in range(M):
+        col_base = 2 + m_idx * 3
+        noise_axes_f.append(axes[0, col_base])
+    _add_noise_colorbar(fig, noise_axes_f, shrink=0.8, pad=0.03)
 
     fig.suptitle(
         f"Compare F: Segmentation Impact — {case_id} (z={slice_idx})\n"
@@ -756,7 +774,8 @@ def compare_unified(
             col = 1 + m_idx
             noise_np_m = noises[m_idx].numpy()
             a_axes[(row, col)].imshow(
-                colorize_noise(noise_np_m[vis_channel, z], eps))
+                noise_np_m[vis_channel, z], cmap=NOISE_CMAP,
+                vmin=NOISE_VMIN, vmax=NOISE_VMAX)
 
         noisy_slice = np.clip(
             image_np[vis_channel, z] + ours_noise_np[vis_channel, z], 0, 1)
@@ -834,6 +853,10 @@ def compare_unified(
     ax_c1.set_title("Seg", fontsize=8, fontweight="bold", pad=2)
 
     fig.text(c_left, 0.96, "(c)", fontsize=12, fontweight="bold", va="top")
+
+    # Add noise colorbar below panel (a)
+    noise_ax_list = [a_axes[(r, 1 + m)] for r in range(2) for m in range(M)]
+    _add_noise_colorbar(fig, noise_ax_list, location="bottom", shrink=0.5, pad=0.08)
 
     plt.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white",
                 pad_inches=0.03)
