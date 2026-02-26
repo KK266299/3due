@@ -424,8 +424,7 @@ As shown in Fig.~\ref{fig:isc}, VoxShield noise exhibits drastically varying spe
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{fig/result.pdf}
-\caption{Inter-slice frequency consistency disruption. Each column shows two consecutive $z$-slice images. 2D methods (EM, LSP)
-produce spectrally consistent noise across slices (high inter-slice correlation), which 3D convolutional kernels can easily filter out. In contrast, VoxShield generates spectrally diverse perturbations with significantly lower inter-slice spectral correlation, effectively disrupting the frequency consistency that 3D models rely on.}
+\caption{Inter-slice frequency consistency disruption. 2D methods (EM, LSP) produce spectrally coherent noise across slices that 3D kernels readily filter out, whereas VoxShield generates spectrally diverse perturbations with significantly lower inter-slice correlation, disrupting the volumetric continuity 3D models rely on.}
 \label{fig:isc}
 \end{figure}
 
