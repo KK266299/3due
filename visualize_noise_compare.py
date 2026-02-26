@@ -721,7 +721,7 @@ def compare_unified(
 
     # --- Figure sizing ---
     cell = 2.0
-    cbar_w = 0.35  # width for vertical colorbar
+    cbar_w = 0.7  # width for vertical colorbar + tick labels
     b_w = 1.6
     c_w = 1.2
     gap = 0.4
