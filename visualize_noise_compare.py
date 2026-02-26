@@ -685,6 +685,30 @@ def compare_scheme_f(
 
 # ======================== Compare U (Unified) ======================== #
 
+def _save_image_only(data_2d, output_path, cmap="gray", vmin=None, vmax=None, dpi=200):
+    """Save a 2D array as an image file with no axes, borders, or padding."""
+    fig, ax = plt.subplots(1, 1, figsize=(3, 3), facecolor="white")
+    ax.imshow(data_2d, cmap=cmap, vmin=vmin, vmax=vmax)
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    plt.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white",
+                pad_inches=0.01)
+    plt.close(fig)
+
+
+def _save_rgb_only(rgb_2d, output_path, dpi=200):
+    """Save an RGB array as an image file with no axes, borders, or padding."""
+    fig, ax = plt.subplots(1, 1, figsize=(3, 3), facecolor="white")
+    ax.imshow(rgb_2d)
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    plt.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white",
+                pad_inches=0.01)
+    plt.close(fig)
+
+
 def compare_unified(
     methods: List[MethodData],
     noises: List[torch.Tensor],
@@ -697,16 +721,16 @@ def compare_unified(
     vis_channel: int = 0,
 ):
     """
-    Unified paper figure with three separated panels: (a) + (b) + (c).
+    Unified visualization — each minimum-unit image saved as a separate file.
 
-    (a) Tight image grid (no borders), 2 rows (z, z+1):
-        Cols: Original | Noise per method | Noisy(Ours)
-
-    (b) Vertical Pearson correlation curve (with plot frame):
-        Title at top, xlabel at bottom, y-axis = slice z (inverted).
-
-    (c) Clean + Seg (no borders), 2 rows:
-        Top = clean image at z, Bottom = victim seg on clean at z.
+    Output files (in the same directory as output_path):
+      - {prefix}_original_z{z}.png          — Original image at each slice
+      - {prefix}_{method}_noise_z{z}.png    — Noise per method per slice
+      - {prefix}_noisy_ours_z{z}.png        — Noisy image (last method) per slice
+      - {prefix}_colorbar.png               — Shared noise colorbar
+      - {prefix}_pearson_corr.png           — Pearson correlation curve
+      - {prefix}_clean_z{z}.png             — Clean image at z0
+      - {prefix}_seg_z{z}.png               — Victim segmentation at z0
     """
     M = len(methods)
     image_np = image.numpy()
@@ -716,97 +740,60 @@ def compare_unified(
     z0 = slice_z
     z1 = min(slice_z + 1, D - 1)
 
-    # Layout: [Original] [Colorbar] [Noise1..NoiseM | Noisy] [panel b] [panel c]
-    n_right = M + 1  # M noise cols + 1 Noisy col
+    # Derive output directory and prefix from output_path
+    out_dir = os.path.dirname(output_path)
+    base_name = os.path.splitext(os.path.basename(output_path))[0]
+    sub_dir = os.path.join(out_dir, base_name)
+    os.makedirs(sub_dir, exist_ok=True)
 
-    # --- Figure sizing ---
-    cell = 2.0
-    cbar_w = 0.35  # width for vertical colorbar
-    b_w = 1.6
-    c_w = 1.2
-    gap = 0.4
-    fig_w = cell + cbar_w + cell * n_right + gap + b_w + gap + c_w
-    fig_h = cell * 2 + 0.5
+    saved_files = []
 
-    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+    # ============ Original images at z0, z1 ============
+    for z in [z0, z1]:
+        p = os.path.join(sub_dir, f"original_z{z:03d}.png")
+        _save_image_only(image_np[vis_channel, z], p, cmap="gray", vmin=0, vmax=1)
+        saved_files.append(p)
 
-    # Panel positions in figure fraction coordinates
-    orig_right = cell / fig_w
-    cbar_frac_left = orig_right + 0.005
-    right_left = (cell + cbar_w) / fig_w + 0.005
-    right_right = (cell + cbar_w + cell * n_right) / fig_w
-    b_left = right_right + gap / fig_w
-    b_right = b_left + b_w / fig_w
-    c_left = b_right + gap / fig_w
-    c_right = 1.0
+    # ============ Noise per method at z0, z1 ============
+    for m_idx, method in enumerate(methods):
+        noise_np_m = noises[m_idx].numpy()
+        for z in [z0, z1]:
+            p = os.path.join(sub_dir, f"{method.name}_noise_z{z:03d}.png")
+            _save_image_only(noise_np_m[vis_channel, z], p,
+                             cmap=NOISE_CMAP, vmin=NOISE_VMIN, vmax=NOISE_VMAX)
+            saved_files.append(p)
 
-    gs_orig = gridspec.GridSpec(
-        2, 1, figure=fig,
-        left=0.0, right=orig_right, bottom=0.02, top=0.88,
-        wspace=0.005, hspace=0.005,
-    )
-    gs_right = gridspec.GridSpec(
-        2, n_right, figure=fig,
-        left=right_left, right=right_right, bottom=0.02, top=0.88,
-        wspace=0.005, hspace=0.005,
-    )
-    gs_b = gridspec.GridSpec(
-        1, 1, figure=fig,
-        left=b_left, right=b_right, bottom=0.08, top=0.88,
-    )
-    gs_c = gridspec.GridSpec(
-        2, 1, figure=fig,
-        left=c_left, right=c_right, bottom=0.02, top=0.88,
-        wspace=0.005, hspace=0.005,
-    )
+    # ============ Noisy image (last method = Ours) at z0, z1 ============
+    ours_noise_np = noises[-1].numpy()
+    for z in [z0, z1]:
+        noisy_slice = np.clip(
+            image_np[vis_channel, z] + ours_noise_np[vis_channel, z], 0, 1)
+        p = os.path.join(sub_dir, f"noisy_{methods[-1].name}_z{z:03d}.png")
+        _save_image_only(noisy_slice, p, cmap="gray", vmin=0, vmax=1)
+        saved_files.append(p)
 
-    # ============ Original column ============
-    for row, z in enumerate([z0, z1]):
-        ax = fig.add_subplot(gs_orig[row, 0])
-        ax.imshow(image_np[vis_channel, z], cmap="gray", vmin=0, vmax=1)
-        ax.set_xticks([]); ax.set_yticks([])
-        for sp in ax.spines.values():
-            sp.set_visible(False)
-
-    # ============ Vertical colorbar — right of Original ============
-    cbar_ax = fig.add_axes([cbar_frac_left, 0.08, 0.012, 0.75])
+    # ============ Vertical colorbar ============
+    p_cbar = os.path.join(sub_dir, "colorbar.png")
+    fig_cb, ax_cb = plt.subplots(1, 1, figsize=(0.6, 4), facecolor="white")
+    ax_cb.axis("off")
     norm = Normalize(vmin=NOISE_VMIN, vmax=NOISE_VMAX)
     sm = ScalarMappable(norm=norm, cmap=NOISE_CMAP)
     sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.set_ticks([])  # no side ticks
-    # Labels at top and bottom of colorbar
+    cbar_ax = fig_cb.add_axes([0.25, 0.05, 0.25, 0.9])
+    cbar = fig_cb.colorbar(sm, cax=cbar_ax)
+    cbar.set_ticks([])
     cbar.ax.text(0.5, 1.02, "4/255", ha="center", va="bottom",
                  fontsize=14, transform=cbar.ax.transAxes)
     cbar.ax.text(0.5, -0.02, "-4/255", ha="center", va="top",
                  fontsize=14, transform=cbar.ax.transAxes)
+    plt.savefig(p_cbar, dpi=200, bbox_inches="tight", facecolor="white",
+                pad_inches=0.01)
+    plt.close(fig_cb)
+    saved_files.append(p_cbar)
 
-    # ============ Noise + Noisy grid — no borders, no text ============
-    ours_noise_np = noises[-1].numpy()
-
-    for row, z in enumerate([z0, z1]):
-        # Noise columns
-        for m_idx in range(M):
-            ax = fig.add_subplot(gs_right[row, m_idx])
-            noise_np_m = noises[m_idx].numpy()
-            ax.imshow(noise_np_m[vis_channel, z], cmap=NOISE_CMAP,
-                      vmin=NOISE_VMIN, vmax=NOISE_VMAX)
-            ax.set_xticks([]); ax.set_yticks([])
-            for sp in ax.spines.values():
-                sp.set_visible(False)
-
-        # Noisy column (last)
-        ax_n = fig.add_subplot(gs_right[row, M])
-        noisy_slice = np.clip(
-            image_np[vis_channel, z] + ours_noise_np[vis_channel, z], 0, 1)
-        ax_n.imshow(noisy_slice, cmap="gray", vmin=0, vmax=1)
-        ax_n.set_xticks([]); ax_n.set_yticks([])
-        for sp in ax_n.spines.values():
-            sp.set_visible(False)
-
-    # ============ (b) Pearson correlation — keep plot frame ============
-    ax_b = fig.add_subplot(gs_b[0, 0])
-
+    # ============ Pearson correlation curve ============
+    p_pearson = os.path.join(sub_dir, "pearson_corr.png")
+    fig_b, ax_b = plt.subplots(1, 1, figsize=(2.5, 5), facecolor="white")
     for m_idx in range(M):
         noise_ch = noises[m_idx][vis_channel].numpy()
         Dz = noise_ch.shape[0]
@@ -826,32 +813,30 @@ def compare_unified(
     ax_b.invert_yaxis()
     ax_b.axvline(x=0, color="gray", linestyle=":", linewidth=0.5)
     ax_b.set_xlim(-1.05, 1.05)
-
     ax_b.set_xticklabels([])
     ax_b.set_yticklabels([])
     ax_b.tick_params(length=0)
     ax_b.grid(True, alpha=0.2)
-
     ax_b.axhline(y=z0, color="black", linestyle="--", linewidth=0.5, alpha=0.4)
     ax_b.axhline(y=z1, color="black", linestyle="--", linewidth=0.5, alpha=0.4)
-
-    # ============ (c) Clean + Seg — no borders, no text ============
-    ax_c0 = fig.add_subplot(gs_c[0, 0])
-    ax_c0.imshow(image_np[vis_channel, z0], cmap="gray", vmin=0, vmax=1)
-    ax_c0.set_xticks([]); ax_c0.set_yticks([])
-    for sp in ax_c0.spines.values():
-        sp.set_visible(False)
-
-    ax_c1 = fig.add_subplot(gs_c[1, 0])
-    ax_c1.imshow(label_to_rgb(pred_np[z0]))
-    ax_c1.set_xticks([]); ax_c1.set_yticks([])
-    for sp in ax_c1.spines.values():
-        sp.set_visible(False)
-
-    plt.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white",
+    plt.savefig(p_pearson, dpi=200, bbox_inches="tight", facecolor="white",
                 pad_inches=0.03)
-    plt.close(fig)
-    print(f"[Saved] Unified: {output_path}")
+    plt.close(fig_b)
+    saved_files.append(p_pearson)
+
+    # ============ Clean image at z0 ============
+    p_clean = os.path.join(sub_dir, f"clean_z{z0:03d}.png")
+    _save_image_only(image_np[vis_channel, z0], p_clean, cmap="gray", vmin=0, vmax=1)
+    saved_files.append(p_clean)
+
+    # ============ Segmentation at z0 ============
+    p_seg = os.path.join(sub_dir, f"seg_z{z0:03d}.png")
+    _save_rgb_only(label_to_rgb(pred_np[z0]), p_seg)
+    saved_files.append(p_seg)
+
+    print(f"[Saved] Unified separate images ({len(saved_files)} files) in: {sub_dir}")
+    for f in saved_files:
+        print(f"  -> {os.path.basename(f)}")
 
 
 # ======================== CLI ======================== #
