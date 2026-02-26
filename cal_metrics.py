@@ -242,6 +242,11 @@ def compute_metrics(
 
     per_sample_results: List[Dict[str, object]] = []
 
+    # 追踪每个样本各区域是否非空，用于修正 HD95/ASD 的 NaN 惩罚
+    gt_nonempty_list: List[torch.Tensor] = []
+    pred_nonempty_list: List[torch.Tensor] = []
+    volume_diags: List[float] = []
+
     pbar = tqdm(range(len(dataset)), desc=f"Inference ({dataset_name})")
     for idx in pbar:
         sample = dataset[idx]
@@ -259,6 +264,14 @@ def compute_metrics(
         y_id = label.unsqueeze(0).long()                # [1, D, H, W]
         y_reg = build_region_masks(y_id, dataset_name)  # [1, R, D, H, W]
         p_reg = build_region_masks(pred_id.cpu(), dataset_name)  # [1, R, D, H, W]
+
+        # 追踪各区域是否非空（用于后续 NaN 惩罚）
+        gt_ne = y_reg[0].flatten(1).any(dim=1)     # [R] bool
+        pred_ne = p_reg[0].flatten(1).any(dim=1)   # [R] bool
+        gt_nonempty_list.append(gt_ne)
+        pred_nonempty_list.append(pred_ne)
+        D, H, W = y_reg.shape[2:]
+        volume_diags.append(float((D**2 + H**2 + W**2) ** 0.5))
 
         # 累积 metrics
         dice_metric(y_pred=p_reg, y=y_reg)
@@ -286,6 +299,25 @@ def compute_metrics(
     asd_vals, asd_nans = asd_metric.aggregate()
     asd_vals = asd_vals.view(-1, n_regions)
     asd_nans = asd_nans.view(-1, n_regions)
+
+    # ---- 修正 NaN：单侧为空时用体素对角线作为惩罚值 ----
+    # 当 GT 有某区域但 Pred 完全为空（或反之）时，MONAI 对 HD95/ASD 返回 NaN，
+    # 导致这些"完全漏检"样本被排除在平均之外，使 HD95 均值虚低。
+    # 修正：用该样本体积的对角线长度作为惩罚距离。
+    gt_nonempty = torch.stack(gt_nonempty_list)      # [N, R]
+    pred_nonempty = torch.stack(pred_nonempty_list)   # [N, R]
+    one_sided_empty = gt_nonempty ^ pred_nonempty     # 恰好一侧非空
+
+    for i in range(hd95_vals.shape[0]):
+        for r in range(n_regions):
+            if one_sided_empty[i, r]:
+                penalty = volume_diags[i]
+                if hd95_nans[i, r] == 0:   # 原本是 NaN
+                    hd95_vals[i, r] = penalty
+                    hd95_nans[i, r] = 1
+                if asd_nans[i, r] == 0:
+                    asd_vals[i, r] = penalty
+                    asd_nans[i, r] = 1
 
     # 填充 per-sample 数据
     for i, row in enumerate(per_sample_results):
