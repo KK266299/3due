@@ -685,28 +685,15 @@ def compare_scheme_f(
 
 # ======================== Compare U (Unified) ======================== #
 
-def _save_image_only(data_2d, output_path, cmap="gray", vmin=None, vmax=None, dpi=200):
-    """Save a 2D array as an image file with no axes, borders, or padding."""
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), facecolor="white")
-    ax.imshow(data_2d, cmap=cmap, vmin=vmin, vmax=vmax)
-    ax.set_xticks([]); ax.set_yticks([])
-    for sp in ax.spines.values():
-        sp.set_visible(False)
-    plt.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white",
-                pad_inches=0.01)
-    plt.close(fig)
+def _save_image_only(data_2d, output_path, cmap="gray", vmin=None, vmax=None):
+    """Save a 2D array as a raw image — no axes, no borders, no padding."""
+    plt.imsave(output_path, data_2d, cmap=cmap, vmin=vmin, vmax=vmax)
 
 
-def _save_rgb_only(rgb_2d, output_path, dpi=200):
-    """Save an RGB array as an image file with no axes, borders, or padding."""
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), facecolor="white")
-    ax.imshow(rgb_2d)
-    ax.set_xticks([]); ax.set_yticks([])
-    for sp in ax.spines.values():
-        sp.set_visible(False)
-    plt.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white",
-                pad_inches=0.01)
-    plt.close(fig)
+def _save_rgb_only(rgb_2d, output_path):
+    """Save an RGB array as a raw image — no axes, no borders, no padding."""
+    from PIL import Image
+    Image.fromarray(rgb_2d).save(output_path)
 
 
 def compare_unified(
