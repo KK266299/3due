@@ -476,19 +476,12 @@ produce spectrally consistent noise across slices (high inter-slice correlation)
 \end{figure}
 
 
-\textbf{Segmentation Degradation Patterns.}
-Victim model predictions on VoxShield-protected data exhibited a characteristic 3D-specific degradation:
-segmentation masks became \textit{inter-slice discontinuous}---fragmented, with boundaries jumping between
-slices. In contrast, 2D UE methods produced only mild global accuracy reduction while retaining smooth
-inter-slice predictions, confirming that VoxShield uniquely targets the volumetric continuity prior on which 3D models depend.
-
-
 % ═══════════════════════════════════════════════════════════════════
 %                       4  CONCLUSION
 % ═══════════════════════════════════════════════════════════════════
 \section{Conclusion}
 
-VoxShield is the first unlearnable example framework for 3D medical image segmentation. Targeting inter-slice anatomical consistency as the key exploitable prior, we devise frequency-domain objectives disrupting it at both the noise-structure ($\mathcal{L}_{\text{ISC}}$) and semantic-prediction ($\mathcal{L}_{\text{SPD}}$) levels. State-of-the-art protection across two benchmarks and four architectures confirms that effective 3D data protection must attack the volumetric priors that 3D models fundamentally depend on.
+VoxShield is the first unlearnable example framework for 3D medical image segmentation, targeting inter-slice anatomical consistency via frequency-domain objectives ($\mathcal{L}_{\text{ISC}}$ and $\mathcal{L}_{\text{SPD}}$) to disable volumetric learning. State-of-the-art protection across two benchmarks and four architectures confirms that attacking volumetric priors is essential for effective 3D data protection.
 
 % ═══════════════════════════════════════════════════════════════════
 %                       BIBLIOGRAPHY
