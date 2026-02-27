@@ -408,7 +408,7 @@ Per-slice Gen.\ (no cross-slice disruption)
 \end{table}
 
 
-Table~\ref{tab:ablation} validates each component: removing $\mathcal{L}_{\text{ISC}}$ causes the largest drop, confirming inter-slice spectral disruption is the primary attack vector; removing $\mathcal{L}_{\text{SPD}}$ also degrades protection.
+Table~\ref{tab:ablation} validates each component: removing $\mathcal{L}_{\text{ISC}}$ causes the largest drop, confirming inter-slice spectral disruption is the primary attack vector; removing $\mathcal{L}_{\text{SPD}}$ also degrades protection. The per-slice generator (DSC\,74.9\%) applies $\mathcal{G}$ to each slice independently without cross-slice coordination; absent an explicit diversity objective, per-slice noise converges to spectrally similar patterns across slices---leaving the volumetric continuity prior intact and allowing 3D kernels to aggregate cross-slice features normally.
 
 \textbf{Qualitative Analysis.}
 As shown in Fig.~\ref{fig:isc}, VoxShield noise exhibits drastically varying spectral patterns across adjacent slices, whereas 2D-method noise remains spectrally coherent and is readily filtered by 3D kernels. The mean inter-slice spectral correlation of VoxShield is significantly lower than all baselines, directly evidencing $\mathcal{L}_{\text{ISC}}$'s effectiveness.
