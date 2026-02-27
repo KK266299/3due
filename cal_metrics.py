@@ -280,10 +280,7 @@ def compute_metrics(
                 final_sh = np.array(final_sh, dtype=np.float64)
                 # h5 存储顺序 (H, W, D)，tensor 空间顺序 (D, H, W)
                 eff_sp = orig_sp * orig_sh / final_sh          # (H, W, D)
-                spacing = torch.tensor(
-                    [eff_sp[2], eff_sp[0], eff_sp[1]],         # -> (D, H, W)
-                    dtype=torch.float32,
-                )
+                spacing = [float(eff_sp[2]), float(eff_sp[0]), float(eff_sp[1])]  # -> (D, H, W)
 
         # 追踪各区域是否非空（用于后续 NaN 惩罚）
         gt_ne = y_reg[0].flatten(1).any(dim=1)     # [R] bool
@@ -294,7 +291,7 @@ def compute_metrics(
         # 体积对角线 (mm)，用作 NaN 惩罚距离
         D, H, W = y_reg.shape[2:]
         if spacing is not None:
-            sp_d, sp_h, sp_w = spacing[0].item(), spacing[1].item(), spacing[2].item()
+            sp_d, sp_h, sp_w = spacing[0], spacing[1], spacing[2]
             volume_diags.append(float(((D*sp_d)**2 + (H*sp_h)**2 + (W*sp_w)**2) ** 0.5))
         else:
             volume_diags.append(float((D**2 + H**2 + W**2) ** 0.5))
