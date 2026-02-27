@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import h5py
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -260,11 +261,30 @@ def compute_metrics(
         y_reg = build_region_masks(y_id, dataset_name)  # [1, R, D, H, W]
         p_reg = build_region_masks(pred_id.cpu(), dataset_name)  # [1, R, D, H, W]
 
+        # 从 h5 读取 spacing，计算有效体素间距 (mm)
+        spacing = None
+        h5_path = sample.get("h5_path", None)
+        if h5_path is not None:
+            with h5py.File(h5_path, "r") as f:
+                orig_sp = f.attrs.get("orig_spacing", None)
+                orig_sh = f.attrs.get("orig_shape", None)
+                final_sh = f.attrs.get("final_shape", f.attrs.get("target_shape", None))
+            if orig_sp is not None and orig_sh is not None and final_sh is not None:
+                orig_sp = np.array(orig_sp, dtype=np.float64)
+                orig_sh = np.array(orig_sh, dtype=np.float64)
+                final_sh = np.array(final_sh, dtype=np.float64)
+                # h5 存储顺序 (H, W, D)，tensor 空间顺序 (D, H, W)
+                eff_sp = orig_sp * orig_sh / final_sh          # (H, W, D)
+                spacing = torch.tensor(
+                    [eff_sp[2], eff_sp[0], eff_sp[1]],         # -> (D, H, W)
+                    dtype=torch.float32,
+                )
+
         # 累积 metrics
         dice_metric(y_pred=p_reg, y=y_reg)
         iou_metric(y_pred=p_reg, y=y_reg)
-        hd95_metric(y_pred=p_reg, y=y_reg)
-        asd_metric(y_pred=p_reg, y=y_reg)
+        hd95_metric(y_pred=p_reg, y=y_reg, spacing=spacing)
+        asd_metric(y_pred=p_reg, y=y_reg, spacing=spacing)
 
         # 单样本结果（汇总后再填数值）
         row = {"case_id": case_id, "index": idx}
@@ -399,7 +419,7 @@ def main():
     def _fmt(v: float) -> str:
         return f"{v:.4f}" if np.isfinite(v) else "inf"
 
-    print(f"\n{'Region':<15} {'Dice':>10} {'IoU':>10} {'HD95':>10} {'ASD':>10}")
+    print(f"\n{'Region':<15} {'Dice':>10} {'IoU':>10} {'HD95(mm)':>10} {'ASD(mm)':>10}")
     print("-" * 57)
     for rn in region_names:
         d  = summary.get(f"dice_{rn}", 0.0)
